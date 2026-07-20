@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+# Production image for @soundlog/backend.
+#
+# This is a pnpm workspace, which the build has to respect in two ways:
+#   1. `pnpm install --frozen-lockfile` validates the lockfile against EVERY
+#      workspace importer, so all member manifests must be present — even the
+#      ones we don't build here — or the install fails.
+#   2. pnpm links dependencies through a symlinked store, so the resulting
+#      node_modules can't simply be COPYed into a clean image. `pnpm deploy`
+#      flattens the target package plus its production deps into a standalone
+#      directory of real files, which is what we ship.
+
+# ---------------------------------------------------------------------------
+# Build: install the workspace, generate the Prisma client, compile TypeScript.
+# ---------------------------------------------------------------------------
+FROM node:24-alpine AS build
+# Prisma's engines are dynamically linked against OpenSSL on musl.
+RUN apk add --no-cache openssl && corepack enable
+WORKDIR /repo
+
+# Manifests + lockfile first, so the dependency layer caches independently of
+# application source changes.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+COPY backend/package.json backend/
+COPY packages/shared/package.json packages/shared/
+COPY apps/web/package.json apps/web/
+COPY apps/mobile/package.json apps/mobile/
+RUN pnpm install --frozen-lockfile
+
+# Source. The backend has no workspace dependency on @soundlog/shared (nothing
+# in backend/src imports it), but shared is copied so the workspace resolves.
+COPY backend backend
+COPY packages/shared packages/shared
+
+RUN pnpm --filter @soundlog/backend exec prisma generate \
+ && pnpm --filter @soundlog/backend run build
+
+# Standalone production bundle: backend package files (including dist/) plus
+# prod-only dependencies, with real node_modules rather than store symlinks.
+RUN pnpm --filter @soundlog/backend deploy --prod /prod
+
+# `deploy` installs @prisma/client fresh from the store, which does NOT carry
+# the generated client — regenerate it against /prod so the engine and client
+# land in the tree we actually ship. The CLI is a devDependency (absent from the
+# --prod bundle), so invoke the build stage's binary with /prod as the working
+# directory: Prisma resolves its output against cwd's node_modules.
+RUN cd /prod \
+ && /repo/backend/node_modules/.bin/prisma generate --schema=/prod/prisma/schema.prisma
+
+# ---------------------------------------------------------------------------
+# Runtime: lean image, non-root, no build toolchain.
+# ---------------------------------------------------------------------------
+FROM node:24-alpine AS runtime
+RUN apk add --no-cache openssl
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /prod /app
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
+USER app
+EXPOSE 4000
+CMD ["node", "dist/server.js"]

@@ -1,0 +1,291 @@
+// Soundlog — Prisma schema
+// Extends the build-plan schema with: review comments (threaded),
+// expanded release types (mixtapes, DJ mixes, music videos),
+// diary-style logging (Log), and Discogs/MusicBrainz identifiers.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id          String   @id @default(cuid())
+  username    String   @unique
+  email       String   @unique
+  password    String?  // null when the account is OAuth-only
+  displayName String?
+  bio         String?
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+
+  oauthAccounts OAuthAccount[]
+  refreshTokens RefreshToken[]
+  reviews       Review[]
+  ratings       Rating[]
+  logs          Log[]
+  lists         List[]
+  comments      ReviewComment[]
+  reviewLikes   ReviewLike[]
+  followers     Follow[]        @relation("following")
+  following     Follow[]        @relation("follower")
+  activity      Activity[]
+}
+
+model OAuthAccount {
+  id                String  @id @default(cuid())
+  userId            String
+  provider          String // "spotify" | "google" | "lastfm"
+  providerAccountId String
+  accessToken       String?
+  refreshToken      String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Artist {
+  id            String   @id @default(cuid())
+  musicbrainzId String?  @unique // MB artist MBID — canonical ID
+  name          String
+  sortName      String?
+  type          String? // "Person" | "Group" | ...
+  area          String? // country/region name from MusicBrainz
+  beginDate     String? // formed/born — MB partial dates ("1963", "1963-06-18")
+  createdAt     DateTime @default(now())
+
+  releases Release[]
+
+  @@index([name])
+}
+
+model Label {
+  id            String   @id @default(cuid())
+  musicbrainzId String?  @unique // MB label MBID — canonical
+  discogsId     String?  @unique // "label:N" fallback identity
+  name          String
+  area          String? // country/region from MusicBrainz
+  founded       String? // MB partial date ("1989", "1989-05")
+  createdAt     DateTime @default(now())
+
+  releases Release[]
+
+  @@index([name])
+}
+
+model Release {
+  id           String      @id @default(cuid())
+  spotifyId    String?     @unique
+  musicbrainzId String?    @unique // MBID — canonical dedupe key
+  discogsId    String?     @unique // namespace-qualified: "master:N" | "release:N"
+  lastfmUrl    String?
+  title        String
+  artistName   String
+  artistId     String?
+  labelId      String? // primary label (first credit)
+  releaseDate  DateTime?
+  genres       String[]
+  coverUrl     String? // list/thumbnail size (CAA 500px)
+  coverUrlLarge String? // full-size original for the lightbox
+  type         ReleaseType
+  trackCount   Int?
+  durationMs   Int?
+
+  artist    Artist?    @relation(fields: [artistId], references: [id])
+  label     Label?     @relation(fields: [labelId], references: [id])
+  reviews   Review[]
+  ratings   Rating[]
+  logs      Log[]
+  listItems ListItem[]
+
+  @@index([title])
+  @@index([artistName])
+}
+
+enum ReleaseType {
+  ALBUM
+  SINGLE
+  SONG
+  EP
+  MIXTAPE
+  DJ_MIX
+  COMPILATION
+  MUSIC_VIDEO
+  VIDEO
+}
+
+// ---------------------------------------------------------------------------
+// Logging, ratings, reviews (the Letterboxd trio)
+// ---------------------------------------------------------------------------
+
+// A diary entry: "I listened to this on this date." Multiple logs per
+// release per user are allowed — relistens are the point.
+model Log {
+  id         String   @id @default(cuid())
+  userId     String
+  releaseId  String
+  listenedAt DateTime @default(now())
+  isRelisten Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  release Release @relation(fields: [releaseId], references: [id])
+
+  @@index([userId, listenedAt])
+}
+
+model Rating {
+  id        String   @id @default(cuid())
+  userId    String
+  releaseId String
+  value     Float // 0.5–5.0 in half-star increments
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  release Release @relation(fields: [releaseId], references: [id])
+
+  @@unique([userId, releaseId]) // one rating per release per user, DB-enforced
+}
+
+model Review {
+  id               String   @id @default(cuid())
+  userId           String
+  releaseId        String
+  content          String
+  rating           Float? // optional attached rating
+  containsSpoilers Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  release  Release         @relation(fields: [releaseId], references: [id])
+  likes    ReviewLike[]
+  comments ReviewComment[]
+
+  @@unique([userId, releaseId]) // one review per release per user, DB-enforced
+}
+
+model ReviewLike {
+  userId   String
+  reviewId String
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@id([userId, reviewId])
+}
+
+// Threaded comments on reviews — one level of nesting via parentId.
+model ReviewComment {
+  id        String   @id @default(cuid())
+  reviewId  String
+  userId    String
+  parentId  String?
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  review  Review          @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent  ReviewComment?  @relation("thread", fields: [parentId], references: [id])
+  replies ReviewComment[] @relation("thread")
+
+  @@index([reviewId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Lists
+// ---------------------------------------------------------------------------
+
+model List {
+  id          String   @id @default(cuid())
+  userId      String
+  title       String
+  description String?
+  isPublic    Boolean  @default(true)
+  isRanked    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items ListItem[]
+}
+
+model ListItem {
+  id        String  @id @default(cuid())
+  listId    String
+  releaseId String
+  position  Int
+  note      String?
+
+  list    List    @relation(fields: [listId], references: [id], onDelete: Cascade)
+  release Release @relation(fields: [releaseId], references: [id])
+
+  @@unique([listId, releaseId])
+  @@index([listId, position])
+}
+
+// ---------------------------------------------------------------------------
+// Social graph & activity
+// ---------------------------------------------------------------------------
+
+model Follow {
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followingId])
+}
+
+model Activity {
+  id        String       @id @default(cuid())
+  userId    String
+  type      ActivityType
+  targetId  String
+  createdAt DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+enum ActivityType {
+  LOG
+  REVIEW
+  RATING
+  LIST_CREATE
+  LIST_ITEM_ADD
+  COMMENT
+  FOLLOW
+}

@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: soundlog-ingress
+  namespace: soundlog
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [app.soundlog.example]
+      secretName: soundlog-tls
+  rules:
+    - host: app.soundlog.example
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: soundlog-backend, port: { number: 80 } }
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: soundlog-web, port: { number: 80 } }

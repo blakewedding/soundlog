@@ -1,0 +1,26 @@
+# Local development overrides — loaded AUTOMATICALLY by `docker compose`.
+#
+# Why this exists: the base docker-compose.yml describes the full production
+# stack, where Varnish fronts the backend *container*. Locally the API is the
+# `pnpm dev` (tsx watch) server running on the host, so bringing up Varnish
+# should neither build the backend image nor wait on that service.
+#
+# This override makes `docker compose up -d varnish` work standalone:
+#   - swaps default.vcl for dev.vcl (backend -> host.docker.internal:4000)
+#   - clears depends_on so the backend image is never built
+#   - maps host.docker.internal to the host gateway (implicit on Docker Desktop,
+#     required on Linux — declaring it keeps the file portable)
+#
+# Production / full-stack boot bypasses this file explicitly:
+#   docker compose -f docker-compose.yml up -d
+services:
+  varnish:
+    # `!reset` is required here: a plain `depends_on: []` is MERGED with the base
+    # file rather than replacing it, so the backend dependency would survive and
+    # `up -d varnish` would still build the backend image.
+    depends_on: !reset []
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./infrastructure/varnish/dev.vcl:/etc/varnish/default.vcl:ro
+      - ./infrastructure/varnish/cache-policy.vcl:/etc/varnish/cache-policy.vcl:ro

@@ -1,0 +1,60 @@
+# Soundlog — local development stack
+# Postgres + Redis + Elasticsearch + Varnish in front of the API.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: soundlog
+      POSTGRES_PASSWORD: soundlog
+      POSTGRES_DB: soundlog
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soundlog"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    volumes: [esdata:/usr/share/elasticsearch/data]
+
+  backend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://soundlog:soundlog@postgres:5432/soundlog
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+    ports: ["4000:4000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      elasticsearch: { condition: service_started }
+
+  # Production / full-stack: fronts the backend CONTAINER. For local dev against
+  # `pnpm dev` on the host, docker-compose.override.yml swaps in dev.vcl and drops
+  # the backend dependency — see that file.
+  varnish:
+    image: varnish:7.5
+    ports: ["8080:80"]
+    volumes:
+      - ./infrastructure/varnish/default.vcl:/etc/varnish/default.vcl:ro
+      # Shared policy pulled in by `include` — must sit alongside the VCL.
+      - ./infrastructure/varnish/cache-policy.vcl:/etc/varnish/cache-policy.vcl:ro
+    depends_on: [backend]
+    command: ["-p", "default_ttl=60"]
+
+volumes:
+  pgdata:
+  esdata:

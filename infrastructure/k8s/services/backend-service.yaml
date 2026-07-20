@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: soundlog-backend
+  namespace: soundlog
+spec:
+  selector: { app: soundlog-backend }
+  ports:
+    - port: 80
+      targetPort: 4000

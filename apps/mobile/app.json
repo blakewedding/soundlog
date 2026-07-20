@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Soundlog",
+    "slug": "soundlog",
+    "scheme": "soundlog",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0a0a0c",
+    "plugins": ["expo-router"]
+  }
+}

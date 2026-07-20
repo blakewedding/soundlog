@@ -1,0 +1,19 @@
+{
+  "name": "soundlog",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "db:migrate": "pnpm --filter @soundlog/backend prisma migrate dev",
+    "db:studio": "pnpm --filter @soundlog/backend prisma studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  }
+}
