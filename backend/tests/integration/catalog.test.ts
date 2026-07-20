@@ -4,6 +4,7 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { es, RELEASE_INDEX, ARTIST_INDEX } from "../../src/config/elasticsearch.js";
+import { settleEnrichments } from "../../src/services/catalogService.js";
 
 // External metadata APIs are mocked; Postgres, Redis, and Elasticsearch are real.
 // Spotify has no credentials here, so this exercises the required no-Spotify path.
@@ -162,19 +163,30 @@ describe("GET /api/search — unified, ES-first with source fan-out", () => {
 });
 
 describe("GET /api/releases/:id — seed-on-first-access", () => {
-  it("seeds from MusicBrainz with CAA cover + Last.fm genres and persists + indexes it", async () => {
+  // Phase 5.7 changed this contract deliberately: the canonical MusicBrainz data
+  // is served as soon as it lands, and the slower stages (Cover Art Archive,
+  // Last.fm genres) complete behind the response so first access is never held
+  // hostage to a saturated throttle. Enrichment still happens — just not inline.
+  it("serves canonical data immediately and persists the release", async () => {
     const res = await request(app).get(`/api/releases/mb:${MBID}`);
     expect(res.status).toBe(200);
     const rel = res.body.release;
     expect(rel.title).toBe(TITLE);
     expect(rel.type).toBe("ALBUM");
     expect(rel.musicbrainzId).toBe(MBID);
-    expect(rel.coverUrl).toContain("caa.example"); // Cover Art Archive
-    expect(rel.genres).toEqual(expect.arrayContaining(["alternative", "electronic"])); // Last.fm
     expect(rel.similarArtists).toEqual(expect.arrayContaining(["Thom Yorke"]));
 
     const row = await prisma.release.findUnique({ where: { musicbrainzId: MBID } });
     expect(row).not.toBeNull();
+  });
+
+  it("completes CAA cover art + Last.fm genres asynchronously after the response", async () => {
+    await settleEnrichments();
+    const res = await request(app).get(`/api/releases/mb:${MBID}`);
+    expect(res.body.release.coverUrl).toContain("caa.example"); // Cover Art Archive
+    expect(res.body.release.genres).toEqual(
+      expect.arrayContaining(["alternative", "electronic"]) // Last.fm
+    );
   });
 
   it("is idempotent — a second access returns the same row, no duplicate", async () => {

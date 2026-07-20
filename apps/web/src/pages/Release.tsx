@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import type { FeedReview } from "@soundlog/shared";
 import { api, type ReviewDTO } from "../services/api";
+import { patchReleaseEverywhere } from "../lib/releaseCache";
 import { useAuth } from "../contexts/AuthContext";
 import { StarRating } from "../components/ui/StarRating";
 import { StarRatingInput } from "../components/ui/StarRatingInput";
@@ -33,6 +34,44 @@ export default function Release() {
     enabled: !!releaseId,
   });
 
+  const refreshRelease = () => queryClient.invalidateQueries({ queryKey: ["release", id, user?.id] });
+  const refreshReviews = () => queryClient.invalidateQueries({ queryKey: ["reviews", releaseId] });
+  // The diary shows my rating per entry, so a rating change must refresh it too.
+  const refreshDiary = () => queryClient.invalidateQueries({ queryKey: ["diary"] });
+
+  // Optimistic rating (Phase 5.7), same conventions as the 4.1 like button: the
+  // stars move the instant you click, every cached surface is patched together,
+  // the server value is reconciled on success, and a failure rolls back.
+  // NB: declared before the early returns below — hooks must not be conditional.
+  const ratingMutation = useMutation({
+    mutationFn: async (value: number | null) => {
+      if (!releaseId) return null;
+      if (value === null) {
+        await api.unrate(releaseId);
+        return null;
+      }
+      const res = await api.rate(releaseId, value);
+      return res.rating.value;
+    },
+    onMutate: (value) => {
+      if (!releaseId) return undefined;
+      const prev = { myRating: data?.release.myRating ?? null };
+      patchReleaseEverywhere(queryClient, releaseId, { myRating: value });
+      return prev;
+    },
+    onError: (_err, _value, prev) => {
+      if (prev && releaseId) patchReleaseEverywhere(queryClient, releaseId, prev); // roll back
+    },
+    onSuccess: (serverValue) => {
+      if (releaseId) patchReleaseEverywhere(queryClient, releaseId, { myRating: serverValue });
+    },
+    // The aggregate (avgRating/ratingCount) also moved — refetch to reconcile.
+    onSettled: () => {
+      refreshRelease();
+      refreshDiary();
+    },
+  });
+
   if (isLoading) return <ReleaseSkeleton />;
   if (isError || !data) {
     return (
@@ -49,21 +88,8 @@ export default function Release() {
   const year = release.releaseDate?.slice(0, 4);
   const largeCover = release.coverUrlLarge ?? release.coverUrl;
 
-  const refreshRelease = () => queryClient.invalidateQueries({ queryKey: ["release", id, user?.id] });
-  const refreshReviews = () => queryClient.invalidateQueries({ queryKey: ["reviews", releaseId] });
-  // The diary shows my rating per entry, so a rating change must refresh it too.
-  const refreshDiary = () => queryClient.invalidateQueries({ queryKey: ["diary"] });
-
-  async function rate(value: number) {
-    await api.rate(release.id, value);
-    refreshRelease();
-    refreshDiary();
-  }
-  async function unrate() {
-    await api.unrate(release.id);
-    refreshRelease();
-    refreshDiary();
-  }
+  const rate = (value: number) => ratingMutation.mutate(value);
+  const unrate = () => ratingMutation.mutate(null);
   async function logListen() {
     await api.logListen(release.id);
     setLogged(true);

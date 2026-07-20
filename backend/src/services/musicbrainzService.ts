@@ -28,13 +28,69 @@ function throttle(): Promise<void> {
   return run;
 }
 
-async function mbFetch<T>(path: string): Promise<T | null> {
-  await throttle();
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
-  });
-  if (!res.ok) return null;
-  return (await res.json()) as T;
+/**
+ * A transient upstream failure: the resource may well exist, we just couldn't
+ * reach it right now. Callers must NOT treat this as "not found" — surfacing it
+ * as a 404 is what made a saturated throttle look like a missing release.
+ */
+export class UpstreamUnavailableError extends Error {
+  constructor(
+    public readonly source: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "UpstreamUnavailableError";
+  }
+}
+
+// MusicBrainz answers 503 ("exceeding the allowable rate limit") when a burst
+// slips past the throttle — the signature failure when a search fan-out has just
+// drained the slots. These are all worth another attempt.
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 4;
+const backoffMs = (attempt: number) => Math.min(250 * 2 ** (attempt - 1), 2000);
+
+/**
+ * Fetch from MusicBrainz, distinguishing three outcomes:
+ *   - data            → the resource
+ *   - null            → the resource genuinely isn't there (404 / 4xx), safe to cache
+ *   - throws Upstream → we couldn't tell; retry-able, MUST NOT be cached
+ *
+ * Retries ride the same shared throttle, so backing off never breaks the 1 req/s
+ * contract with MusicBrainz.
+ */
+async function mbFetch<T>(path: string, maxAttempts = MAX_ATTEMPTS): Promise<T | null> {
+  let lastProblem = "unknown";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await throttle();
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
+      });
+    } catch (err) {
+      lastProblem = `network error: ${(err as Error).message}`;
+      if (attempt < maxAttempts) await sleep(backoffMs(attempt));
+      continue;
+    }
+
+    if (res.ok) return (await res.json()) as T;
+
+    // A definitive "no such resource" — cacheable, not worth retrying.
+    if (!RETRYABLE_STATUS.has(res.status)) return null;
+
+    lastProblem = `HTTP ${res.status}`;
+    console.warn(
+      `[mb] ${lastProblem} on ${path} (attempt ${attempt}/${maxAttempts}) — retrying`
+    );
+    if (attempt < maxAttempts) await sleep(backoffMs(attempt));
+  }
+
+  throw new UpstreamUnavailableError(
+    "musicbrainz",
+    `MusicBrainz unavailable after ${maxAttempts} attempts (${lastProblem}): ${path}`
+  );
 }
 
 // ---- Response shapes (only the fields we use) ----
@@ -85,14 +141,30 @@ function creditArtistId(rg: MBReleaseGroup): string | undefined {
   return rg["artist-credit"]?.[0]?.artist?.id;
 }
 
-/** Free-text release-group search. Cached 7d. */
+// Discovery calls (search, fuzzy matching) are best-effort and latency-sensitive:
+// a user waiting on search is better served by fewer results now than by perfect
+// results in six seconds. Retrying them would also burn the very throttle slots
+// whose exhaustion causes first-access failures, so they get a single attempt and
+// degrade to empty rather than propagating an upstream error.
+const DISCOVERY_ATTEMPTS = 1;
+
+/** Free-text release-group search. Best-effort; degrades to [] when MB is busy. Cached 7d. */
 export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup[]> {
   const key = `mb:rg:search:${query.toLowerCase()}`;
   return cached(key, WEEK, async () => {
-    const data = await mbFetch<ReleaseGroupSearchResponse>(
-      `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`
-    );
-    return data?.["release-groups"] ?? [];
+    try {
+      const data = await mbFetch<ReleaseGroupSearchResponse>(
+        `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
+        DISCOVERY_ATTEMPTS
+      );
+      return data?.["release-groups"] ?? [];
+    } catch (err) {
+      if (err instanceof UpstreamUnavailableError) {
+        console.warn(`[mb] search degraded (${err.message})`);
+        return [];
+      }
+      throw err;
+    }
   });
 }
 
@@ -118,12 +190,20 @@ export async function findReleaseGroupMbid(artist: string, title: string): Promi
   const key = `mb:rg:match:${artist}:${title}`.toLowerCase();
   return cached(key, WEEK, async () => {
     const query = `artist:"${artist}" AND releasegroup:"${title}"`;
-    const data = await mbFetch<ReleaseGroupSearchResponse>(
-      `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=1`
-    );
-    const top = data?.["release-groups"]?.[0];
-    // MB search scores are 0–100; require a strong match to avoid mis-dedupe.
-    return top && (top.score === undefined || top.score >= 90) ? top.id : null;
+    try {
+      const data = await mbFetch<ReleaseGroupSearchResponse>(
+        `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=1`,
+        DISCOVERY_ATTEMPTS
+      );
+      const top = data?.["release-groups"]?.[0];
+      // MB search scores are 0–100; require a strong match to avoid mis-dedupe.
+      return top && (top.score === undefined || top.score >= 90) ? top.id : null;
+    } catch (err) {
+      // Couldn't confirm a match right now — seed without the MBID rather than
+      // failing the whole request; enrichExisting attaches it on a later access.
+      if (err instanceof UpstreamUnavailableError) return null;
+      throw err;
+    }
   });
 }
 

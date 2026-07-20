@@ -5,6 +5,12 @@ interface Props {
   onChange: (value: number) => void;
   onClear?: () => void;
   disabled?: boolean;
+  /**
+   * Accessible name. A release page can show two of these at once (the release
+   * rating and the rating attached to a review), and two controls sharing one
+   * accessible name is ambiguous for screen readers — so callers distinguish them.
+   */
+  label?: string;
 }
 
 const STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) / 2); // 0.5 … 5.0
@@ -15,7 +21,7 @@ const STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) / 2); // 0.5 … 5.0
  * arrows adjust by half a star, Delete clears. Gold mono glyphs per the
  * design system.
  */
-export function StarRatingInput({ value, onChange, onClear, disabled }: Props) {
+export function StarRatingInput({ value, onChange, onClear, disabled, label = "Your rating" }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover ?? value ?? 0;
 
@@ -44,7 +50,7 @@ export function StarRatingInput({ value, onChange, onClear, disabled }: Props) {
   return (
     <div
       role="slider"
-      aria-label="Your rating"
+      aria-label={label}
       aria-valuemin={0.5}
       aria-valuemax={5}
       aria-valuenow={value ?? undefined}

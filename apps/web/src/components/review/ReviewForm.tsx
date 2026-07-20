@@ -60,7 +60,12 @@ export function ReviewForm({ releaseId, existing, onSaved, onCancel }: Props) {
     <form onSubmit={submit} className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <strong>{existing ? "Edit your review" : "Write a review"}</strong>
-        <StarRatingInput value={rating} onChange={setRating} onClear={() => setRating(null)} />
+        <StarRatingInput
+          value={rating}
+          onChange={setRating}
+          onClear={() => setRating(null)}
+          label="Rating for your review"
+        />
       </div>
       <textarea
         value={content}

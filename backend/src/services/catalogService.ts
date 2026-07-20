@@ -212,61 +212,81 @@ async function seedFromSource(name: SourceName, id: string): Promise<Release | n
  * create the row, and index it. Returns an existing row (enriched) when the
  * release is already in the catalog.
  */
+// How long a first-access request will wait for the slow enrichment stages
+// before answering with the canonical skeleton and finishing in the background.
+// Sized so a warm/uncontended seed returns complete, while a seed queued behind
+// a saturated MusicBrainz throttle still answers promptly instead of hanging.
+const ENRICH_BUDGET_MS = 1_500;
+
+// In-flight background enrichments, so tests (and shutdown) can await them
+// rather than racing a detached promise.
+const pendingEnrichments = new Set<Promise<unknown>>();
+
+/** Await every background enrichment currently in flight. Used by tests. */
+export async function settleEnrichments(): Promise<void> {
+  while (pendingEnrichments.size > 0) {
+    await Promise.allSettled([...pendingEnrichments]);
+  }
+}
+
+function track<T>(p: Promise<T>): Promise<T> {
+  pendingEnrichments.add(p);
+  void p.finally(() => pendingEnrichments.delete(p));
+  return p;
+}
+
+/** Resolve to the promise's value, or to `null` if it outruns the budget. */
+function withBudget<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    p.catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms).unref?.()),
+  ]);
+}
+
 export async function persistRelease(detail: ReleaseDetail): Promise<Release> {
+  const startedAt = Date.now();
+  const stages: Record<string, number> = {};
+  const timed = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const s = Date.now();
+    try {
+      return await fn();
+    } finally {
+      stages[name] = Date.now() - s;
+    }
+  };
+
   let mbid = detail.musicbrainzId ?? null;
-  if (!mbid) mbid = await findReleaseGroupMbid(detail.artistName, detail.title);
+  if (!mbid) {
+    mbid = await timed("mb.match", () => findReleaseGroupMbid(detail.artistName, detail.title));
+  }
 
   const existing = await findExistingRelease({ ...detail, musicbrainzId: mbid ?? undefined });
   if (existing) return enrichExisting(existing, detail, mbid);
 
-  const covers = await resolveCovers(detail, mbid);
-  let spotifyId = detail.spotifyId ?? null;
-
-  // Spotify is supplemental — only when configured, and only to enrich.
-  if (spotifyConfigured()) {
-    const match = await findSpotifyMatch(detail.artistName, detail.title);
-    if (match) {
-      spotifyId ??= match.spotifyId;
-      if (match.coverUrl && preferSpotifyCover(covers.thumb, match.coverWidth)) {
-        covers.thumb = match.coverUrl;
-        covers.large ??= match.coverUrl;
-      }
-    }
-  }
-
-  const artistId = await resolveArtistId(detail, mbid);
-  const labelId = await resolveLabelId(detail, mbid);
-
-  let genres = detail.genres ?? [];
-  if (!genres.length) genres = await getGenresWithFallback(detail.artistName, detail.title);
-
-  // Original release date from the group/master level. Spotify's date (a
-  // pressing) is only a last resort when nothing canonical exists.
-  const releaseDate =
-    (await groupLevelReleaseDate(mbid, detail.discogsId)) ??
-    (detail.source === "spotify" ? parseReleaseDate(detail.releaseDate) : null);
-
+  // ---- Stage 1: the skeleton -----------------------------------------------
+  // Everything canonical we already hold, written immediately so the release is
+  // real (and resumable) the moment MusicBrainz answers. A MusicBrainz
+  // first-release-date IS the group-level date, so it's canonical here; a
+  // Discogs date may be a pressing, so that waits for enrichment.
+  let release: Release;
   try {
-    const release = await prisma.release.create({
-      data: {
-        musicbrainzId: mbid,
-        discogsId: detail.discogsId ?? null,
-        spotifyId,
-        title: detail.title,
-        artistName: detail.artistName,
-        artistId,
-        labelId,
-        releaseDate,
-        genres,
-        coverUrl: covers.thumb,
-        coverUrlLarge: covers.large,
-        type: detail.type,
-        trackCount: detail.trackCount ?? null,
-        lastfmUrl: detail.lastfmUrl ?? null,
-      },
-    });
-    await indexRelease(release);
-    return release;
+    release = await timed("persist.skeleton", () =>
+      prisma.release.create({
+        data: {
+          musicbrainzId: mbid,
+          discogsId: detail.discogsId ?? null,
+          spotifyId: detail.spotifyId ?? null,
+          title: detail.title,
+          artistName: detail.artistName,
+          releaseDate:
+            detail.source === "musicbrainz" ? parseReleaseDate(detail.releaseDate) : null,
+          genres: detail.genres ?? [],
+          type: detail.type,
+          trackCount: detail.trackCount ?? null,
+          lastfmUrl: detail.lastfmUrl ?? null,
+        },
+      })
+    );
   } catch (err) {
     // Concurrent seed hit a unique constraint — return the winner.
     if ((err as { code?: string }).code === "P2002") {
@@ -275,6 +295,117 @@ export async function persistRelease(detail: ReleaseDetail): Promise<Release> {
     }
     throw err;
   }
+  await indexRelease(release);
+
+  // ---- Stage 2: enrichment --------------------------------------------------
+  // Slow, best-effort, and individually fault-isolated. Runs in the background;
+  // the request waits only up to ENRICH_BUDGET_MS for it. Anything still missing
+  // is healed on the next access by enrichExisting, so this is resumable.
+  const enrichment = track(
+    enrichNewRelease(release, detail, mbid, timed).catch((err) => {
+      console.warn(`[seed] enrichment failed for ${release.id}:`, (err as Error).message);
+      return null;
+    })
+  );
+
+  const enriched = await withBudget(enrichment, ENRICH_BUDGET_MS);
+  logSeedTimings(release, mbid, stages, startedAt, enriched !== null);
+  return enriched ?? release;
+}
+
+/**
+ * The slow half of seeding: cover art, Spotify supplement, artist, label,
+ * genres, and the refined original release date. Each stage is fault-isolated —
+ * one upstream having a bad day must not discard the others' results.
+ */
+async function enrichNewRelease(
+  release: Release,
+  detail: ReleaseDetail,
+  mbid: string | null,
+  timed: <T>(name: string, fn: () => Promise<T>) => Promise<T>
+): Promise<Release> {
+  const data: Record<string, unknown> = {};
+  const attempt = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await timed(name, fn);
+    } catch (err) {
+      console.warn(`[seed] stage ${name} failed for ${release.id}:`, (err as Error).message);
+    }
+  };
+
+  await attempt("covers", async () => {
+    const covers = await resolveCovers(detail, mbid);
+    // Spotify is supplemental — only when configured, and only to enrich.
+    if (spotifyConfigured()) {
+      const match = await findSpotifyMatch(detail.artistName, detail.title);
+      if (match) {
+        if (!release.spotifyId && match.spotifyId) data.spotifyId = match.spotifyId;
+        if (match.coverUrl && preferSpotifyCover(covers.thumb, match.coverWidth)) {
+          covers.thumb = match.coverUrl;
+          covers.large ??= match.coverUrl;
+        }
+      }
+    }
+    if (covers.thumb) data.coverUrl = covers.thumb;
+    if (covers.large) data.coverUrlLarge = covers.large;
+  });
+
+  await attempt("artist", async () => {
+    const artistId = await resolveArtistId(detail, mbid);
+    if (artistId) data.artistId = artistId;
+  });
+
+  await attempt("label", async () => {
+    const labelId = await resolveLabelId(detail, mbid);
+    if (labelId) data.labelId = labelId;
+  });
+
+  await attempt("genres", async () => {
+    if (release.genres.length) return;
+    const genres = await getGenresWithFallback(detail.artistName, detail.title);
+    if (genres.length) data.genres = genres;
+  });
+
+  await attempt("releaseDate", async () => {
+    const original = await groupLevelReleaseDate(mbid, detail.discogsId);
+    const fallback = detail.source === "spotify" ? parseReleaseDate(detail.releaseDate) : null;
+    const best = original ?? fallback;
+    // Only ever move the date EARLIER — never overwrite an original with a reissue.
+    if (best && (!release.releaseDate || best.getTime() < release.releaseDate.getTime())) {
+      data.releaseDate = best;
+    }
+  });
+
+  if (Object.keys(data).length === 0) return release;
+  const updated = await prisma.release.update({ where: { id: release.id }, data });
+  await indexRelease(updated);
+  return updated;
+}
+
+/**
+ * One structured line per seed, so first-access latency is diagnosable from logs
+ * without a profiler: which stage burned the time, and whether the response went
+ * out complete or as a skeleton with enrichment still running.
+ */
+function logSeedTimings(
+  release: Release,
+  mbid: string | null,
+  stages: Record<string, number>,
+  startedAt: number,
+  completeWithinBudget: boolean
+): void {
+  console.info(
+    JSON.stringify({
+      evt: "seed.timing",
+      releaseId: release.id,
+      mbid,
+      title: release.title,
+      totalMs: Date.now() - startedAt,
+      servedAs: completeWithinBudget ? "enriched" : "skeleton",
+      budgetMs: ENRICH_BUDGET_MS,
+      stages,
+    })
+  );
 }
 
 // ---------------------------------------------------------------------------
