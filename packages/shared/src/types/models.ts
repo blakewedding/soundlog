@@ -110,6 +110,8 @@ export interface Release {
   similarArtists?: string[];
   myRating?: number; // present only for authenticated requests
   myReviewId?: string;
+  /** How many times the viewer has logged this release (0 when anonymous). */
+  myLogCount?: number;
 }
 
 // Compact release shape used by list endpoints (recent releases, artist pages).

@@ -19,7 +19,8 @@ export default function Release() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [logged, setLogged] = useState(false);
+  // Transient "Logged ✓" confirmation; the durable signal is myLogCount.
+  const [justLogged, setJustLogged] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["release", id, user?.id],
@@ -73,17 +74,33 @@ export default function Release() {
     },
   });
 
-  // Logging a listen used to be a bare `await` with no error handling: when the
-  // access token had aged out, the request 401'd, the rejection went unhandled,
-  // and the click appeared to do nothing at all. Now it's a mutation — pending
-  // and failed states are both visible, and a failure offers a retry.
+  // Logging a listen has three visible outcomes and they must be distinguishable:
+  // pending, succeeded, failed. Previously a success flashed a confirmation and
+  // then settled back to the SAME label as never-logged, so success and failure
+  // looked identical — which read as data loss even though the log persisted.
+  // Now the count is the durable signal and the label settles to "Log again"
+  // (relistens are valid, so the button must stay usable).
   const logMutation = useMutation({
     mutationFn: () => api.logListen(releaseId!),
+    onMutate: () => {
+      if (!releaseId) return undefined;
+      const prev = { myLogCount: data?.release.myLogCount ?? 0 };
+      patchReleaseEverywhere(queryClient, releaseId, (r) => ({
+        myLogCount: (r.myLogCount ?? 0) + 1,
+      }));
+      return prev;
+    },
+    onError: (_err, _vars, prev) => {
+      // Roll the optimistic count back so a failure never looks like a success.
+      if (prev && releaseId) patchReleaseEverywhere(queryClient, releaseId, prev);
+    },
     onSuccess: () => {
-      setLogged(true);
-      setTimeout(() => setLogged(false), 2500);
-      refreshDiary(); // make the new entry appear in the diary immediately
-      refreshRelease();
+      setJustLogged(true);
+      setTimeout(() => setJustLogged(false), 2500);
+    },
+    onSettled: () => {
+      refreshDiary(); // the diary renders the same Log rows
+      refreshRelease(); // reconcile myLogCount with the server
     },
   });
 
@@ -100,6 +117,7 @@ export default function Release() {
   const release = data.release;
   const reviews = reviewsData?.reviews ?? [];
   const myReview = user ? reviews.find((r) => r.user.id === user.id) ?? null : null;
+  const logCount = release.myLogCount ?? 0;
   const year = release.releaseDate?.slice(0, 4);
   const largeCover = release.coverUrlLarge ?? release.coverUrl;
 
@@ -123,8 +141,19 @@ export default function Release() {
                 onClick={() => logMutation.mutate()}
                 disabled={logMutation.isPending}
               >
-                {logMutation.isPending ? "Logging…" : logged ? "Logged ✓" : "Log listen"}
+                {logMutation.isPending
+                  ? "Logging…"
+                  : justLogged
+                    ? "Logged ✓"
+                    : logCount > 0
+                      ? "Log again"
+                      : "Log listen"}
               </button>
+              {logCount > 0 && (
+                <Link to="/diary" className="meta" style={{ textAlign: "center" }}>
+                  In your diary {logCount > 1 ? `×${logCount}` : ""}
+                </Link>
+              )}
               {logMutation.isError && (
                 <div role="alert" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   <span className="meta" style={{ color: "var(--danger)" }}>

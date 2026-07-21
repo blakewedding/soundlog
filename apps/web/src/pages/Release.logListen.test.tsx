@@ -1,14 +1,16 @@
-// Phase 5.6.1 regression — "Log listen" showed success then the log didn't stick.
+// Phase 5.6.1b — log-listen FEEDBACK states.
 //
-// Two defects compounded:
-//   1. logListen was a bare `await` with no error handling, so a failed request
-//      became an unhandled rejection and the click looked like it did nothing.
-//   2. request() had no 401 -> refresh -> retry, so once the 15-minute access
-//      token aged out EVERY write silently failed.
+// The logs were persisting all along; the bug was that you couldn't tell. After
+// a success the button flashed a confirmation and then settled back to the same
+// "Log listen" label as never-having-logged — visually identical to a failure,
+// which is why it read as data loss.
 //
-// Contract now: successes are durable (and survive a stale access token),
-// failures are visible with a retry affordance.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+// Contract now, three distinguishable outcomes:
+//   pending   → "Logging…"
+//   succeeded → transient "Logged ✓", then settles to "Log again" (relistens are
+//               valid, so the button stays usable) + a durable "In your diary" count
+//   failed    → an alert with a retry, NO confirmation, and the count rolled back
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -50,9 +52,13 @@ const RELEASE = {
   avgRating: undefined,
   ratingCount: 0,
   similarArtists: [],
+  myLogCount: 0,
 };
 
-/** Observes the diary query so we can prove a logged listen actually lands. */
+/** Server-side log count, so the refetch in onSettled reconciles against real state. */
+let serverLogCount = 0;
+
+/** Observes the diary query — proves a logged listen reaches the same data. */
 function DiaryProbe() {
   const { data } = useQuery({ queryKey: ["diary"], queryFn: () => api.myDiary() });
   return <div data-testid="diary-count">{data?.logs.length ?? 0}</div>;
@@ -79,70 +85,136 @@ function renderRelease() {
   );
 }
 
+const logButton = () => screen.getByRole("button", { name: /^(log listen|log again|logged|logging)/i });
+
 beforeEach(() => {
-  // Call history is zeroed globally by `clearMocks` in vite.config.ts.
-  vi.mocked(api.getRelease).mockResolvedValue({ release: { ...RELEASE } as never });
+  vi.useFakeTimers({ shouldAdvanceTime: true }); // the confirmation is time-boxed
+  serverLogCount = 0;
+  vi.mocked(api.getRelease).mockImplementation(async () => ({
+    release: { ...RELEASE, myLogCount: serverLogCount } as never,
+  }));
   vi.mocked(api.reviewsFor).mockResolvedValue({ reviews: [] });
   vi.mocked(api.lists).mockResolvedValue({ lists: [] });
   vi.mocked(api.myDiary).mockResolvedValue({ logs: [], nextCursor: null });
 });
 
-describe("Release — log listen", () => {
-  it("persists the listen and refreshes the diary", async () => {
-    vi.mocked(api.logListen).mockResolvedValue({ log: {} });
-    // Empty diary first, then one entry once the listen lands.
-    vi.mocked(api.myDiary)
-      .mockResolvedValueOnce({ logs: [], nextCursor: null })
-      .mockResolvedValue({ logs: [{ id: "l1" } as never], nextCursor: null });
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("log listen — success feedback", () => {
+  it("confirms with 'Logged ✓', then settles to a still-usable 'Log again'", async () => {
+    vi.mocked(api.logListen).mockImplementation(async () => {
+      serverLogCount += 1;
+      return { log: {} };
+    });
 
     renderRelease();
-    const btn = await screen.findByRole("button", { name: /log listen/i });
-    await waitFor(() => expect(screen.getByTestId("diary-count")).toHaveTextContent("0"));
+    expect(await screen.findByRole("button", { name: /log listen/i })).toBeInTheDocument();
 
-    await userEvent.click(btn);
+    await userEvent.click(logButton());
 
-    await waitFor(() => expect(api.logListen).toHaveBeenCalledWith("r1"));
-    // Success is shown...
-    expect(await screen.findByRole("button", { name: /logged/i })).toBeInTheDocument();
-    // ...and the log actually stuck.
-    await waitFor(() => expect(screen.getByTestId("diary-count")).toHaveTextContent("1"));
+    // 1. Success is explicitly confirmed — not silent.
+    expect(await screen.findByRole("button", { name: /logged ✓/i })).toBeInTheDocument();
+
+    // 2. After the confirmation elapses it must NOT revert to the never-logged
+    //    label; it settles into a loggable "Log again" (relistens are valid).
+    await vi.advanceTimersByTimeAsync(2600);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /log again/i })).toBeInTheDocument()
+    );
+    expect(screen.queryByRole("button", { name: /^log listen$/i })).not.toBeInTheDocument();
+    // And it stays clickable.
+    expect(screen.getByRole("button", { name: /log again/i })).toBeEnabled();
   });
 
-  it("surfaces a failure with a retry affordance instead of failing silently", async () => {
+  it("shows the listen count at a glance, and increments it on a relisten", async () => {
+    vi.mocked(api.logListen).mockImplementation(async () => {
+      serverLogCount += 1;
+      return { log: {} };
+    });
+
+    renderRelease();
+    await screen.findByRole("button", { name: /log listen/i });
+    // Nothing logged yet → no count shown.
+    expect(screen.queryByText(/in your diary/i)).not.toBeInTheDocument();
+
+    await userEvent.click(logButton());
+    // First log: present, but no "×1" noise.
+    const badge = await screen.findByText(/in your diary/i);
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).not.toMatch(/×/);
+
+    await vi.advanceTimersByTimeAsync(2600);
+    await userEvent.click(screen.getByRole("button", { name: /log again/i }));
+
+    // Second log (a relisten) → ×2.
+    await waitFor(() => expect(screen.getByText(/in your diary ×2/i)).toBeInTheDocument());
+  });
+
+  it("updates the count optimistically, before the server responds", async () => {
+    let release!: () => void;
+    vi.mocked(api.logListen).mockImplementation(
+      () => new Promise((res) => { release = () => res({ log: {} } as never); })
+    );
+
+    renderRelease();
+    await screen.findByRole("button", { name: /log listen/i });
+    await userEvent.click(logButton());
+
+    // Still in flight, yet the count already reads.
+    expect(await screen.findByText(/in your diary/i)).toBeInTheDocument();
+    serverLogCount = 1;
+    release();
+  });
+});
+
+describe("log listen — failure feedback is visually distinct", () => {
+  it("shows an alert with retry, no confirmation, and rolls the count back", async () => {
     vi.mocked(api.logListen).mockRejectedValue(new Error("network down"));
 
     renderRelease();
-    await userEvent.click(await screen.findByRole("button", { name: /log listen/i }));
+    await screen.findByRole("button", { name: /log listen/i });
+    await userEvent.click(logButton());
 
-    // The old behaviour was an unhandled rejection and NO visible change.
+    // The failure is stated...
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/couldn't log that listen/i);
     expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
-    // It must not claim success.
+
+    // ...and is unmistakably NOT a success: no confirmation, no count, and the
+    // button is still the never-logged label.
     expect(screen.queryByRole("button", { name: /logged ✓/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/in your diary/i)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /^log listen$/i })).toBeInTheDocument();
   });
 
-  it("explains an expired session rather than a generic error", async () => {
+  it("distinguishes an expired session from a generic failure", async () => {
     vi.mocked(api.logListen).mockRejectedValue(new ApiError(401, "Invalid or expired access token"));
 
     renderRelease();
-    await userEvent.click(await screen.findByRole("button", { name: /log listen/i }));
+    await screen.findByRole("button", { name: /log listen/i });
+    await userEvent.click(logButton());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/session expired/i);
   });
 
-  it("retry succeeds after a transient failure", async () => {
+  it("recovers to the success story when a retry succeeds", async () => {
     vi.mocked(api.logListen)
       .mockRejectedValueOnce(new Error("blip"))
-      .mockResolvedValue({ log: {} });
+      .mockImplementation(async () => {
+        serverLogCount += 1;
+        return { log: {} };
+      });
 
     renderRelease();
-    await userEvent.click(await screen.findByRole("button", { name: /log listen/i }));
+    await screen.findByRole("button", { name: /log listen/i });
+    await userEvent.click(logButton());
     await screen.findByRole("alert");
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
 
-    await waitFor(() => expect(api.logListen).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole("button", { name: /logged/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /logged ✓/i })).toBeInTheDocument();
+    expect(await screen.findByText(/in your diary/i)).toBeInTheDocument();
   });
 });

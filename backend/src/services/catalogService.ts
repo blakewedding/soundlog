@@ -996,7 +996,7 @@ export async function getRecentReleases(limit = 12) {
  * artists — plus the caller's own rating/review ids when a userId is present.
  */
 export async function toReleaseDTO(release: Release, userId?: string) {
-  const [agg, artist, label, similarArtists, myRating, myReview] = await Promise.all([
+  const [agg, artist, label, similarArtists, myRating, myReview, myLogCount] = await Promise.all([
     prisma.rating.aggregate({
       where: { releaseId: release.id },
       _avg: { value: true },
@@ -1027,6 +1027,11 @@ export async function toReleaseDTO(release: Release, userId?: string) {
           select: { id: true },
         })
       : Promise.resolve(null),
+    // How many times the viewer has logged this release. Read from Log — the
+    // exact table the diary renders — so the two can never disagree.
+    userId
+      ? prisma.log.count({ where: { userId, releaseId: release.id } })
+      : Promise.resolve(0),
   ]);
   return {
     id: release.id,
@@ -1048,5 +1053,6 @@ export async function toReleaseDTO(release: Release, userId?: string) {
     similarArtists,
     myRating: myRating?.value,
     myReviewId: myReview?.id,
+    myLogCount,
   };
 }

@@ -47,6 +47,31 @@ afterAll(async () => {
 });
 
 // ---------------------------------------------------------------------------
+describe("myLogCount on the release DTO (5.6.1b)", () => {
+  // The release page shows "In your diary ×N" from this. It must read the same
+  // Log rows the diary renders, and count relistens. Uses its own user so it
+  // can't perturb log counts other cases in this file depend on.
+  it("counts the viewer's logs, increments on relisten, and is 0 anonymously", async () => {
+    const logger = await makeUser("logcount");
+
+    const before = await request(app).get(`/api/releases/${releaseId}`).set(auth(logger));
+    expect(before.body.release.myLogCount).toBe(0);
+
+    await request(app).post("/api/logs").set(auth(logger)).send({ releaseId });
+    const after1 = await request(app).get(`/api/releases/${releaseId}`).set(auth(logger));
+    expect(after1.body.release.myLogCount).toBe(1);
+
+    // A relisten increments rather than replacing.
+    await request(app).post("/api/logs").set(auth(logger)).send({ releaseId });
+    const after2 = await request(app).get(`/api/releases/${releaseId}`).set(auth(logger));
+    expect(after2.body.release.myLogCount).toBe(2);
+
+    // Anonymous viewers have no personal count.
+    const anon = await request(app).get(`/api/releases/${releaseId}`);
+    expect(anon.body.release.myLogCount ?? 0).toBe(0);
+  });
+});
+
 describe("ratings", () => {
   it("upserts my rating and reflects it in the release DTO", async () => {
     const put = await request(app).put(`/api/ratings/${releaseId}`).set(auth(user1)).send({ value: 3.5 });

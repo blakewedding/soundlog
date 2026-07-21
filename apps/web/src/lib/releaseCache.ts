@@ -11,6 +11,7 @@ interface ReleaseLike {
   myRating?: number | null;
   avgRating?: number;
   ratingCount?: number;
+  myLogCount?: number;
 }
 
 type ReleasePatch = Partial<ReleaseLike> | ((r: ReleaseLike) => Partial<ReleaseLike>);
