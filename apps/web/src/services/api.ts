@@ -3,6 +3,7 @@ import type {
   Artist,
   Label,
   ChartEntry,
+  DiscographyResponse,
   GenreCount,
   Release,
   ReleaseListItem,
@@ -141,6 +142,13 @@ export const api = {
   getArtist: (id: string) =>
     request<{ artist: Artist; releases: ReleaseListItem[] }>(
       `${API_ROUTES.artists}/${encodeURIComponent(id)}`
+    ),
+  artistDiscography: (id: string) =>
+    request<DiscographyResponse>(`${API_ROUTES.artists}/${encodeURIComponent(id)}/discography`),
+  refreshDiscography: (id: string) =>
+    request<{ status: string }>(
+      `${API_ROUTES.artists}/${encodeURIComponent(id)}/discography/refresh`,
+      { method: "POST" }
     ),
   getLabel: (id: string) =>
     request<{ label: Label; releases: ReleaseListItem[] }>(

@@ -191,6 +191,43 @@ export interface SimilarListener {
   isFollowing: boolean;
 }
 
+// ---- Artist discographies (Phase 5.6) ----
+
+/** One release-group in an artist's discography, merged with local catalog data. */
+export interface DiscographyEntry {
+  mbid: string;
+  title: string;
+  year?: string | null;
+  type: ReleaseType;
+  disambiguation?: string;
+  /** Set once the release exists locally; null while un-seeded. */
+  releaseId?: string | null;
+  seeded: boolean;
+  coverUrl?: string | null;
+  avgRating?: number | null;
+  ratingCount: number;
+  myRating?: number | null;
+}
+
+export interface DiscographyGroup {
+  key: string;
+  label: string;
+  entries: DiscographyEntry[];
+}
+
+/**
+ * A prolific artist's first-ever fetch takes several throttled MusicBrainz
+ * calls, so the endpoint reports assembly progress instead of blocking.
+ */
+export type DiscographyResponse =
+  | {
+      status: "complete";
+      groups: DiscographyGroup[];
+      counts: { total: number; seeded: number };
+      unavailable?: string;
+    }
+  | { status: "assembling"; progress: { fetched: number; total: number | null } };
+
 // A genre with how many releases carry it — the active-genres rail.
 export interface GenreCount {
   tag: string;

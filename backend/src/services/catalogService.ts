@@ -568,16 +568,25 @@ async function enrichExisting(
     if (labelId) data.labelId = labelId;
   }
   // Self-heal missing artwork on access, through the full fallback chain.
-  if (!existing.coverUrl) {
-    const covers = await resolveCovers(detail, mbid ?? existing.musicbrainzId);
-    if (covers.thumb) data.coverUrl = covers.thumb;
-    if (!existing.coverUrlLarge && covers.large) data.coverUrlLarge = covers.large;
-  } else if (!existing.coverUrlLarge) {
-    const effectiveMbid = mbid ?? existing.musicbrainzId;
-    const caa = effectiveMbid ? await getCoverArtUrls(effectiveMbid) : null;
-    const large = caa?.large ?? detail.coverUrl ?? existing.coverUrl;
-    if (large) data.coverUrlLarge = large;
+  // Artwork is supplemental: a Cover Art Archive blip must never fail the
+  // request for a release we already hold (it used to surface as a 500 and the
+  // page read "We couldn't load that release"). Fault-isolated like the
+  // enrichment stages in enrichNewRelease.
+  try {
+    if (!existing.coverUrl) {
+      const covers = await resolveCovers(detail, mbid ?? existing.musicbrainzId);
+      if (covers.thumb) data.coverUrl = covers.thumb;
+      if (!existing.coverUrlLarge && covers.large) data.coverUrlLarge = covers.large;
+    } else if (!existing.coverUrlLarge) {
+      const effectiveMbid = mbid ?? existing.musicbrainzId;
+      const caa = effectiveMbid ? await getCoverArtUrls(effectiveMbid) : null;
+      const large = caa?.large ?? detail.coverUrl ?? existing.coverUrl;
+      if (large) data.coverUrlLarge = large;
+    }
+  } catch (err) {
+    console.warn(`[catalog] cover-art heal skipped for ${existing.id}:`, (err as Error).message);
   }
+
   if (Object.keys(data).length === 0) return existing;
 
   const updated = await prisma.release.update({ where: { id: existing.id }, data });

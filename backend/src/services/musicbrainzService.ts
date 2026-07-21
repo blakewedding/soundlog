@@ -6,7 +6,7 @@
 // Cover art comes from the Cover Art Archive (coverartarchive.org), a separate
 // host keyed by MBID with no auth and no MB rate limit.
 import { env } from "../config/env.js";
-import { cached } from "./cache.js";
+import { cached, invalidateCached } from "./cache.js";
 
 const BASE = "https://musicbrainz.org/ws/2";
 const CAA_BASE = "https://coverartarchive.org";
@@ -216,9 +216,20 @@ export async function findReleaseGroupMbid(artist: string, title: string): Promi
 export async function getCoverArtUrls(releaseGroupMbid: string): Promise<CoverArtUrls | null> {
   const key = `caa:rg:urls:${releaseGroupMbid}`;
   return cached(key, WEEK, async () => {
-    const res = await fetch(`${CAA_BASE}/release-group/${releaseGroupMbid}`, {
-      headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${CAA_BASE}/release-group/${releaseGroupMbid}`, {
+        headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
+      });
+    } catch (err) {
+      // A dropped connection tells us NOTHING about whether art exists, so it
+      // must not be cached as "no art" for a week. Raise it as retry-able and
+      // let the caller decide (cover art is supplemental — callers swallow it).
+      throw new UpstreamUnavailableError(
+        "coverartarchive",
+        `Cover Art Archive unreachable for ${releaseGroupMbid}: ${(err as Error).message}`
+      );
+    }
     if (!res.ok) return null; // 404 = no art on file
     const data = (await res.json()) as CoverArtResponse;
     const front = data.images?.find((i) => i.front) ?? data.images?.[0];
@@ -271,4 +282,130 @@ export async function lookupLabel(mbid: string): Promise<MBLabel | null> {
 
 export function creditsOf(rg: MBReleaseGroup) {
   return { artistName: creditName(rg), artistId: creditArtistId(rg) };
+}
+
+// ---------------------------------------------------------------------------
+// Discographies — browse every release-group credited to an artist (Phase 5.6).
+// ---------------------------------------------------------------------------
+
+/** One release-group in an artist's discography, as MusicBrainz describes it. */
+export interface MBDiscographyEntry {
+  mbid: string;
+  title: string;
+  /** Release-group first-release-date — the ORIGINAL date, never a pressing. */
+  firstReleaseDate?: string;
+  primaryType?: string | null;
+  secondaryTypes: string[];
+  disambiguation?: string;
+}
+
+interface BrowseReleaseGroupsResponse {
+  "release-group-count"?: number;
+  "release-groups"?: Array<{
+    id: string;
+    title: string;
+    "first-release-date"?: string;
+    "primary-type"?: string | null;
+    "secondary-types"?: string[];
+    disambiguation?: string;
+  }>;
+}
+
+// MusicBrainz caps browse results at 100 per request; a prolific artist
+// therefore costs several sequential calls through the 1 req/s throttle.
+const BROWSE_PAGE_SIZE = 100;
+// Safety valve so a pathological artist can't loop forever (100 * 40 = 4000).
+const MAX_BROWSE_PAGES = 40;
+
+export interface DiscographyProgress {
+  fetched: number;
+  /** Total release-groups MusicBrainz reports, once the first page tells us. */
+  total: number | null;
+}
+
+function toDiscographyEntry(
+  rg: NonNullable<BrowseReleaseGroupsResponse["release-groups"]>[number]
+): MBDiscographyEntry {
+  return {
+    mbid: rg.id,
+    title: rg.title,
+    firstReleaseDate: rg["first-release-date"] || undefined,
+    primaryType: rg["primary-type"] ?? null,
+    secondaryTypes: rg["secondary-types"] ?? [],
+    disambiguation: rg.disambiguation || undefined,
+  };
+}
+
+/**
+ * Walk every page of an artist's release-groups and return the COMPLETE list.
+ *
+ * Completeness is the whole contract here, because the result gets cached for a
+ * week: a half-assembled discography must never be mistaken for the real thing.
+ * So this either returns everything or throws:
+ *   - a retry-able upstream failure propagates from mbFetch (never cached)
+ *   - a definitive miss on the FIRST page means the artist genuinely has no
+ *     release-groups → empty list, which IS a legitimate cacheable answer
+ *   - a definitive miss on a LATER page, or a short read against the count
+ *     MusicBrainz gave us, is a partial assembly → throw
+ */
+async function assembleDiscography(
+  artistMbid: string,
+  onProgress?: (p: DiscographyProgress) => void
+): Promise<MBDiscographyEntry[]> {
+  const entries: MBDiscographyEntry[] = [];
+  let total: number | null = null;
+  let offset = 0;
+
+  for (let page = 0; page < MAX_BROWSE_PAGES; page++) {
+    // Throws UpstreamUnavailableError on a transient failure — deliberately
+    // uncaught so `cached` never stores an incomplete discography.
+    const data = await mbFetch<BrowseReleaseGroupsResponse>(
+      `/release-group?artist=${artistMbid}&limit=${BROWSE_PAGE_SIZE}&offset=${offset}&fmt=json`
+    );
+
+    if (!data) {
+      if (offset === 0) return []; // genuinely nothing to list — cacheable
+      throw new UpstreamUnavailableError(
+        "musicbrainz",
+        `discography assembly incomplete for ${artistMbid} (definitive miss at offset ${offset})`
+      );
+    }
+
+    const groups = data["release-groups"] ?? [];
+    if (typeof data["release-group-count"] === "number") total = data["release-group-count"];
+    entries.push(...groups.map(toDiscographyEntry));
+    onProgress?.({ fetched: entries.length, total });
+
+    offset += groups.length;
+    if (groups.length === 0) break; // ran off the end
+    if (total !== null && entries.length >= total) break; // got them all
+  }
+
+  if (total !== null && entries.length < total) {
+    throw new UpstreamUnavailableError(
+      "musicbrainz",
+      `discography assembly incomplete for ${artistMbid} (${entries.length}/${total})`
+    );
+  }
+  return entries;
+}
+
+export const discographyCacheKey = (artistMbid: string) => `mb:artist:discography:${artistMbid}`;
+
+/**
+ * An artist's complete discography, cached 7d by artist MBID. Only ever caches a
+ * verified-complete assembly (see assembleDiscography).
+ */
+export function getArtistDiscography(
+  artistMbid: string,
+  onProgress?: (p: DiscographyProgress) => void
+): Promise<MBDiscographyEntry[]> {
+  return cached(discographyCacheKey(artistMbid), WEEK, () =>
+    assembleDiscography(artistMbid, onProgress)
+  );
+}
+
+/** Drop the cached discography so the next read re-browses MusicBrainz. */
+export async function bustArtistDiscography(artistMbid: string): Promise<void> {
+  await invalidateCached(discographyCacheKey(artistMbid));
 }
