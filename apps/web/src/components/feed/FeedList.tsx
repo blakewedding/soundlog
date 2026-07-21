@@ -10,11 +10,25 @@ import { CoverImage } from "../ui/CoverImage";
  * releases use CoverImage — so there is no second review/rating presentation to
  * keep in sync.
  */
+/**
+ * Rows past this index all share the last delay. Uncapped, a 20-item page would
+ * leave the final row waiting 0.8s after the data already arrived — a stagger
+ * that reads as slowness rather than polish.
+ */
+const MAX_STAGGERED_ROWS = 6;
+const STAGGER_STEP_MS = 40;
+
 export function FeedList({ items }: { items: FeedItem[] }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {items.map((item) => (
-        <FeedRow key={item.id} item={item} />
+      {items.map((item, i) => (
+        <div
+          key={item.id}
+          className="feed-item"
+          style={{ animationDelay: `${Math.min(i, MAX_STAGGERED_ROWS) * STAGGER_STEP_MS}ms` }}
+        >
+          <FeedRow item={item} />
+        </div>
       ))}
     </div>
   );

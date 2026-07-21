@@ -3,6 +3,7 @@ import type { ReleaseListItem } from "@soundlog/shared";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import { CoverImage } from "../ui/CoverImage";
 import { ArtistCredit } from "./ArtistCredit";
+import { usePrefetchRelease } from "../../hooks/usePrefetchRelease";
 
 /**
  * Grid card for a catalog release. The cover + title are one Link (a single,
@@ -10,9 +11,15 @@ import { ArtistCredit } from "./ArtistCredit";
  * artist page without nesting anchors.
  */
 export function ReleaseCard({ release }: { release: ReleaseListItem }) {
+  const prefetch = usePrefetchRelease();
   return (
     <div>
-      <Link to={`/release/${encodeURIComponent(release.id)}`} className="card-link">
+      <Link
+        to={`/release/${encodeURIComponent(release.id)}`}
+        className="card-link"
+        onMouseEnter={() => prefetch(release.id)}
+        onFocus={() => prefetch(release.id)}
+      >
         <CoverImage src={release.coverUrl} alt={`${release.title} cover`} />
         <strong style={{ fontSize: 14, lineHeight: 1.3, display: "block", marginTop: 8 }}>
           {release.title}

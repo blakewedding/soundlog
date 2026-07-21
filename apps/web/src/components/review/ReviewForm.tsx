@@ -76,11 +76,12 @@ export function ReviewForm({ releaseId, existing, onSaved, onCancel }: Props) {
       />
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
         <label className="meta" style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+          {/* No inline width: the base stylesheet no longer stretches
+              checkboxes, and an inline width would override the touch sizing. */}
           <input
             type="checkbox"
             checked={spoilers}
             onChange={(e) => setSpoilers(e.target.checked)}
-            style={{ width: "auto" }}
           />
           Contains spoilers
         </label>

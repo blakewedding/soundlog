@@ -68,4 +68,52 @@ describe("Search — tabbed", () => {
     expect(label.closest("a")).toHaveAttribute("href", "/label/l1");
     expect(within(label.closest("a")!).getByText(/3 releases/i)).toBeInTheDocument();
   });
+
+  // Phase 5.5 — role="tab" promises these keys. They previously did nothing.
+  describe("keyboard (ARIA tablist)", () => {
+    it("is a single tab stop, with only the selected tab reachable", () => {
+      renderSearch();
+      const tabs = screen.getAllByRole("tab");
+      expect(tabs[0]).toHaveAttribute("tabindex", "0"); // "All" is selected
+      for (const t of tabs.slice(1)) expect(t).toHaveAttribute("tabindex", "-1");
+    });
+
+    it("moves selection with Left/Right and wraps at both ends", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      const tabs = screen.getAllByRole("tab");
+      tabs[0].focus();
+
+      await user.keyboard("{ArrowRight}");
+      expect(screen.getByRole("tab", { name: "Releases" })).toHaveFocus();
+      expect(screen.getByRole("tab", { name: "Releases" })).toHaveAttribute("aria-selected", "true");
+
+      // Left from the first tab wraps to the last.
+      screen.getByRole("tab", { name: "All" }).focus();
+      await user.click(screen.getByRole("tab", { name: "All" }));
+      await user.keyboard("{ArrowLeft}");
+      expect(screen.getByRole("tab", { name: "Labels" })).toHaveFocus();
+    });
+
+    it("jumps to the ends with Home and End", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      screen.getByRole("tab", { name: "All" }).focus();
+
+      await user.keyboard("{End}");
+      expect(screen.getByRole("tab", { name: "Labels" })).toHaveFocus();
+      await user.keyboard("{Home}");
+      expect(screen.getByRole("tab", { name: "All" })).toHaveFocus();
+    });
+
+    it("points every tab at the results panel it controls", () => {
+      renderSearch();
+      const panel = screen.getByRole("tabpanel");
+      expect(panel).toHaveAttribute("id", "search-results");
+      for (const t of screen.getAllByRole("tab")) {
+        expect(t).toHaveAttribute("aria-controls", "search-results");
+      }
+      expect(panel).toHaveAttribute("aria-labelledby", "search-tab-all");
+    });
+  });
 });

@@ -101,12 +101,68 @@ Monorepo, TypeScript backend with health checks, Prisma schema, web + mobile she
 - **Tabbed search including Labels** — the planned tabs become Releases / Artists / Members / Lists / Labels. Artists are already indexed in ES (Phase 2.5) ready for their tab.
 - **Open design question — editorial genre descriptions:** genre pages likely deserve short written descriptions. No API provides these; they'd be content we author and maintain ourselves (where do they live, who writes them, how do they localize?). Decide before building genre pages.
 
+### Phase 5.5 — Design polish
+> "Wordmark and identity, micro-interactions, perceived performance, a 380px responsive audit, an accessibility floor, and mobile haptics. No new features — refinement only."
+
+**Requires a real device — cannot be verified in CI, a simulator, or a browser:**
+
+- **Haptics.** `apps/mobile/src/haptics.ts` holds the whole vocabulary and its
+  tests cover the mapping, the per-half-star drag behaviour, and the
+  never-throw guarantee. What tests *cannot* cover is how it feels: simulators
+  have no vibration hardware and silently no-op, so the choice of impact style
+  per intent is unvalidated until it runs on a phone. Expect to retune the
+  table in that one file.
+- **Pull-to-refresh** (Phase 4, `apps/mobile/app/(tabs)/index.tsx`). The
+  `RefreshControl` gesture needs a touch screen; it has never been exercised on
+  hardware either.
+
+Both need an Expo session on a physical iOS or Android device:
+
+```bash
+pnpm --filter @soundlog/mobile dev   # scan the QR with Expo Go on a real phone
+```
+
+**Haptics wiring status.** The map is complete and centralised, but mobile
+currently ships only a feed tab and a placeholder profile — there is no rating
+input, log button, follow or like on the device yet, so *no intent has a call
+site*. The utility is deliberately ready ahead of those screens; wiring is one
+`haptic("commitLog")` per action when they land, and no call site ever picks an
+impact style itself.
+
 ### Phase 6 — Production deployment
 > "Finish the K8s manifests in infrastructure/k8s: web deployment, Elasticsearch StatefulSet, Redis deployment, Varnish deployment in front of the backend service, secrets, and a GitHub Actions pipeline (test → build → push → deploy). Target GKE Autopilot."
 
 **Verification items:**
 - [x] **Backend production image builds.** `infrastructure/docker/Dockerfile.backend` is pnpm-workspace-aware: it copies the lockfile + every workspace manifest (`--frozen-lockfile` validates all importers), installs, generates the Prisma client, compiles, then uses `pnpm deploy --prod` to emit a standalone runtime tree. Verified end-to-end with `docker build -f infrastructure/docker/Dockerfile.backend .` and by instantiating `PrismaClient` inside the resulting image.
 - [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames).
+
+### Phase 7 — Brand assets
+
+The wordmark is settled: the Groove glyph leading Struck letterforms, flat gold
+throughout (`apps/web/src/components/ui/Wordmark.tsx`). The **icon set is not**.
+
+Everything in `apps/web/public/icons/` is a **placeholder**, generated from the
+glyph's closed cut by `apps/web/scripts/generate-icons.mjs`. The files are
+correct *as files* — right dimensions, opaque, design-system colours, mark
+inside the maskable safe zone — but they are not finished icon design.
+
+Outstanding:
+
+- **Small-size optical refinement.** The glyph has two cuts (open arcs above
+  18px, a closed ring below) because two concentric hairlines cannot resolve in
+  16 pixels. The placeholder uses the closed ring at *every* icon size for
+  internal consistency, which leaves the large icons plainer than they should
+  be. A real set wants per-size drawings, not one shape scaled.
+- **iOS squircle fitting.** The PNGs are square and opaque so each platform can
+  apply its own mask. Apple's icon shape is a superellipse, not a rounded rect,
+  and artwork intended to sit inside it is drawn to that curve.
+- **Full platform size ladder.** Currently 16/32/180/192/512. A complete set
+  covers the Windows tile sizes, the macOS `.icns` ladder, watchOS, and Play
+  Store / App Store listing art.
+- **A monochrome cut** for Safari pinned tabs and any single-colour context.
+
+Replacement is a **drop-in file swap** — same filenames, same dimensions, no
+code changes. See `apps/web/public/icons/README.md` for the contract.
 
 ---
 

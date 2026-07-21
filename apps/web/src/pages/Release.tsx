@@ -126,7 +126,12 @@ export default function Release() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 40 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 32, alignItems: "start" }}>
+      {/* .release-header lets the responsive block stack this below 560px;
+          the fixed 240px column cannot fit a 380px viewport. */}
+      <div
+        className="release-header"
+        style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 32, alignItems: "start" }}
+      >
         <div style={{ width: 240, display: "flex", flexDirection: "column", gap: 12 }}>
           <CoverImage
             src={release.coverUrl}
@@ -318,6 +323,7 @@ function AddToList({ releaseId }: { releaseId: string }) {
 function ReleaseSkeleton() {
   return (
     <div
+      className="release-header"
       style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 32, alignItems: "start" }}
       aria-busy="true"
       aria-label="Loading release"

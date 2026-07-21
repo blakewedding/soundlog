@@ -1,5 +1,6 @@
 import { NavLink, Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
+import { Wordmark } from "./Wordmark";
 
 export function Nav() {
   const { user, loading, logout } = useAuth();
@@ -8,8 +9,8 @@ export function Nav() {
   return (
     <nav className="nav">
       <div className="container nav-inner">
-        <Link to="/" className="wordmark">
-          Sound<em>log</em>
+        <Link to="/" aria-label="Soundlog — home">
+          <Wordmark />
         </Link>
         <div className="nav-links">
           <NavLink to="/">Activity</NavLink>

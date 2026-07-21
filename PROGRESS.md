@@ -9,11 +9,11 @@ we, what's live, what's next" for a session starting cold.
 
 ## Status
 
-`origin/main` is an exact mirror of local — head `d8be781`, 0 ahead / 0 behind.
-History scanned across every commit: no `.env`, no secrets committed.
+**Phases 0 through 5.8 are done — Phase 5.5 (design polish) closes the feature
+work.** Suites green: **backend 149 + web 79 + mobile 10 = 238 tests**, all
+three packages typecheck clean.
 
-**Phases 0 through 5.6.1b are done.** Suites green: **backend 149 + web 48 =
-197 tests**, both packages typecheck clean.
+Next up: **Phase 6 — production deployment.**
 
 ## Done
 
@@ -34,6 +34,7 @@ History scanned across every commit: no `.env`, no secrets committed.
 | — | `CLAUDE.md` project laws | `ee75364` |
 | — | Systemic test mock-leakage fix (`clearMocks`) + title-trim-at-persist | `515b7d0` |
 | 5.6.1b | Log-listen feedback states — transient "Logged ✓" → "Log again", "In your diary ×N" | `d8be781` |
+| 5.5 | Design polish — wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380px audit, accessibility floor, haptics utility | |
 
 > Numbering is out of order on purpose: 5.7, 5.8, 5.6 and 5.6.1 all ran ahead of
 > 5.5, because reliability and data-integrity bugs outranked design polish.
@@ -43,28 +44,55 @@ History scanned across every commit: no `.env`, no secrets committed.
 a label identical to never-logged, so success looked like failure. Fixed in
 5.6.1b — see that commit before touching the log button.
 
-## Next — Phase 5.5, design polish
+## Phase 5.5 — what landed, and what it taught
 
-The last feature phase before deployment. Scope:
+Design polish. Details worth carrying forward:
 
-- **Wordmark options** — present a few directions for the Soundlog mark rather
-  than one; the current one is placeholder-grade.
-- **Micro-interactions** — the design system is "Gold on Vinyl" (see
-  `apps/web/src/theme.css`); motion should stay restrained and respect
-  `prefers-reduced-motion`, which the CSS already honours.
-- **Optimistic log/follow** — the last two mutations still lacking the pattern.
-  Ratings (5.7) and log-listen (5.6.1b) are already done and are the reference
-  implementations; follow the same shape via `apps/web/src/lib/releaseCache.ts`.
-- **Responsive audit** — layouts are desktop-first; the chart list has the only
-  real breakpoint so far.
-- **Accessibility floor** — set and meet a baseline. Known landmines already hit:
-  two controls sharing an accessible name (fixed once in `StarRatingInput` via a
-  `label` prop), and dead non-interactive text where a link belongs (fixed by
-  `ArtistCredit`).
-- **Expo haptics** — mobile only; the app currently has a feed tab and little else.
+- **Wordmark** — Groove glyph + Struck letterforms, flat gold, no gradients.
+  The hairline rule is **size-derived, not a per-call-site choice** (on at
+  ≥32px, off below): at nav scale it sits within ~20px of the nav's own border
+  and the two read as a mistake. The glyph has two optical cuts — open arcs
+  above 18px, a **closed** ring below. The closed cut exists because dropping
+  one arc made the survivor read as a crescent moon at 20px.
+- **Icons are PLACEHOLDERS** (`apps/web/public/icons/`), generated from
+  `src/lib/iconGeometry.json` by `apps/web/scripts/generate-icons.mjs`. Both the
+  generator and any preview must read that JSON — an earlier version duplicated
+  the geometry and previewed a mark we don't ship. Replacement is a file swap;
+  see the README's **Phase 7** entry and `public/icons/README.md`.
+- **Motion tokens** live in `:root` (`--motion-*`, `--ease-*`). One overshoot in
+  the whole system, reserved for committing a rating.
+  **`prefers-reduced-motion` is a blanket wildcard, not a per-rule list** — the
+  old version enumerated known animations, so every animation added later
+  escaped it silently.
+- **`followCache.ts` / `listCache.ts`** join `reviewCache` / `releaseCache`. All
+  four patch every cached surface in place. Follow moves counts in *both*
+  directions (target's followers, viewer's following).
+- **Hover prefetch refuses `<source>:<id>` refs.** `GET /api/releases/mb:…` is
+  seed-on-first-access: it WRITES a row and spends a MusicBrainz throttle slot.
+  A cursor crossing a search grid must never seed the catalog.
+- **Cover tints** are extracted client-side into `localStorage`, muted in HSL
+  into a narrow dark band. Do not "simplify" this by normalising chroma — that
+  was v1, and it produced twelve identical greys because it discards lightness.
+- **Responsive rules key on `(pointer: coarse), (max-width: 560px)`**, both on
+  purpose: a desktop browser at 380px reports a *fine* pointer, so
+  `pointer: coarse` alone is untestable.
 
-Then **Phase 6 — production deployment**: finish the K8s manifests, GitHub
-Actions (test → build → push → deploy), GKE Autopilot.
+**Accessibility floor (now the baseline — don't regress it):**
+
+- Every gold-on-ink text pairing clears **WCAG AA 4.5:1**. `--text-faint`,
+  `--gold-dim` and `--danger` were all lifted to get there.
+- `--line` (1.39:1) is for **decorative** separators only. Any border that is
+  the sole identifier of a control uses **`--line-strong`** (≥3:1).
+- One `:where(…):focus-visible` rule covers every focusable, declared before
+  component styles so nothing can silently lose a focus ring. Never re-introduce
+  `outline: none` without a replacement.
+- The lightbox is a real modal: focus in, trapped, restored. Search tabs are a
+  real tablist: one tab stop, arrows/Home/End.
+
+## Next — Phase 6, production deployment
+
+Finish the K8s manifests, GitHub Actions (test → build → push → deploy), GKE
+Autopilot. The open verification item below is the first thing to close.
 
 ## Open items
 
@@ -90,10 +118,28 @@ Actions (test → build → push → deploy), GKE Autopilot.
 
 Things that cost time to rediscover and live nowhere else.
 
-**Dev servers.** `.claude/launch.json` sets `"autoPort": false` deliberately:
-`CLIENT_URL=http://127.0.0.1:3000` is the OAuth redirect target and CORS origin,
-so a reassigned port breaks sign-in. If `preview_start` reports port 3000 held by
-an unrecognised `node`, it is usually an orphaned Vite from a previous session:
+**Dev servers.** `.claude/launch.json` defines **two** configs — `api` (:4000)
+and `web` (:3000) — both `"autoPort": false`. Start `api` first; the web app is
+useless without it.
+
+The web config passes `--port 3000 --strictPort` to Vite explicitly. Without
+those flags Vite silently falls back to another port when 3000 is taken, while
+the harness still believes it is on 3000 — you then drive a server that isn't
+there. `--strictPort` makes it fail loudly instead.
+
+*Corrected 5.5:* the old note here claimed a reassigned port "breaks sign-in"
+because of CORS. **CORS is `origin: true`** (`backend/src/app.ts`) and reflects
+any origin, so the app works fine on another port. Only the **OAuth redirect**
+(`${CLIENT_URL}/auth/callback`) is pinned to 3000 — so on a different port
+everything works except Spotify/Google sign-in.
+
+**Use `localhost:3000`, not `127.0.0.1:3000`.** Cookies treat them as different
+origins, and the refresh-token cookie is set under whichever host you logged in
+with — the other one renders logged-out and looks like a broken session.
+`CLIENT_URL` is `http://127.0.0.1:3000`, so the two disagree; worth reconciling
+before Phase 6.
+
+If port 3000 is held by an unrecognised `node`, it is usually an orphaned Vite:
 
 ```bash
 kill $(lsof -tiTCP:3000 -sTCP:LISTEN)   # then retry preview_start
@@ -124,8 +170,10 @@ artist discographies cached in Redis (7d TTL). Useful demo anchors:
 - **Danny Brown** — the 5.8 duplicate heal; *Atrocity Exhibition* and *Old*.
 - **フィッシュマンズ / 파란노을** — the only two artists with `latinName`
   (Fishmans, Parannoul); use them to check dual-script rendering and search.
-- **Portishead — *Dummy*** — `demo_blake` has 2 logs on it (second flagged
-  `isRelisten`), so it shows "In your diary ×2".
+- **Portishead — *Dummy*** — `demo_blake` has **4** logs on it (all but the
+  first flagged `isRelisten`), so it shows "In your diary ×4". *Corrected 5.5:
+  this said ×2; the count drifts as the demo account is used, so treat it as
+  "more than one" rather than an exact figure.*
 
 **Demo accounts.** `demo_blake@demo.local`, `sasha@demo.local` (plus `big_sigh`).
 Passwords are local-seed only and deliberately not written here — this repo is

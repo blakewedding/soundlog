@@ -44,7 +44,7 @@ export default function Lists() {
             autoFocus
           />
           <label className="meta" style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-            <input type="checkbox" checked={isRanked} onChange={(e) => setIsRanked(e.target.checked)} style={{ width: "auto" }} />
+            <input type="checkbox" checked={isRanked} onChange={(e) => setIsRanked(e.target.checked)} />
             Ranked
           </label>
           <button type="submit" className="btn btn-primary" disabled={!title.trim()}>

@@ -10,25 +10,43 @@
   --ink-0: #0a0a0c;   /* page background */
   --ink-1: #131316;   /* cards, nav */
   --ink-2: #1c1c21;   /* raised surfaces, inputs */
-  --line:  #2a2a30;   /* hairline borders */
+  --line:  #2a2a30;   /* decorative hairlines — separators, card edges */
+  /* Boundaries that are the ONLY thing identifying a control (input edges,
+     ghost-button outlines) need 3:1 per WCAG 1.4.11. --line is 1.39:1 and
+     stays that way for purely decorative rules, where nothing depends on
+     seeing it; controls use this instead. */
+  --line-strong: #6b6b7a;  /* 3.78 / 3.54 / 3.24 on ink-0 / 1 / 2 */
 
   /* Gold — spent deliberately, never as a background wash */
-  --gold:        #c8a24b;  /* primary: ratings, links, primary buttons */
-  --gold-bright: #e6c36a;  /* hover, focus */
-  --gold-dim:    #8a7434;  /* pressed, secondary accents */
+  --gold:        #c8a24b;  /* primary: ratings, links, primary buttons — 8.22 on ink-0 */
+  --gold-bright: #e6c36a;  /* hover, focus — 11.66 */
+  --gold-dim:    #967e39;  /* pressed, secondary accents — 5.03 / 4.72 */
 
-  /* Text */
-  --text:       #edeae2;
-  --text-muted: #9c978b;
-  --text-faint: #6b675e;
+  /* Text. Ratios on ink-0 / ink-1 / ink-2; all clear AA for normal text. */
+  --text:       #edeae2;  /* 16.45 */
+  --text-muted: #9c978b;  /* 6.79 */
+  --text-faint: #8c877b;  /* 5.53 / 5.18 / 4.74 */
 
   /* Semantic */
-  --danger: #c0564f;
+  --danger: #cf5d55;      /* 5.04 / 4.72 */
 
   /* Type */
   --font-display: "Archivo", system-ui, sans-serif;   /* wordmark, headings */
   --font-body: "Inter", system-ui, sans-serif;         /* everything readable */
   --font-data: "JetBrains Mono", monospace;            /* ratings, counts, dates */
+
+  /* Motion — restrained by design. Three durations, three curves, and nothing
+     moves more than a few pixels. Every animated property here is transform or
+     opacity, so nothing triggers layout. Honoured under prefers-reduced-motion
+     by the block at the end of this file. */
+  --motion-fast: 120ms;   /* state flips: hover, focus, button colour */
+  --motion-base: 180ms;   /* entrances: page fades, feed rows */
+  --motion-slow: 280ms;   /* the deliberate ones: rating commit */
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);        /* arrives and stops */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);   /* symmetric, for reversibles */
+  /* One overshoot in the whole system, reserved for committing a rating —
+     the single action that should feel like it landed. */
+  --ease-settle: cubic-bezier(0.34, 1.4, 0.64, 1);
 
   /* Rhythm */
   --radius-sm: 4px;
@@ -58,16 +76,65 @@ a:hover { color: var(--gold-bright); }
 
 ::selection { background: var(--gold-dim); color: var(--ink-0); }
 
-/* ---------- Wordmark: SOUND in text, LOG in gold ---------- */
+/* ---------- Focus ----------
+   One rule for everything focusable, declared before any component styles so a
+   component can refine it but never silently lose it. Previously only .btn and
+   .card-link carried a focus style, which left the tab row, review actions,
+   nav links, the rating slider, selects and every bare link with the browser
+   default — and inputs actively removed theirs (`outline: none`) in favour of a
+   border tint that was nearly invisible on ink.
+
+   :focus-visible, not :focus, so a mouse click doesn't leave a ring behind. */
+:where(a, button, input, select, textarea, summary, [tabindex], [role="slider"], [role="tab"]):focus-visible {
+  outline: 2px solid var(--gold-bright);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Inputs get the ring tight to the field, where the offset would otherwise
+   collide with an adjacent control in a dense form row. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline-offset: 0;
+  border-color: var(--gold);
+}
+
+/* ---------- Wordmark: the Groove glyph + Struck letterforms ----------
+   SOUND in text, LOG in flat gold. The gold is flat everywhere by design — no
+   gradients, no foil — so the mark survives 16px, print, and a sticker.
+   See components/ui/Wordmark.tsx. */
 .wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42em;
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 20px;
-  letter-spacing: 0.14em;
   color: var(--text);
   text-transform: uppercase;
+  line-height: 1;
 }
 .wordmark em { font-style: normal; color: var(--gold); }
+.wordmark-glyph { flex-shrink: 0; overflow: visible; }
+
+.wordmark .wordmark-text { letter-spacing: 0.05em; }
+
+/* Optional hairline gold rule — a lead-in groove, inset from both ends so it
+   never reads as an underline. */
+.wordmark-ruled .wordmark-text {
+  position: relative;
+  padding-bottom: 0.18em;
+}
+.wordmark-ruled .wordmark-text::after {
+  content: "";
+  position: absolute;
+  left: 0.08em;
+  right: 0.08em;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold-dim) 18%, var(--gold) 82%, transparent);
+}
 
 /* ---------- Layout ---------- */
 .container { max-width: var(--content-width); margin: 0 auto; padding: 0 var(--space-3); }
@@ -79,7 +146,8 @@ a:hover { color: var(--gold-bright); }
 }
 .nav-inner {
   display: flex; align-items: center; justify-content: space-between;
-  height: 60px;
+  gap: var(--space-3);
+  min-height: 60px;
 }
 .nav-links { display: flex; gap: var(--space-4); align-items: center; }
 .nav-links a {
@@ -109,12 +177,23 @@ h2 { font-size: 18px; }
   font-family: var(--font-body); font-size: 13px; font-weight: 600;
   padding: 8px 18px; border-radius: var(--radius-sm);
   border: 1px solid transparent; cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
+/* Buttons press in. Includes the 5.6.1b log-listen button, which had no motion
+   of its own — its feedback *states* are unchanged, only the timing now matches
+   the rest of the system. */
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { cursor: default; opacity: 0.65; }
 .btn:focus-visible { outline: 2px solid var(--gold-bright); outline-offset: 2px; }
 .btn-primary { background: var(--gold); color: var(--ink-0); }
 .btn-primary:hover { background: var(--gold-bright); }
-.btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--line); }
+/* The outline IS the button — nothing else marks its bounds — so it uses the
+   3:1 line rather than the decorative one. */
+.btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--line-strong); }
 .btn-ghost:hover { color: var(--text); border-color: var(--text-faint); }
 
 /* ---------- Cards & covers ---------- */
@@ -130,10 +209,26 @@ h2 { font-size: 18px; }
   background: var(--ink-2);
   border: 1px solid var(--line);
   overflow: hidden;
-  transition: border-color 120ms ease;
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
 }
 .cover:hover { border-color: var(--gold-dim); }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* A cover rendered as a real <button> must not inherit button chrome. */
+.cover-button { padding: 0; width: 100%; display: block; }
+
+/* Covers lift — but only ones you can actually go somewhere from. Scoped to
+   links and the zoomable release cover so a profile avatar and the 40px diary
+   thumbnails stay put; a tile that lifts and does nothing is a lie. */
+a:hover > .cover,
+a:hover .cover,
+.cover-zoom:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  border-color: var(--gold-dim);
+}
 
 .release-grid {
   display: grid;
@@ -149,6 +244,21 @@ h2 { font-size: 18px; }
   letter-spacing: 0.05em;
 }
 .stars .count { color: var(--text-faint); margin-left: var(--space-2); }
+
+/* Rating input glyph size. Lives here, not inline on the component, so the
+   coarse-pointer media query can enlarge it for thumbs. */
+.star-input { font-size: 24px; }
+
+/* Rating input: the stars scale up and settle when a rating commits. This is
+   the one overshoot in the system — rating is the signature interaction, and
+   the settle is what makes an optimistic write feel landed rather than
+   merely rendered. Fires on commit only, never on hover preview. */
+.star-commit { animation: star-settle var(--motion-slow) var(--ease-settle); }
+@keyframes star-settle {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
 
 .meta {
   font-family: var(--font-data);
@@ -179,30 +289,63 @@ h2 { font-size: 18px; }
 .review-actions button:hover { color: var(--gold); }
 
 /* ---------- Forms ---------- */
-input, textarea {
+/* Text-entry fields fill their container. Checkboxes and radios are excluded
+   here rather than opted out with an inline `width: auto` at each call site —
+   an inline width also beat the responsive sizing rules further down. */
+input:not([type="checkbox"]):not([type="radio"]),
+textarea {
   background: var(--ink-2);
-  border: 1px solid var(--line);
+  /* The border is the field's only boundary — 3:1 required. */
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-family: var(--font-body); font-size: 14px;
   padding: 10px 12px;
   width: 100%;
 }
-input:focus, textarea:focus { outline: none; border-color: var(--gold-dim); }
 input::placeholder { color: var(--text-faint); }
 
 /* ---------- Loading states ---------- */
+/* The shimmer carries a trace of gold at the peak of the sweep — enough to
+   belong to this palette rather than read as a generic grey placeholder, but
+   well short of the gold reserved for ratings and actions. */
 .skeleton {
-  background: linear-gradient(100deg, var(--ink-1) 40%, var(--ink-2) 50%, var(--ink-1) 60%);
+  background: linear-gradient(
+    100deg,
+    var(--ink-1) 38%,
+    var(--ink-2) 48%,
+    rgba(200, 162, 75, 0.07) 52%,
+    var(--ink-2) 56%,
+    var(--ink-1) 66%
+  );
   background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
+  animation: shimmer 1.4s var(--ease-in-out) infinite;
   border-radius: var(--radius-sm);
 }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 /* Progressive cover load: the .cover ink-2 background is the placeholder. */
-.cover img { opacity: 1; transition: opacity 200ms ease; }
+.cover img { opacity: 1; transition: opacity var(--motion-base) var(--ease-out); }
 .cover img.img-loading { opacity: 0; }
+
+/* ---------- Entrances ---------- */
+/* Route changes fade rather than cut. Deliberately fast and tiny: this is meant
+   to soften the swap, not to announce itself on every navigation. */
+.page-enter { animation: page-in var(--motion-base) var(--ease-out); }
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Feed rows ease in with a short stagger. The delay is capped in FeedList so a
+   long page never leaves the last row visibly waiting. */
+.feed-item {
+  animation: feed-in var(--motion-base) var(--ease-out) both;
+}
+@keyframes feed-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
 
 /* ---------- Card links ---------- */
 .card-link { display: block; color: inherit; }
@@ -232,6 +375,13 @@ input::placeholder { color: var(--text-faint); }
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
 }
 @keyframes lightbox-fade { from { opacity: 0; } }
+.lightbox-close {
+  position: fixed;
+  top: var(--space-3);
+  right: var(--space-3);
+  background: var(--ink-1);
+  cursor: pointer;
+}
 
 /* ---------- Tabs ---------- */
 .tab-row {
@@ -295,7 +445,9 @@ input::placeholder { color: var(--text-faint); }
 /* Assembly progress — a prolific artist takes several throttled MB calls. */
 .progress-track {
   height: 3px;
-  background: var(--line);
+  /* Part of a status indicator, not decoration — the empty track carries the
+     "how much is left" information, so it needs the 3:1 line. */
+  background: var(--line-strong);
   border-radius: 2px;
   overflow: hidden;
   max-width: 420px;
@@ -315,8 +467,167 @@ input::placeholder { color: var(--text-faint); }
   100% { margin-left: 100%; }
 }
 
+/* ==========================================================================
+   Responsive — audited at 380px
+   The layout is desktop-first, so this block is where it earns its mobile
+   keep. Two rules drive everything here:
+     1. The page body never scrolls horizontally. Wide content (tables,
+        discography rows, the release header) reflows or scrolls in its own
+        container, never by moving the document.
+     2. Standalone controls are at least 44px on a touch pointer. Links inline
+        in a sentence are exempt (WCAG 2.5.5 "inline" exception) — padding
+        those to 44px would wreck the typography it exists to protect.
+   ========================================================================== */
+
+/* Nav: the single worst offender at 380px. Six links plus a wordmark plus an
+   auth button measured 748px against a 380px viewport, dragging the WHOLE
+   document into horizontal scroll on every page. It now wraps into rows. */
+@media (max-width: 720px) {
+  .nav-inner {
+    flex-wrap: wrap;
+    /* Vertical only — .container owns the horizontal padding, and a shorthand
+       here silently reset it to 0, running the links off the screen edge. */
+    padding-top: var(--space-1);
+    padding-bottom: var(--space-1);
+  }
+  .nav-links {
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  h1 { font-size: 23px; }
+
+  /* The release header is a fixed 240px cover beside content — it cannot fit.
+     Stack it, and let the cover take the column width rather than a fixed one. */
+  .release-header { grid-template-columns: 1fr !important; }
+  .release-header > div:first-child { width: 100% !important; max-width: 320px; }
+
+  /* Grids get one more column's worth of breathing room rather than more,
+     smaller tiles: two up at 380px reads better than three cramped ones. */
+  .release-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+
+  /* Long unbroken strings (MBIDs, URLs, non-Latin titles) must not push the
+     page wide. */
+  h1, h2, h3, .review-body, .meta { overflow-wrap: anywhere; }
+
+  /* List rows: rank + cover + title + three 44px controls do not co-exist on
+     one 380px line — the title was wrapping mid-word to make room. Drop the
+     controls onto their own full-width line and the title gets the row back. */
+  .list-row { flex-wrap: wrap; }
+  .list-row-controls {
+    width: 100%;
+    justify-content: flex-end;
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-1);
+  }
+}
+
+/* Touch targets. Applies to coarse pointers at any width (phones, tablets) AND
+   to any narrow viewport, since a 380px window is being used like a phone even
+   when the browser reports a mouse. A mouse-driven desktop at full width keeps
+   its compact density — the 44px floor exists for fingers, not cursors. */
+@media (pointer: coarse), (max-width: 560px) {
+  .nav-links a,
+  .tab {
+    min-height: 44px;
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* .btn callers pass compact padding inline (e.g. "2px 10px"), and an inline
+     style beats a class. min-height/min-width are not set inline, so they still
+     apply — the button grows to 44 without fighting the caller's padding.
+     min-width matters for the icon-only controls (↑ ↓ ✕ in the list editor),
+     which are ~26px wide on their glyph alone. */
+  .btn {
+    min-height: 44px;
+    min-width: 44px;
+    justify-content: center;
+  }
+
+  /* Review actions were the worst measured: ♥ / 💬 / Edit / Delete at 22x19. */
+  .review-actions { gap: var(--space-2); }
+  .review-actions button {
+    min-height: 44px;
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Rating input: each half-star is its own hit zone, so a 24px glyph gives a
+     ~12px target. Enlarging the glyph alone is NOT enough — .stars is set in
+     JetBrains Mono, whose 0.6em advance meant even 34px type left an ~11px
+     half-star. The hit zone has to be widened independently of the type size,
+     so each star gets a 44px box and the glyph is centred inside it. That
+     makes every half-star a 22x44 target, and the whole control also remains
+     operable with arrow keys. */
+  .star-input { font-size: 30px; }
+  .star-input > span {
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .star-input-row { min-height: 44px; }
+
+  /* Native controls: a <select> renders ~35px and a checkbox ~13px by default.
+     The 16px font size is not cosmetic — iOS Safari zooms the whole page when
+     a focused field is under 16px, which throws away the layout mid-typing. */
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  input[type="checkbox"] { width: 20px; height: 20px; }
+  label:has(input[type="checkbox"]) { min-height: 44px; }
+}
+
+/* ---------- Reduced motion ----------
+   A blanket kill, not a per-rule opt-out. The previous version listed the
+   animations it knew about, so every animation added afterwards escaped it by
+   default — exactly the failure mode this phase would have introduced five
+   times over. Now the wildcard covers animation as well as transition, and the
+   handful of rules below restore the *end state* of anything whose resting
+   appearance depended on the animation running.
+
+   Entrances use `both` fill, so killing the animation would otherwise strand
+   them at opacity 0 — invisible content is a worse outcome than motion. */
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
-  .skeleton, .lightbox-backdrop { animation: none !important; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Resting states that must not depend on a keyframe having played. */
+  .page-enter,
+  .feed-item,
+  .star-commit {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Hover affordances stay as colour changes; the displacement goes. */
+  a:hover > .cover,
+  a:hover .cover,
+  .cover-zoom:hover,
+  .btn:active:not(:disabled) {
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* Indeterminate progress can't animate, so show a full track instead of a
+     35% bar frozen off-screen. */
   .progress-indeterminate { animation: none !important; width: 100%; margin-left: 0; }
 }

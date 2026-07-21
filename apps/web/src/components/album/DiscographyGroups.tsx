@@ -3,6 +3,7 @@ import type { DiscographyEntry, DiscographyGroup } from "@soundlog/shared";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import { CoverImage } from "../ui/CoverImage";
 import { StarRating } from "../ui/StarRating";
+import { usePrefetchRelease } from "../../hooks/usePrefetchRelease";
 
 /**
  * Cover art for a release-group we haven't seeded. The Cover Art Archive serves
@@ -20,13 +21,21 @@ const caaThumb = (mbid: string) =>
  * behind it — Phase 5.7). Nothing is seeded merely by rendering this list.
  */
 function EntryCard({ entry }: { entry: DiscographyEntry }) {
-  const to = entry.seeded && entry.releaseId
-    ? `/release/${encodeURIComponent(entry.releaseId)}`
-    : `/release/${encodeURIComponent(`mb:${entry.mbid}`)}`;
+  const prefetch = usePrefetchRelease();
+  const ref = entry.seeded && entry.releaseId ? entry.releaseId : `mb:${entry.mbid}`;
+  const to = `/release/${encodeURIComponent(ref)}`;
 
   return (
     <div className={entry.seeded ? undefined : "discog-unseeded"}>
-      <Link to={to} className="card-link">
+      {/* Only seeded entries prefetch. An un-seeded entry's "mb:" ref
+          materializes the release on GET, so hovering a discography must not
+          bulk-seed an artist's back catalogue. */}
+      <Link
+        to={to}
+        className="card-link"
+        onMouseEnter={() => prefetch(ref)}
+        onFocus={() => prefetch(ref)}
+      >
         <CoverImage
           src={entry.seeded ? entry.coverUrl : caaThumb(entry.mbid)}
           alt={`${entry.title} cover`}
@@ -59,15 +68,24 @@ export function DiscographyGroups({ groups }: { groups: DiscographyGroup[] }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
       {groups.map((group) => (
-        <section key={group.key}>
-          <div className="section-label">
+        // A real heading, not a styled div: screen-reader users navigate a long
+        // discography by jumping between headings, and a div is not in that
+        // list. aria-labelledby names the section so the group is announced on
+        // entry as well. The .section-label class keeps the visual treatment.
+        // h3: these groups sit UNDER the page's "Discography" h2, so the
+        // outline reads h1 artist → h2 Discography → h3 Albums/Singles/…
+        // rather than three peers of the section that contains them.
+        <section key={group.key} aria-labelledby={`discog-${group.key}`}>
+          <h3 id={`discog-${group.key}`} className="section-label">
             {group.label} ({group.entries.length})
-          </div>
-          <div className="release-grid">
+          </h3>
+          <ul className="release-grid" style={{ listStyle: "none" }}>
             {group.entries.map((e) => (
-              <EntryCard key={e.mbid} entry={e} />
+              <li key={e.mbid}>
+                <EntryCard entry={e} />
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
       ))}
     </div>

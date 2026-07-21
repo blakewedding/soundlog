@@ -130,8 +130,18 @@ export function ReviewCard({ review }: { review: FeedReview }) {
         >
           ♥ {review.likeCount}
         </button>
-        <button onClick={() => setShowComments((s) => !s)} aria-expanded={showComments}>
-          💬 {review.commentCount}
+        {/* Without an explicit name this announces as "speech balloon 3" —
+            the emoji is decoration, so it is hidden and the button is named. */}
+        <button
+          onClick={() => setShowComments((s) => !s)}
+          aria-expanded={showComments}
+          aria-label={
+            showComments
+              ? "Hide comments"
+              : `Show ${review.commentCount} ${review.commentCount === 1 ? "comment" : "comments"}`
+          }
+        >
+          <span aria-hidden>💬</span> {review.commentCount}
         </button>
         {mine && <button onClick={() => setEditing(true)}>Edit</button>}
         {mine && <button onClick={destroy}>Delete</button>}

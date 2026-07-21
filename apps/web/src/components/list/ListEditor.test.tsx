@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ListEditor } from "./ListEditor";
 import { api, type ListDTO } from "../../services/api";
 
@@ -48,10 +49,15 @@ function list(): ListDTO {
 }
 
 function renderEditor(onChanged = vi.fn()) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   render(
-    <MemoryRouter>
-      <ListEditor list={list()} editable onChanged={onChanged} />
-    </MemoryRouter>
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ListEditor list={list()} editable onChanged={onChanged} />
+      </MemoryRouter>
+    </QueryClientProvider>
   );
   return onChanged;
 }
@@ -67,16 +73,29 @@ describe("ListEditor", () => {
     mockedReorder.mockResolvedValue(undefined);
     const onChanged = renderEditor();
 
-    // Move the first item down.
-    await user.click(screen.getAllByRole("button", { name: "Move down" })[0]);
+    // Move the first item down. Controls are named per release, so the two
+    // rows' buttons no longer share an accessible name (CLAUDE.md §8).
+    await user.click(screen.getByRole("button", { name: "Move Liquid Room down" }));
     await waitFor(() => expect(mockedReorder).toHaveBeenCalledWith("l1", ["rB", "rA"]));
     expect(onChanged).toHaveBeenCalled();
   });
 
   it("disables the impossible moves at the edges", () => {
     renderEditor();
-    expect(screen.getAllByRole("button", { name: "Move up" })[0]).toBeDisabled();
-    expect(screen.getAllByRole("button", { name: "Move down" })[1]).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Liquid Room up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Drug Store Core Boy down" })).toBeDisabled();
+  });
+
+  it("restores the previous order when a reorder fails", async () => {
+    const user = userEvent.setup();
+    mockedReorder.mockRejectedValue(new Error("network"));
+    renderEditor();
+
+    await user.click(screen.getByRole("button", { name: "Move Liquid Room down" }));
+
+    // The failure is announced rather than swallowed as an unhandled rejection.
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("didn't save"));
+    expect(screen.getByRole("button", { name: "Move Liquid Room up" })).toBeDisabled();
   });
 
   it("edits an item note inline and clears it when emptied", async () => {

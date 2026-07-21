@@ -2,9 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "api",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@soundlog/backend", "dev"],
+      "port": 4000,
+      "autoPort": false
+    },
+    {
       "name": "web",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@soundlog/web", "dev"],
+      "runtimeArgs": ["--filter", "@soundlog/web", "dev", "--port", "3000", "--strictPort"],
       "port": 3000,
       "autoPort": false
     }

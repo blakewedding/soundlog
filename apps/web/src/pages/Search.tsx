@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { RELEASE_TYPE_LABELS, artistDisplayName } from "@soundlog/shared";
@@ -14,6 +14,7 @@ import { api } from "../services/api";
 import { useDebounce } from "../hooks/useDebounce";
 import { CoverImage } from "../components/ui/CoverImage";
 import { ArtistCredit } from "../components/album/ArtistCredit";
+import { usePrefetchRelease } from "../hooks/usePrefetchRelease";
 
 const TABS: { id: SearchTab; label: string }[] = [
   { id: "all", label: "All" },
@@ -32,6 +33,30 @@ export default function Search() {
   const [tab, setTab] = useState<SearchTab>("all");
   const debouncedQ = useDebounce(q, 300);
   const term = debouncedQ.trim();
+  const tabRefs = useRef<Partial<Record<SearchTab, HTMLButtonElement | null>>>({});
+
+  /**
+   * Left/Right move between tabs (wrapping), Home/End jump to the ends —
+   * the standard tablist keys. Selection follows focus, which is the correct
+   * variant here because switching tabs only filters an already-loaded result
+   * set, so there is no expensive work to defer behind an explicit Enter.
+   */
+  function onTabKeyDown(e: React.KeyboardEvent) {
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+
+    const i = TABS.findIndex((t) => t.id === tab);
+    const next =
+      e.key === "Home" ? 0
+      : e.key === "End" ? TABS.length - 1
+      : e.key === "ArrowLeft" ? (i - 1 + TABS.length) % TABS.length
+      : (i + 1) % TABS.length;
+
+    const id = TABS[next].id;
+    setTab(id);
+    tabRefs.current[id]?.focus();
+  }
 
   const { data, isFetching, isError } = useQuery({
     queryKey: ["catalog-search", tab, term],
@@ -70,24 +95,54 @@ export default function Search() {
         autoFocus
       />
 
+      {/* ARIA tabs pattern. Declaring role="tab" promises keyboard behaviour
+          that wasn't implemented: a tablist is ONE tab stop, and Left/Right
+          move between tabs. Before this, all six tabs sat in the tab order and
+          arrow keys did nothing — a screen-reader user was told to press arrows
+          and nothing happened. Roving tabindex + arrow handling below. */}
       <div role="tablist" aria-label="Search category" className="tab-row">
         {TABS.map((t) => (
           <button
             key={t.id}
+            id={`search-tab-${t.id}`}
             role="tab"
             aria-selected={tab === t.id}
+            aria-controls="search-results"
+            tabIndex={tab === t.id ? 0 : -1}
+            ref={(el) => {
+              tabRefs.current[t.id] = el;
+            }}
             className={`tab${tab === t.id ? " tab-active" : ""}`}
             onClick={() => setTab(t.id)}
+            onKeyDown={onTabKeyDown}
           >
             {t.label}
           </button>
         ))}
       </div>
 
-      {term.length <= 1 && <p className="meta">Type at least two characters to search.</p>}
-      {isFetching && <p className="meta">Searching…</p>}
-      {isError && <p className="meta">Search is unavailable right now.</p>}
-      {showEmpty && <p className="meta">Nothing found for “{term}”.</p>}
+      {/* The panel the tablist controls. aria-live so a screen reader hears the
+          result count change instead of silently re-rendering underneath. */}
+      <div
+        id="search-results"
+        role="tabpanel"
+        aria-labelledby={`search-tab-${tab}`}
+        tabIndex={-1}
+        style={{ display: "flex", flexDirection: "column", gap: 24 }}
+      >
+      <p className="meta" role="status" aria-live="polite">
+        {term.length <= 1
+          ? "Type at least two characters to search."
+          : isError
+            ? "Search is unavailable right now."
+            : isFetching
+              ? "Searching…"
+              : showEmpty
+                ? `Nothing found for “${term}”.`
+                : total > 0
+                  ? `${total} result${total === 1 ? "" : "s"} for “${term}”.`
+                  : ""}
+      </p>
 
       {showArtists && artists.length > 0 && (
         <section>
@@ -143,6 +198,7 @@ export default function Search() {
           </div>
         </section>
       )}
+      </div>
     </div>
   );
 }
@@ -210,9 +266,17 @@ function LabelResultRow({ label }: { label: LabelSearchResult }) {
 }
 
 function SearchResultCard({ result }: { result: CatalogSearchResult }) {
+  // Unseeded results carry a "<source>:<id>" ref, which the hook refuses to
+  // prefetch — hovering a search grid must not seed the catalog.
+  const prefetch = usePrefetchRelease();
   return (
     <div>
-      <Link to={`/release/${encodeURIComponent(result.ref)}`} className="card-link">
+      <Link
+        to={`/release/${encodeURIComponent(result.ref)}`}
+        className="card-link"
+        onMouseEnter={() => prefetch(result.ref)}
+        onFocus={() => prefetch(result.ref)}
+      >
         <CoverImage src={result.coverUrl} alt={`${result.title} cover`} />
         <strong style={{ fontSize: 14, lineHeight: 1.3, display: "block", marginTop: 8 }}>
           {result.title}

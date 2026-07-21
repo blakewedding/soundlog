@@ -1,4 +1,4 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import { Nav } from "./components/ui/Nav";
 import Home from "./pages/Home";
 import Search from "./pages/Search";
@@ -15,10 +15,19 @@ import Diary from "./pages/Diary";
 import Profile from "./pages/Profile";
 
 export default function App() {
+  const location = useLocation();
+
   return (
     <>
       <Nav />
-      <main className="container" style={{ paddingTop: 40, paddingBottom: 64 }}>
+      {/* Keying <main> on the path restarts the fade on every route change.
+          Without the key React reuses the element and the animation, having
+          already run once, never plays again. */}
+      <main
+        key={location.pathname}
+        className="container page-enter"
+        style={{ paddingTop: 40, paddingBottom: 64 }}
+      >
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/search" element={<Search />} />

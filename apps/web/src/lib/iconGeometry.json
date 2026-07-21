@@ -1,0 +1,12 @@
+{
+  "_comment": "Canonical geometry for the PLACEHOLDER Soundlog icon assets, read by scripts/generate-icons.mjs. All lengths are fractions of the tile edge. Derived from the Groove glyph's closed cut in a 24-unit box (ring r=7, stroke 3.2, spindle r=1.9) with the glyph box at 0.875 of the tile. Outermost ink sits at 0.2552 + 0.1167/2 = 0.3136 from centre, inside the 0.40 maskable safe radius. Editing this file and re-running the generator is the only sanctioned way to change the placeholders; final artwork replaces public/icons/ directly and makes both obsolete.",
+  "ringRadius": 0.2552,
+  "ringStroke": 0.1167,
+  "spindleRadius": 0.0693,
+  "faviconCornerRadius": 0.08,
+  "colors": {
+    "tile": "#131316",
+    "ring": "#c8a24b",
+    "spindle": "#edeae2"
+  }
+}
