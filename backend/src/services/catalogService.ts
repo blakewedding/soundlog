@@ -7,7 +7,7 @@ import type { Artist, Label, Release, ReleaseType } from "@prisma/client";
 import { prisma } from "../config/database.js";
 import { getConfiguredSources, getSource } from "./sources/registry.js";
 import type { SourceCandidate, ReleaseDetail, SourceName } from "./sources/types.js";
-import { dedupeMerge, candidateKey } from "./catalog/merge.js";
+import { dedupeMerge, candidateKey, normalizeText, stripArtistDisambiguation } from "./catalog/merge.js";
 import {
   esSearchReleases,
   esSearchArtists,
@@ -352,7 +352,16 @@ async function enrichNewRelease(
 
   await attempt("artist", async () => {
     const artistId = await resolveArtistId(detail, mbid);
-    if (artistId) data.artistId = artistId;
+    if (!artistId) return;
+    data.artistId = artistId;
+    // Prefer the MusicBrainz artist's canonical name over whatever the seeding
+    // source supplied — this is what replaces a leaked Discogs "(n)" suffix (or
+    // a source's abbreviated credit) with the authoritative identity.
+    const artist = await prisma.artist.findUnique({
+      where: { id: artistId },
+      select: { name: true },
+    });
+    if (artist && artist.name !== release.artistName) data.artistName = artist.name;
   });
 
   await attempt("label", async () => {
@@ -795,6 +804,152 @@ export async function deleteReleaseEverywhere(releaseId: string): Promise<boolea
   ]);
   await deindexRelease(releaseId);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Merge / heal — fold a duplicate release into the canonical one.
+// ---------------------------------------------------------------------------
+
+/**
+ * Repoint every child record of `loserId` onto `winnerId`, then delete the loser
+ * (and its ES doc). User data is preserved: ratings, reviews, and list items are
+ * unique per (user|list, release), so when both releases carry the same user's
+ * row the winner's is kept and the loser's is dropped — never a constraint
+ * violation, never a lost review. The loser's activity is repointed alongside
+ * the row it describes, so feeds stay consistent. Runs in one transaction.
+ */
+export async function mergeReleaseInto(loserId: string, winnerId: string): Promise<void> {
+  if (loserId === winnerId) return;
+  const [loser, winner] = await Promise.all([
+    prisma.release.findUnique({ where: { id: loserId } }),
+    prisma.release.findUnique({ where: { id: winnerId } }),
+  ]);
+  if (!loser || !winner) return;
+
+  await prisma.$transaction(async (tx) => {
+    // Logs — no uniqueness, repoint every row and its activity.
+    await tx.log.updateMany({ where: { releaseId: loserId }, data: { releaseId: winnerId } });
+    await tx.activity.updateMany({
+      where: { type: "LOG", targetId: loserId },
+      data: { targetId: winnerId },
+    });
+
+    // Ratings — unique(userId, releaseId). Repoint non-colliding; drop collisions.
+    const winnerRaters = new Set(
+      (await tx.rating.findMany({ where: { releaseId: winnerId }, select: { userId: true } })).map(
+        (r) => r.userId
+      )
+    );
+    for (const r of await tx.rating.findMany({ where: { releaseId: loserId } })) {
+      if (winnerRaters.has(r.userId)) {
+        await tx.rating.delete({ where: { id: r.id } });
+        await tx.activity.deleteMany({
+          where: { userId: r.userId, type: "RATING", targetId: loserId },
+        });
+      } else {
+        await tx.rating.update({ where: { id: r.id }, data: { releaseId: winnerId } });
+        await tx.activity.updateMany({
+          where: { userId: r.userId, type: "RATING", targetId: loserId },
+          data: { targetId: winnerId },
+        });
+      }
+    }
+
+    // Reviews — unique(userId, releaseId). REVIEW activity targets the review id
+    // (stable), so only a dropped review needs its activity removed.
+    const winnerReviewers = new Set(
+      (await tx.review.findMany({ where: { releaseId: winnerId }, select: { userId: true } })).map(
+        (r) => r.userId
+      )
+    );
+    for (const rv of await tx.review.findMany({ where: { releaseId: loserId } })) {
+      if (winnerReviewers.has(rv.userId)) {
+        await tx.review.delete({ where: { id: rv.id } }); // likes/comments cascade
+        await tx.activity.deleteMany({ where: { type: "COMMENT", targetId: rv.id } });
+        await tx.activity.deleteMany({ where: { type: "REVIEW", targetId: rv.id } });
+      } else {
+        await tx.review.update({ where: { id: rv.id }, data: { releaseId: winnerId } });
+      }
+    }
+
+    // List items — unique(listId, releaseId). Repoint non-colliding; drop collisions.
+    const winnerLists = new Set(
+      (await tx.listItem.findMany({ where: { releaseId: winnerId }, select: { listId: true } })).map(
+        (i) => i.listId
+      )
+    );
+    for (const item of await tx.listItem.findMany({ where: { releaseId: loserId } })) {
+      if (winnerLists.has(item.listId)) await tx.listItem.delete({ where: { id: item.id } });
+      else await tx.listItem.update({ where: { id: item.id }, data: { releaseId: winnerId } });
+    }
+
+    await tx.release.delete({ where: { id: loserId } });
+
+    // Absorb the loser's canonical identifiers so future lookups by them resolve
+    // to the winner (only where the winner lacks one — never clobber).
+    const fill: Record<string, string> = {};
+    if (!winner.musicbrainzId && loser.musicbrainzId) fill.musicbrainzId = loser.musicbrainzId;
+    if (!winner.discogsId && loser.discogsId) fill.discogsId = loser.discogsId;
+    if (!winner.spotifyId && loser.spotifyId) fill.spotifyId = loser.spotifyId;
+    if (Object.keys(fill).length > 0) {
+      await tx.release.update({ where: { id: winnerId }, data: fill });
+    }
+  });
+
+  await deindexRelease(loserId);
+  const refreshed = await prisma.release.findUnique({ where: { id: winnerId } });
+  if (refreshed) await indexRelease(refreshed);
+}
+
+/**
+ * Heal releases duplicated by a leaked Discogs disambiguation suffix. Groups
+ * rows by normalized title + suffix-stripped artist; any group that contains a
+ * suffixed row is a suffix-caused duplicate. The MusicBrainz-anchored row wins
+ * (it's canonical and carries the real artist link); everything else folds into
+ * it, and the winner's stored artistName is cleaned. Idempotent.
+ */
+export async function healDiscogsSuffixDuplicates(): Promise<
+  Array<{ winnerId: string; title: string; artistName: string; mergedLoserIds: string[] }>
+> {
+  const all = await prisma.release.findMany({
+    select: { id: true, title: true, artistName: true, musicbrainzId: true, artistId: true },
+  });
+
+  const groups = new Map<string, typeof all>();
+  for (const r of all) {
+    const key = `${normalizeText(r.title)}|${normalizeText(stripArtistDisambiguation(r.artistName))}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(r);
+    else groups.set(key, [r]);
+  }
+
+  const hasSuffix = (name: string) => /\s*\(\d+\)\s*$/.test(name);
+  // Winner precedence: MB identity, then a real artist link, then a clean name.
+  const rank = (r: (typeof all)[number]) =>
+    (r.musicbrainzId ? 4 : 0) + (r.artistId ? 2 : 0) + (hasSuffix(r.artistName) ? 0 : 1);
+
+  const healed: Array<{ winnerId: string; title: string; artistName: string; mergedLoserIds: string[] }> = [];
+  for (const rows of groups.values()) {
+    if (rows.length < 2 || !rows.some((r) => hasSuffix(r.artistName))) continue;
+    const [winner, ...losers] = rows.slice().sort((a, b) => rank(b) - rank(a));
+    for (const l of losers) await mergeReleaseInto(l.id, winner.id);
+
+    const cleanName = stripArtistDisambiguation(winner.artistName);
+    if (cleanName !== winner.artistName) {
+      const updated = await prisma.release.update({
+        where: { id: winner.id },
+        data: { artistName: cleanName },
+      });
+      await indexRelease(updated);
+    }
+    healed.push({
+      winnerId: winner.id,
+      title: winner.title,
+      artistName: cleanName,
+      mergedLoserIds: losers.map((l) => l.id),
+    });
+  }
+  return healed;
 }
 
 // ---------------------------------------------------------------------------

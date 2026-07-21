@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { dedupeMerge, normalizeText, candidateKey } from "../../src/services/catalog/merge.js";
+import {
+  dedupeMerge,
+  normalizeText,
+  candidateKey,
+  stripArtistDisambiguation,
+} from "../../src/services/catalog/merge.js";
 import {
   mapReleaseGroupType,
   mapDiscogsFormats,
@@ -38,7 +43,46 @@ describe("normalizeText / candidateKey", () => {
   });
 });
 
+describe("stripArtistDisambiguation (Discogs '(n)' suffix)", () => {
+  it("removes a trailing numeric disambiguation suffix", () => {
+    expect(stripArtistDisambiguation("Danny Brown (2)")).toBe("Danny Brown");
+    expect(stripArtistDisambiguation("Nirvana (3)")).toBe("Nirvana");
+    expect(stripArtistDisambiguation("John (12)")).toBe("John");
+  });
+
+  it("leaves real parentheticals and titles alone", () => {
+    // Not a bare integer → kept.
+    expect(stripArtistDisambiguation("Godspeed You! Black Emperor")).toBe(
+      "Godspeed You! Black Emperor"
+    );
+    expect(stripArtistDisambiguation("Sunn O)))")).toBe("Sunn O)))");
+    expect(stripArtistDisambiguation("Panic! (At The Disco)")).toBe("Panic! (At The Disco)");
+    // A name that is ONLY a suffix stays intact rather than becoming empty.
+    expect(stripArtistDisambiguation("(2)")).toBe("(2)");
+  });
+
+  it("makes the dedupe key collapse a suffixed artist onto the bare name", () => {
+    expect(candidateKey({ title: "Old", artistName: "Danny Brown (2)" })).toBe(
+      candidateKey({ title: "Old", artistName: "Danny Brown" })
+    );
+  });
+});
+
 describe("dedupeMerge", () => {
+  it("dedupes a Discogs '(n)'-suffixed artist against the MusicBrainz release", () => {
+    // Regression: 'Danny Brown (2)' from Discogs used to defeat title+artist
+    // dedupe and produce a duplicate release (seen on Atrocity Exhibition, Old).
+    const merged = dedupeMerge([
+      mb({ title: "Atrocity Exhibition", artistName: "Danny Brown", musicbrainzId: "mb-db" }),
+      dc({ title: "Atrocity Exhibition", artistName: "Danny Brown (2)", discogsId: "release:9248136" }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ musicbrainzId: "mb-db", discogsId: "release:9248136" });
+    // The canonical, un-suffixed name is what survives.
+    expect(merged[0].artistName).toBe("Danny Brown");
+  });
+
+
   it("merges the same release across sources by title+artist, unioning ids", () => {
     const merged = dedupeMerge([
       mb({ musicbrainzId: "mbid-1", coverUrl: "caa.jpg" }),

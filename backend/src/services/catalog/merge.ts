@@ -11,9 +11,26 @@ export function normalizeText(text: string): string {
     .trim();
 }
 
-/** Fuzzy identity key for the title+artist fallback tier. */
+/**
+ * Strip Discogs's artist-disambiguation suffix: when several distinct artists
+ * share a name, Discogs numbers them — "Danny Brown (2)", "Nirvana (3)". That
+ * number is a Discogs-internal id, not part of the artist's name, and it leaks
+ * into artist rows and (fatally) defeats title+artist dedupe against the same
+ * release from any other source. Only a trailing " (n)" is removed; a real
+ * parenthetical like "Godspeed You! Black Emperor" or a title's "(Remixes)" is
+ * untouched because those don't match a bare integer.
+ */
+export function stripArtistDisambiguation(name: string): string {
+  return name.replace(/\s*\(\d+\)\s*$/, "").trim() || name.trim();
+}
+
+/**
+ * Fuzzy identity key for the title+artist fallback tier. The artist half strips
+ * the Discogs disambiguation suffix first, so "Danny Brown (2)" and "Danny
+ * Brown" collapse to one release instead of duplicating.
+ */
 export function candidateKey(c: Pick<SourceCandidate, "title" | "artistName">): string {
-  return `${normalizeText(c.title)}|${normalizeText(c.artistName)}`;
+  return `${normalizeText(c.title)}|${normalizeText(stripArtistDisambiguation(c.artistName))}`;
 }
 
 function mergeInto(target: SourceCandidate, src: SourceCandidate): void {

@@ -8,12 +8,18 @@ import {
   type DiscogsRelease,
 } from "../discogsService.js";
 import { mapDiscogsFormats } from "../catalog/typeMapping.js";
+import { stripArtistDisambiguation } from "../catalog/merge.js";
 
-// Discogs search titles are "Artist - Title".
+// Discogs search titles are "Artist - Title". The artist half carries Discogs's
+// disambiguation suffix ("Danny Brown (2)"), which we strip at ingestion so it
+// never reaches an artist row or the dedupe key.
 function parseArtistTitle(combined: string): { artistName: string; title: string } {
   const idx = combined.indexOf(" - ");
   if (idx === -1) return { artistName: "Unknown Artist", title: combined.trim() };
-  return { artistName: combined.slice(0, idx).trim(), title: combined.slice(idx + 3).trim() };
+  return {
+    artistName: stripArtistDisambiguation(combined.slice(0, idx).trim()),
+    title: combined.slice(idx + 3).trim(),
+  };
 }
 
 function searchResultToCandidate(r: DiscogsSearchResult): SourceCandidate {
@@ -57,7 +63,8 @@ export const discogsSource: MetadataSource = {
       // namespace (master N and release N both echo id: N).
       discogsId: id,
       title: rel.title,
-      artistName: rel.artists?.map((a) => a.name).join(", ") || "Unknown Artist",
+      artistName:
+        rel.artists?.map((a) => stripArtistDisambiguation(a.name)).join(", ") || "Unknown Artist",
       year: rel.year ? String(rel.year) : undefined,
       releaseDate: rel.year ? String(rel.year) : undefined,
       type: mapDiscogsFormats(formats, descriptions),
