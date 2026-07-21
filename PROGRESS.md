@@ -9,11 +9,17 @@ we, what's live, what's next" for a session starting cold.
 
 ## Status
 
-**Phases 0 through 5.8 are done — Phase 5.5 (design polish) closes the feature
-work.** Suites green: **backend 149 + web 79 + mobile 10 = 238 tests**, all
-three packages typecheck clean.
+`origin/main` is an exact mirror of local — head `44ed01c`, 0 ahead / 0 behind,
+trees identical, clean working tree. History re-scanned across every commit: no
+`.env`, no key material, ever.
 
-Next up: **Phase 6 — production deployment.**
+**Phases 0 through 5.8 are done. Phase 5.5 (design polish) closes the feature
+work** — committed and pushed as `44ed01c`. Suites green: **backend 149 + web 79
++ mobile 10 = 238 tests**, all three packages typecheck clean.
+
+The 5.5 *code* is shipped; what remains is human sign-off. Everything was demoed
+in a browser, but a browser cannot judge taste and cannot vibrate — so **the 5.5
+manual pass** (below) comes before **Phase 6 — production deployment.**
 
 ## Done
 
@@ -34,7 +40,7 @@ Next up: **Phase 6 — production deployment.**
 | — | `CLAUDE.md` project laws | `ee75364` |
 | — | Systemic test mock-leakage fix (`clearMocks`) + title-trim-at-persist | `515b7d0` |
 | 5.6.1b | Log-listen feedback states — transient "Logged ✓" → "Log again", "In your diary ×N" | `d8be781` |
-| 5.5 | Design polish — wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380px audit, accessibility floor, haptics utility | |
+| 5.5 | Design polish — wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380px audit, accessibility floor, haptics map | `44ed01c` |
 
 > Numbering is out of order on purpose: 5.7, 5.8, 5.6 and 5.6.1 all ran ahead of
 > 5.5, because reliability and data-integrity bugs outranked design polish.
@@ -76,6 +82,15 @@ Design polish. Details worth carrying forward:
 - **Responsive rules key on `(pointer: coarse), (max-width: 560px)`**, both on
   purpose: a desktop browser at 380px reports a *fine* pointer, so
   `pointer: coarse` alone is untestable.
+- **Haptics map** — `apps/mobile/src/haptics.ts` is the only place a vibration is
+  chosen. Call sites pass **intents** (`commitLog`), never impact styles, so
+  retuning on hardware is one edit in one table. `expo-haptics` is pinned to
+  `~13.0.1` for **SDK 51** — `pnpm add expo-haptics` grabs v57, which targets
+  SDK 54+ and will not work here. Nothing throws: a haptic can never break the
+  write that triggered it.
+  **No intent has a call site yet** — mobile ships only a feed tab and a
+  placeholder profile, so there is no rating/log/follow/like to attach to. The
+  map is deliberately ready ahead of those screens.
 
 **Accessibility floor (now the baseline — don't regress it):**
 
@@ -89,10 +104,55 @@ Design polish. Details worth carrying forward:
 - The lightbox is a real modal: focus in, trapped, restored. Search tabs are a
   real tablist: one tab stop, arrows/Home/End.
 
-## Next — Phase 6, production deployment
+## Next — 1. the 5.5 manual pass (Blake), then 2. Phase 6
+
+### 1. Manual pass on 5.5
+
+Everything in 5.5 was demoed in a browser, but a browser cannot judge taste and
+cannot vibrate. Outstanding human verification:
+
+**Real-device Expo session — the only way to check these at all.** Simulators
+have no vibration hardware and silently no-op:
+
+```bash
+docker compose up -d postgres redis elasticsearch
+pnpm dev                              # api :4000, web :3000
+pnpm --filter @soundlog/mobile dev    # scan the QR with Expo Go on a real phone
+```
+
+- **Haptics feel.** The intent→style table is unvalidated on hardware. Expect to
+  retune it; it is one table in one file, and no call site picks a style.
+  Note there is nothing to *trigger* a haptic on the device yet (see above), so
+  checking feel needs a temporary call site or waiting for the mobile screens.
+- **Pull-to-refresh** (Phase 4) — the `RefreshControl` gesture has never run on
+  a touch screen either.
+- **`EXPO_PUBLIC_API_URL`** must be the dev machine's LAN IP, not `localhost` —
+  on a device `localhost` is the phone.
+
+**Judgement calls worth a second opinion** — each was a deliberate choice, not
+an oversight, and each is cheap to reverse:
+
+- **The wordmark rule threshold** (≥32px). Off in the nav, on at display sizes.
+- **The glyph's two optical cuts** — favicon (closed ring) and app icon are not
+  the same shape as the nav glyph (open arcs). Standard optical sizing, but you
+  may prefer one form everywhere.
+- **Lifted palette tokens.** `--text-faint`, `--gold-dim` and `--danger` are all
+  lighter than they were, to clear AA. The tonal ladder is compressed as a
+  result; check it still reads as "Gold on Vinyl" at full size.
+- **Cover tint strength** — saturation capped at 0.45, lightness 0.10–0.24.
+- **Nav at 380px** wraps to three rows (~146px tall). Functional and fully
+  reachable, but a disclosure menu would be shorter — that is a new feature, so
+  it was not built.
+- **Desktop half-star targets are 8×24.** Pre-existing and outside 5.5's brief
+  (which specified mobile), but tight even for a mouse.
+
+### 2. Phase 6 — production deployment
 
 Finish the K8s manifests, GitHub Actions (test → build → push → deploy), GKE
-Autopilot. The open verification item below is the first thing to close.
+Autopilot. The first open item below is the thing to close first.
+
+Reconcile `CLIENT_URL` (`http://127.0.0.1:3000`) with the `localhost` host the
+app is actually used on — see the cookie-origin note under local environment.
 
 ## Open items
 
@@ -113,6 +173,13 @@ Autopilot. The open verification item below is the first thing to close.
   Day" release-group or recording for that artist. Submitting an edit means first
   deciding sanctioned-release vs. live bootleg, which is the v1.1
   official/bootleg split.
+- **Icon set is placeholder** — geometrically faithful and correct as files, but
+  not finished icon design. Small-size optical refinement, iOS squircle fitting,
+  the full platform size ladder and a monochrome cut are tracked as **Phase 7**
+  in the README. Replacement is a drop-in file swap.
+- **The API process died once mid-session** (Phase 5.5) and returned 503s until
+  restarted. Cause not captured — the logs went with the process. If it recurs,
+  grab `preview_logs` before restarting.
 
 ## Local environment notes
 
