@@ -13,6 +13,7 @@ import { peekCached } from "./cache.js";
 import { mapReleaseGroupType } from "./catalog/typeMapping.js";
 import {
   getArtistDiscography,
+  getCoverArtUrls,
   discographyCacheKey,
   type MBDiscographyEntry,
   type DiscographyProgress,
@@ -203,6 +204,7 @@ export async function getDiscographyState(artistMbid: string): Promise<Discograp
   })
     .then((entries) => {
       inFlight.delete(artistMbid); // now served from the cache
+      prefetchCoverArt(entries); // warm CAA for the entries users actually open
       return entries;
     })
     .catch((err) => {
@@ -212,6 +214,35 @@ export async function getDiscographyState(artistMbid: string): Promise<Discograp
   inFlight.set(artistMbid, state);
 
   return { status: "assembling", progress: state.progress };
+}
+
+// Cover art for obscure releases loads visibly late. Once a discography is
+// assembled we warm the Cover Art Archive cache for the entries most likely to
+// be looked at, so a click finds the URL already resolved. This is deliberately
+// small and best-effort: CAA is a separate host with no MusicBrainz rate limit,
+// but there is no reason to fetch art for hundreds of live bootlegs nobody will
+// open. Failures are ignored — this is a nicety, never a dependency.
+const PREFETCH_LIMIT = 24;
+
+function prefetchCoverArt(entries: MBDiscographyEntry[]): void {
+  const worthwhile = entries
+    .filter((e) => {
+      const t = (e.primaryType ?? "").toLowerCase();
+      const live = e.secondaryTypes.some((s) => s.toLowerCase() === "live");
+      return !live && (t === "album" || t === "ep");
+    })
+    .slice(0, PREFETCH_LIMIT);
+
+  void Promise.allSettled(worthwhile.map((e) => getCoverArtUrls(e.mbid)));
+}
+
+/**
+ * Whether an assembly is already running for this artist. A refresh during that
+ * window is pointless — the in-flight run writes the cache after any bust — so
+ * the route reports it instead of burning the caller's rate-limit slot.
+ */
+export function isAssembling(artistMbid: string): boolean {
+  return inFlight.has(artistMbid);
 }
 
 /** Await any in-flight assemblies. Used by tests. */

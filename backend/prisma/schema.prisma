@@ -72,7 +72,10 @@ model RefreshToken {
 model Artist {
   id            String   @id @default(cuid())
   musicbrainzId String?  @unique // MB artist MBID — canonical ID
-  name          String
+  name          String // as MusicBrainz has it — may be non-Latin (フィッシュマンズ)
+  // Latin/English rendering from MB aliases or sort-name, when `name` isn't
+  // Latin script. Display is "Latin (Original)"; search matches either.
+  latinName     String?
   sortName      String?
   type          String? // "Person" | "Group" | ...
   area          String? // country/region name from MusicBrainz

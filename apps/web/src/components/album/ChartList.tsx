@@ -3,6 +3,7 @@ import type { ChartEntry } from "@soundlog/shared";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import { CoverImage } from "../ui/CoverImage";
 import { StarRating } from "../ui/StarRating";
+import { ArtistCredit } from "./ArtistCredit";
 
 /** A ranked release chart: numbered rows with cover, links, and rating. */
 export function ChartList({ entries }: { entries: ChartEntry[] }) {
@@ -18,13 +19,7 @@ export function ChartList({ entries }: { entries: ChartEntry[] }) {
             <Link to={`/release/${encodeURIComponent(e.id)}`} className="card-link">
               <strong style={{ fontSize: 15 }}>{e.title}</strong>
             </Link>
-            {e.artistId ? (
-              <Link to={`/artist/${e.artistId}`} className="artist-link meta">
-                {e.artistName}
-              </Link>
-            ) : (
-              <span className="meta">{e.artistName}</span>
-            )}
+            <ArtistCredit artistId={e.artistId} artistName={e.artistName} />
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span className="type-badge">{RELEASE_TYPE_LABELS[e.type]}</span>
               {e.year && <span className="meta">{e.year}</span>}

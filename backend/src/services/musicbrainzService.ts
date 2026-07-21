@@ -109,10 +109,17 @@ export interface MBReleaseGroup {
 interface ReleaseGroupSearchResponse {
   "release-groups"?: Array<MBReleaseGroup & { score?: number }>;
 }
+export interface MBAlias {
+  name: string;
+  type?: string | null;
+  locale?: string | null;
+  primary?: boolean | null;
+}
 export interface MBArtist {
   id: string;
   name: string;
   "sort-name"?: string;
+  aliases?: MBAlias[];
   type?: string; // "Person" | "Group" | ...
   disambiguation?: string;
   country?: string;
@@ -178,8 +185,45 @@ export async function lookupReleaseGroup(mbid: string): Promise<MBReleaseGroup |
 
 /** Artist lookup by MBID. Cached 7d. */
 export async function lookupArtist(mbid: string) {
-  const key = `mb:artist:${mbid}`;
-  return cached(key, WEEK, () => mbFetch<MBArtist>(`/artist/${mbid}?fmt=json`));
+  // v2 key: aliases were added to the payload, so old cached entries lack them.
+  const key = `mb:artist:v2:${mbid}`;
+  return cached(key, WEEK, () => mbFetch<MBArtist>(`/artist/${mbid}?inc=aliases&fmt=json`));
+}
+
+// Scripts whose presence means a name won't be readable to a Latin-script
+// reader, so it deserves a Latin rendering alongside the original.
+const NON_LATIN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Greek}\p{Script=Thai}\p{Script=Devanagari}]/u;
+
+/** Whether a name needs a Latin counterpart for display. */
+export function isNonLatin(name: string): boolean {
+  return NON_LATIN.test(name);
+}
+
+/**
+ * A Latin/English rendering for a non-Latin artist name, or null when the name
+ * is already Latin (or MusicBrainz offers nothing usable).
+ *
+ * Preference order mirrors how MusicBrainz models this:
+ *   1. a primary alias in an English locale  ("Fishmans")
+ *   2. any English-locale alias
+ *   3. any alias that is itself Latin script
+ *   4. sort-name, if Latin (often the romanization)
+ */
+export function pickLatinName(artist: MBArtist | null | undefined): string | null {
+  if (!artist || !isNonLatin(artist.name)) return null;
+
+  const aliases = (artist.aliases ?? []).filter((a) => a.name && !isNonLatin(a.name));
+  const english = aliases.filter((a) => (a.locale ?? "").toLowerCase().startsWith("en"));
+
+  const chosen =
+    english.find((a) => a.primary)?.name ??
+    english[0]?.name ??
+    aliases[0]?.name ??
+    (artist["sort-name"] && !isNonLatin(artist["sort-name"]) ? artist["sort-name"] : null);
+
+  // Never return the original back as its own "translation".
+  return chosen && chosen !== artist.name ? chosen : null;
 }
 
 /**
@@ -213,6 +257,11 @@ export async function findReleaseGroupMbid(artist: string, title: string): Promi
  * `large` is the original upload, fetched by clients only for the lightbox.
  * Cached 7d (misses included).
  */
+// The Cover Art Archive is frequently slow for obscure releases. It is only ONE
+// source in the chain (CAA -> source cover -> Discogs), so waiting on it is
+// worse than moving on: bound it and let the next source answer.
+const CAA_TIMEOUT_MS = 2500;
+
 export async function getCoverArtUrls(releaseGroupMbid: string): Promise<CoverArtUrls | null> {
   const key = `caa:rg:urls:${releaseGroupMbid}`;
   return cached(key, WEEK, async () => {
@@ -220,6 +269,7 @@ export async function getCoverArtUrls(releaseGroupMbid: string): Promise<CoverAr
     try {
       res = await fetch(`${CAA_BASE}/release-group/${releaseGroupMbid}`, {
         headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
+        signal: AbortSignal.timeout(CAA_TIMEOUT_MS),
       });
     } catch (err) {
       // A dropped connection tells us NOTHING about whether art exists, so it

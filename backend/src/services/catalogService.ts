@@ -24,6 +24,7 @@ import {
   getCoverArtUrls,
   lookupReleaseGroup,
   lookupArtist,
+  pickLatinName,
   getReleaseGroupLabel,
   lookupLabel,
 } from "./musicbrainzService.js";
@@ -97,6 +98,7 @@ export async function searchCatalog(q: string, type?: string): Promise<CatalogSe
 export interface ArtistSearchResult {
   id: string;
   name: string;
+  latinName: string | null;
   type: string | null;
   area: string | null;
   releaseCount: number;
@@ -109,6 +111,7 @@ export async function searchArtists(q: string, size = 5): Promise<ArtistSearchRe
     hits.map(async (h) => ({
       id: h.id,
       name: h.name,
+      latinName: h.latinName ?? null,
       type: h.type ?? null,
       area: h.area ?? null,
       releaseCount: await prisma.release.count({ where: { artistId: h.id } }),
@@ -444,6 +447,8 @@ async function resolveArtistId(detail: ReleaseDetail, mbid: string | null): Prom
       data: {
         musicbrainzId: artistMbid,
         name: mb?.name ?? detail.artistName,
+        // Latin rendering for non-Latin names (フィッシュマンズ -> Fishmans).
+        latinName: pickLatinName(mb),
         sortName: mb?.["sort-name"] ?? null,
         type: mb?.type ?? null,
         area: mb?.area?.name ?? null,

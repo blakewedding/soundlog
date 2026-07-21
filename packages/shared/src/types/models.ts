@@ -16,6 +16,8 @@ export interface User {
 export interface Artist {
   id: string;
   name: string;
+  /** Latin/English rendering when `name` is non-Latin (フィッシュマンズ -> Fishmans). */
+  latinName?: string | null;
   sortName?: string | null;
   type?: string | null; // "Person" | "Group" | ...
   area?: string | null;
@@ -126,6 +128,7 @@ export interface ReleaseListItem {
 export interface ArtistSearchResult {
   id: string;
   name: string;
+  latinName?: string | null;
   type?: string | null;
   area?: string | null;
   releaseCount: number;

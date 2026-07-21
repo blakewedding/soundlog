@@ -3,12 +3,13 @@ import { useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import type { FeedReview } from "@soundlog/shared";
-import { api, type ReviewDTO } from "../services/api";
+import { api, ApiError, type ReviewDTO } from "../services/api";
 import { patchReleaseEverywhere } from "../lib/releaseCache";
 import { useAuth } from "../contexts/AuthContext";
 import { StarRating } from "../components/ui/StarRating";
 import { StarRatingInput } from "../components/ui/StarRatingInput";
 import { CoverImage } from "../components/ui/CoverImage";
+import { ArtistCredit } from "../components/album/ArtistCredit";
 import { Lightbox } from "../components/ui/Lightbox";
 import { ReviewForm } from "../components/review/ReviewForm";
 import { ReviewCard } from "../components/review/ReviewCard";
@@ -72,6 +73,20 @@ export default function Release() {
     },
   });
 
+  // Logging a listen used to be a bare `await` with no error handling: when the
+  // access token had aged out, the request 401'd, the rejection went unhandled,
+  // and the click appeared to do nothing at all. Now it's a mutation — pending
+  // and failed states are both visible, and a failure offers a retry.
+  const logMutation = useMutation({
+    mutationFn: () => api.logListen(releaseId!),
+    onSuccess: () => {
+      setLogged(true);
+      setTimeout(() => setLogged(false), 2500);
+      refreshDiary(); // make the new entry appear in the diary immediately
+      refreshRelease();
+    },
+  });
+
   if (isLoading) return <ReleaseSkeleton />;
   if (isError || !data) {
     return (
@@ -90,12 +105,6 @@ export default function Release() {
 
   const rate = (value: number) => ratingMutation.mutate(value);
   const unrate = () => ratingMutation.mutate(null);
-  async function logListen() {
-    await api.logListen(release.id);
-    setLogged(true);
-    setTimeout(() => setLogged(false), 2500);
-    refreshDiary(); // make the new entry appear in the diary immediately
-  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 40 }}>
@@ -109,9 +118,29 @@ export default function Release() {
           />
           {user && (
             <>
-              <button className="btn btn-primary" onClick={logListen}>
-                {logged ? "Logged ✓" : "Log listen"}
+              <button
+                className="btn btn-primary"
+                onClick={() => logMutation.mutate()}
+                disabled={logMutation.isPending}
+              >
+                {logMutation.isPending ? "Logging…" : logged ? "Logged ✓" : "Log listen"}
               </button>
+              {logMutation.isError && (
+                <div role="alert" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span className="meta" style={{ color: "var(--danger)" }}>
+                    {logMutation.error instanceof ApiError && logMutation.error.status === 401
+                      ? "Your session expired — sign in again to log this."
+                      : "Couldn't log that listen."}
+                  </span>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ padding: "2px 10px", fontSize: 12 }}
+                    onClick={() => logMutation.mutate()}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
               <AddToList releaseId={release.id} />
             </>
           )}
@@ -123,13 +152,12 @@ export default function Release() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
             <h1 style={{ marginBottom: 4 }}>{release.title}</h1>
-            {release.artist ? (
-              <Link to={`/artist/${release.artist.id}`} className="artist-link" style={{ fontSize: 18 }}>
-                {release.artistName}
-              </Link>
-            ) : (
-              <p style={{ color: "var(--text-muted)", fontSize: 18 }}>{release.artistName}</p>
-            )}
+            <ArtistCredit
+              artistId={release.artist?.id}
+              artistName={release.artistName}
+              className="artist-link"
+              style={{ fontSize: 18 }}
+            />
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>

@@ -110,6 +110,49 @@ Monorepo, TypeScript backend with health checks, Prisma schema, web + mobile she
 
 ---
 
+## Backlog — v1.1
+
+Deferred past v1 deliberately: each needs schema or policy decisions that would
+slow the core loop down if taken on now.
+
+- **Official / bootleg live split.** MusicBrainz carries a release *status*
+  (official, bootleg, promotion, pseudo-release). Aphex Twin's discography is
+  ~31 live entries, most of them circulating bootlegs sitting beside the
+  canonical records. Use the status to separate sanctioned live albums from
+  bootlegs rather than lumping both under "Live". Needs a per-release status
+  field and a display policy (hide bootlegs by default? a toggle?).
+
+- **Editions / reissues on release pages.** A release-group has many releases
+  (original pressing, remaster, anniversary edition, regional variants). Show
+  them on the release page with an explicit **original-issue cover-art policy**:
+  the release-group's original artwork is canonical, so a 2015 remaster never
+  silently replaces the 1994 sleeve. Pairs with the 3.6 date policy already in
+  place (original date, never a pressing).
+
+- **Track listings + weighted track ratings.** Schema expansion: a `Track` model
+  under Release, plus per-track ratings. The release rating then becomes a
+  weighted blend of the album rating and its track ratings — the thing that
+  makes "this album is a 7 but track 4 is a 10" expressible.
+
+- **Collection / format tracking — the v1.1 headline.** Track what you *own*,
+  not just what you've heard: format (vinyl/CD/cassette/digital), pressing,
+  condition, purchase date. This is the physical-media differentiator; no
+  Letterboxd-for-music competitor does it well, and it's the natural home for
+  the editions work above.
+
+- **Customizable chart builder.** The genre/year charts already share one
+  ranking query; expose it as a builder — combine type + genre + year (e.g.
+  "best EPs of 1997 tagged shoegaze") with the existing weighted-rating and
+  `minRatings` machinery behind it.
+
+- **Community genre voting (v1.1+).** The RYM model: members vote on a release's
+  genres instead of inheriting Last.fm's folksonomy wholesale. Phase 5.6.1
+  filtered the worst of the noise, but voting is the real fix. Needs
+  moderation/abuse thinking before it ships, and it supersedes the open question
+  about editorial genre descriptions.
+
+---
+
 ## Repo map
 
 ```

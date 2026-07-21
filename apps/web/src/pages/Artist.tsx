@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { artistDisplayName } from "@soundlog/shared";
 import { api, ApiError } from "../services/api";
 import { DiscographyGroups } from "../components/album/DiscographyGroups";
 
@@ -30,7 +31,7 @@ export default function Artist() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
       <header>
-        <h1 style={{ marginBottom: 4 }}>{artist.name}</h1>
+        <h1 style={{ marginBottom: 4 }}>{artistDisplayName(artist)}</h1>
         {facts && <p className="meta">{facts}</p>}
       </header>
 

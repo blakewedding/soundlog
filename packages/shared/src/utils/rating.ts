@@ -10,3 +10,20 @@ export function ratingToStars(value: number): string {
   const half = value % 1 >= 0.5;
   return "★".repeat(full) + (half ? "½" : "");
 }
+
+/**
+ * How an artist name is rendered everywhere in the UI.
+ *
+ * MusicBrainz stores names in their original script, so a Japanese act reads as
+ * "フィッシュマンズ" — unreadable to most of our users, and impossible to type.
+ * When we hold a Latin rendering we show "Latin (Original)" so both the
+ * recognisable name and the authentic one are present.
+ */
+export function artistDisplayName(artist: {
+  name: string;
+  latinName?: string | null;
+}): string {
+  const latin = artist.latinName?.trim();
+  if (!latin || latin === artist.name) return artist.name;
+  return `${latin} (${artist.name})`;
+}

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import type { ReleaseListItem } from "@soundlog/shared";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import { CoverImage } from "../ui/CoverImage";
+import { ArtistCredit } from "./ArtistCredit";
 
 /**
  * Grid card for a catalog release. The cover + title are one Link (a single,
@@ -18,13 +19,7 @@ export function ReleaseCard({ release }: { release: ReleaseListItem }) {
         </strong>
       </Link>
       <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 4 }}>
-        {release.artist ? (
-          <Link to={`/artist/${release.artist.id}`} className="artist-link meta">
-            {release.artistName}
-          </Link>
-        ) : (
-          <span className="meta">{release.artistName}</span>
-        )}
+        <ArtistCredit artistId={release.artist?.id} artistName={release.artistName} />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span className="type-badge">{RELEASE_TYPE_LABELS[release.type]}</span>
           {release.year && <span className="meta">{release.year}</span>}

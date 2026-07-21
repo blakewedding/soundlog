@@ -30,16 +30,55 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+/**
+ * Access tokens live 15 minutes. Without this, every write silently 401'd once a
+ * session aged past that — "Log listen" would appear to do nothing at all. On a
+ * 401 we redeem the httpOnly refresh cookie once and replay the request.
+ * Concurrent 401s share one in-flight refresh so we never stampede /auth/refresh.
+ */
+let refreshInFlight: Promise<string | null> | null = null;
+
+function refreshAccessToken(): Promise<string | null> {
+  refreshInFlight ??= (async () => {
+    try {
+      const res = await fetch("/api/auth/refresh", { method: "POST", credentials: "include" });
+      if (!res.ok) return null; // refresh token gone/expired — a real sign-out
+      const body = (await res.json()) as { accessToken?: string };
+      if (!body.accessToken) return null;
+      setAccessToken(body.accessToken);
+      return body.accessToken;
+    } catch {
+      return null;
+    }
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+function send(path: string, init: RequestInit | undefined, token: string | null): Promise<Response> {
+  return fetch(path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
     credentials: "include",
   });
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let res = await send(path, init, accessToken);
+
+  // One transparent retry after refreshing an expired access token. The auth
+  // endpoints themselves are excluded — refreshing in response to their 401
+  // would recurse.
+  if (res.status === 401 && accessToken && !path.startsWith("/api/auth/")) {
+    const fresh = await refreshAccessToken();
+    if (fresh) res = await send(path, init, fresh);
+  }
+
   if (!res.ok) {
     let message = `API error ${res.status}`;
     try {

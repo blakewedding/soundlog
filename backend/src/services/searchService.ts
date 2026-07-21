@@ -77,6 +77,7 @@ export async function indexArtist(artist: Artist): Promise<void> {
       id: artist.id,
       document: {
         name: artist.name,
+        latinName: artist.latinName ?? undefined,
         sortName: artist.sortName ?? undefined,
         type: artist.type ?? undefined,
         area: artist.area ?? undefined,
@@ -130,12 +131,14 @@ export async function esSearchReleases(q: string, type?: string): Promise<EsRele
 export interface EsArtistHit {
   id: string;
   name: string;
+  latinName?: string;
   type?: string;
   area?: string;
 }
 
 interface EsArtistSource {
   name: string;
+  latinName?: string;
   type?: string;
   area?: string;
 }
@@ -146,11 +149,20 @@ export async function esSearchArtists(q: string, size = 5): Promise<EsArtistHit[
     const result = await es.search<EsArtistSource>({
       index: ARTIST_INDEX,
       size,
-      query: { match: { name: { query: q, operator: "and" } } },
+      // Match either script: "Fishmans" and "フィッシュマンズ" both find the artist.
+      query: {
+        multi_match: { query: q, fields: ["name", "latinName"], operator: "and" },
+      },
     });
     return result.hits.hits.map((h) => {
       const src = h._source as EsArtistSource;
-      return { id: h._id as string, name: src.name, type: src.type, area: src.area };
+      return {
+        id: h._id as string,
+        name: src.name,
+        latinName: src.latinName,
+        type: src.type,
+        area: src.area,
+      };
     });
   } catch (err) {
     warnEs("artist search", err);
@@ -287,7 +299,10 @@ export async function esSearchLabels(q: string, size = 10): Promise<EsLabelHit[]
     const result = await es.search<{ name: string; area?: string }>({
       index: LABEL_INDEX,
       size,
-      query: { match: { name: { query: q, operator: "and" } } },
+      // Match either script: "Fishmans" and "フィッシュマンズ" both find the artist.
+      query: {
+        multi_match: { query: q, fields: ["name", "latinName"], operator: "and" },
+      },
     });
     return result.hits.hits.map((h) => {
       const src = h._source as { name: string; area?: string };

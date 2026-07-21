@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
-import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
+import { RELEASE_TYPE_LABELS, artistDisplayName } from "@soundlog/shared";
 import type {
   ArtistSearchResult,
   CatalogSearchResult,
@@ -13,6 +13,7 @@ import type {
 import { api } from "../services/api";
 import { useDebounce } from "../hooks/useDebounce";
 import { CoverImage } from "../components/ui/CoverImage";
+import { ArtistCredit } from "../components/album/ArtistCredit";
 
 const TABS: { id: SearchTab; label: string }[] = [
   { id: "all", label: "All" },
@@ -24,7 +25,10 @@ const TABS: { id: SearchTab; label: string }[] = [
 ];
 
 export default function Search() {
-  const [q, setQ] = useState("");
+  // Seeded from the URL so an artist-credit link like /search?q=Joy%20Division
+  // lands on real results (and searches stay shareable).
+  const [searchParams] = useSearchParams();
+  const [q, setQ] = useState(searchParams.get("q") ?? "");
   const [tab, setTab] = useState<SearchTab>("all");
   const debouncedQ = useDebounce(q, 300);
   const term = debouncedQ.trim();
@@ -151,7 +155,7 @@ function ArtistResultRow({ artist }: { artist: ArtistSearchResult }) {
       className="card-link card"
       style={{ display: "flex", alignItems: "baseline", gap: 10, padding: 12 }}
     >
-      <strong style={{ fontSize: 15 }}>{artist.name}</strong>
+      <strong style={{ fontSize: 15 }}>{artistDisplayName(artist)}</strong>
       {facts && <span className="meta">{facts}</span>}
       <span className="meta" style={{ marginLeft: "auto" }}>
         {artist.releaseCount} {artist.releaseCount === 1 ? "release" : "releases"}
@@ -215,13 +219,7 @@ function SearchResultCard({ result }: { result: CatalogSearchResult }) {
         </strong>
       </Link>
       <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 4 }}>
-        {result.artistId ? (
-          <Link to={`/artist/${result.artistId}`} className="artist-link meta">
-            {result.artistName}
-          </Link>
-        ) : (
-          <span className="meta">{result.artistName}</span>
-        )}
+        <ArtistCredit artistId={result.artistId} artistName={result.artistName} />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span className="type-badge">{RELEASE_TYPE_LABELS[result.type]}</span>
           {result.year && <span className="meta">{result.year}</span>}

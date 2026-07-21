@@ -260,6 +260,45 @@ describe("GET /api/artists/:id/discography", () => {
   }, 40_000);
 });
 
+describe("refresh rate limiting", () => {
+  // A refresh that can't accomplish anything must NOT burn the caller's hourly
+  // slot — otherwise clicking refresh during the initial assembly (very likely
+  // on a cold artist) locks you out of a real refresh for an hour.
+  const limiterKeys = async () =>
+    (await redis.keys(`discog:refresh:*:${ARTIST_MBID}`)).length;
+
+  it("does not consume a slot when nothing is cached yet", async () => {
+    await redis.del(discographyCacheKey(ARTIST_MBID));
+    const res = await request(app).post(`/api/artists/${artistId}/discography/refresh`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("assembling");
+    expect(await limiterKeys()).toBe(0);
+  }, 30_000);
+
+  it("does not consume a slot while an assembly is already in flight", async () => {
+    await redis.del(discographyCacheKey(ARTIST_MBID));
+    await request(app).get(`/api/artists/${artistId}/discography`); // starts assembly
+    const res = await request(app).post(`/api/artists/${artistId}/discography/refresh`);
+    expect(res.body.status).toBe("assembling");
+    expect(await limiterKeys()).toBe(0);
+    await settleDiscographies();
+  }, 40_000);
+
+  it("consumes the slot for a real refresh, and refuses a second within the window", async () => {
+    await getArtistDiscography(ARTIST_MBID); // ensure something IS cached
+    const first = await request(app).post(`/api/artists/${artistId}/discography/refresh`);
+    expect(first.body.status).toBe("refreshing");
+    expect(await limiterKeys()).toBe(1);
+
+    // Re-cache so the second attempt reaches the limiter rather than the
+    // "nothing cached" short-circuit.
+    await getArtistDiscography(ARTIST_MBID);
+    const second = await request(app).post(`/api/artists/${artistId}/discography/refresh`);
+    expect(second.status).toBe(429);
+    expect(second.body.error).toMatch(/refreshed recently/i);
+  }, 60_000);
+});
+
 describe("click-to-materialize", () => {
   it("seeds an un-seeded discography entry through the resilient seed path", async () => {
     expect(

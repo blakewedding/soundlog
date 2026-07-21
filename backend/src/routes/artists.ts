@@ -4,8 +4,13 @@ import { getArtistWithReleases } from "../services/catalogService.js";
 import { prisma } from "../config/database.js";
 import { redis } from "../config/redis.js";
 import { optionalAuth, type AuthedRequest } from "../middleware/auth.js";
-import { getDiscographyState, mergeDiscography } from "../services/discographyService.js";
-import { bustArtistDiscography } from "../services/musicbrainzService.js";
+import {
+  getDiscographyState,
+  mergeDiscography,
+  isAssembling,
+} from "../services/discographyService.js";
+import { bustArtistDiscography, discographyCacheKey } from "../services/musicbrainzService.js";
+import { peekCached } from "../services/cache.js";
 
 export const artistsRouter = Router();
 
@@ -13,7 +18,7 @@ export const artistsRouter = Router();
 async function artistWithMbid(id: string) {
   const artist = await prisma.artist.findUnique({
     where: { id },
-    select: { id: true, name: true, musicbrainzId: true },
+    select: { id: true, name: true, latinName: true, musicbrainzId: true },
   });
   if (!artist) throw new HttpError(404, "Artist not found");
   return artist;
@@ -68,6 +73,25 @@ artistsRouter.post(
       const artist = await artistWithMbid(req.params.id);
       if (!artist.musicbrainzId) throw new HttpError(400, "Artist has no MusicBrainz id");
 
+      // Only a refresh that actually DOES something may consume the hourly slot.
+      // Two cases where it wouldn't, and where burning the slot would lock the
+      // user out of a real refresh for an hour over a no-op:
+      //   - an assembly is already running (it writes the cache after any bust,
+      //     so the refresh would be silently overwritten), or
+      //   - nothing is cached yet, so there is simply nothing to invalidate.
+      if (isAssembling(artist.musicbrainzId)) {
+        return res.json({
+          status: "assembling",
+          note: "Already fetching the latest discography.",
+        });
+      }
+      const cachedAlready = await peekCached<unknown[]>(
+        discographyCacheKey(artist.musicbrainzId)
+      );
+      if (!cachedAlready) {
+        return res.json({ status: "assembling", note: "Fetching this discography for the first time." });
+      }
+
       const who = req.userId ?? `ip:${req.ip}`;
       const key = `discog:refresh:${who}:${artist.musicbrainzId}`;
       // SET NX EX — atomic claim; a second attempt inside the window is refused.
@@ -99,6 +123,7 @@ artistsRouter.get("/:id", async (req, res, next) => {
       artist: {
         id: artist.id,
         name: artist.name,
+        latinName: artist.latinName,
         sortName: artist.sortName,
         type: artist.type,
         area: artist.area,
