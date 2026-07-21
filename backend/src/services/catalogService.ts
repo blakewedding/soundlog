@@ -279,8 +279,10 @@ export async function persistRelease(detail: ReleaseDetail): Promise<Release> {
           musicbrainzId: mbid,
           discogsId: detail.discogsId ?? null,
           spotifyId: detail.spotifyId ?? null,
-          title: detail.title,
-          artistName: detail.artistName,
+          // Upstream titles occasionally carry stray padding ("The Magnolia
+          // Electric Co "), which silently breaks exact-match lookups.
+          title: detail.title.trim(),
+          artistName: detail.artistName.trim(),
           releaseDate:
             detail.source === "musicbrainz" ? parseReleaseDate(detail.releaseDate) : null,
           genres: detail.genres ?? [],

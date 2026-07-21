@@ -80,9 +80,7 @@ function renderRelease() {
 }
 
 beforeEach(() => {
-  // Call counts and per-test implementations must not leak between cases —
-  // toHaveBeenCalledTimes assertions are cumulative otherwise.
-  vi.clearAllMocks();
+  // Call history is zeroed globally by `clearMocks` in vite.config.ts.
   vi.mocked(api.getRelease).mockResolvedValue({ release: { ...RELEASE } as never });
   vi.mocked(api.reviewsFor).mockResolvedValue({ reviews: [] });
   vi.mocked(api.lists).mockResolvedValue({ lists: [] });

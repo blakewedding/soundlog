@@ -29,6 +29,12 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     globals: false,
+    // Zero every spy's call history between tests. Without this,
+    // toHaveBeenCalledTimes() counts accumulate across cases in a file and a
+    // test that passes alone fails in-suite (hit while writing the 5.6.1 log
+    // listen tests). Only history is cleared — implementations survive, so
+    // mocks configured in beforeEach still apply.
+    clearMocks: true,
   },
   server: {
     // Listen on all interfaces so the OAuth callback landing is reachable at
