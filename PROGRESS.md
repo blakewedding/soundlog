@@ -140,11 +140,13 @@ an oversight, and each is cheap to reverse:
   lighter than they were, to clear AA. The tonal ladder is compressed as a
   result; check it still reads as "Gold on Vinyl" at full size.
 - **Cover tint strength** — saturation capped at 0.45, lightness 0.10–0.24.
-- **Nav at 380px** wraps to three rows (~146px tall). Functional and fully
-  reachable, but a disclosure menu would be shorter — that is a new feature, so
-  it was not built.
+- **Nav at 380px** wraps to three rows (~146px tall, ~18% of the viewport).
+  Functional and fully reachable, but tall. Logged as **Phase 7** scope in the
+  README — a disclosure menu or tab bar is a new navigation component, not
+  polish, so it was not built here.
 - **Desktop half-star targets are 8×24.** Pre-existing and outside 5.5's brief
-  (which specified mobile), but tight even for a mouse.
+  (which specified mobile), but tight even for a mouse — also noted under
+  Phase 7 alongside the nav item.
 
 ### 2. Phase 6 — production deployment
 

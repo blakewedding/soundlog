@@ -136,7 +136,12 @@ impact style itself.
 - [x] **Backend production image builds.** `infrastructure/docker/Dockerfile.backend` is pnpm-workspace-aware: it copies the lockfile + every workspace manifest (`--frozen-lockfile` validates all importers), installs, generates the Prisma client, compiles, then uses `pnpm deploy --prod` to emit a standalone runtime tree. Verified end-to-end with `docker build -f infrastructure/docker/Dockerfile.backend .` and by instantiating `PrismaClient` inside the resulting image.
 - [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames).
 
-### Phase 7 — Brand assets
+### Phase 7 — Brand assets & deferred design work
+
+Design work that Phase 5.5 deliberately did not do, because each item is a new
+piece of design or a new component rather than polish on an existing one.
+
+#### Icon set
 
 The wordmark is settled: the Groove glyph leading Struck letterforms, flat gold
 throughout (`apps/web/src/components/ui/Wordmark.tsx`). The **icon set is not**.
@@ -163,6 +168,34 @@ Outstanding:
 
 Replacement is a **drop-in file swap** — same filenames, same dimensions, no
 code changes. See `apps/web/public/icons/README.md` for the contract.
+
+#### Mobile nav pattern (disclosure/hamburger or tab bar)
+
+The 5.5 responsive audit made the nav *work* at 380px — it wraps, nothing
+overflows, every link is a ≥44px target — but it does so by stacking into three
+rows **~146px tall, roughly 18% of a 380px viewport**, consumed before any
+content renders. Six links plus a wordmark plus an auth control genuinely do not
+fit on one small-screen row, so wrapping was the honest polish-level fix.
+
+The real fix is a different component, which is why it was deferred: a
+disclosure (hamburger) menu, or a bottom tab bar for the primary destinations.
+Either is a new navigation pattern, not a refinement of the existing one.
+
+Whichever is chosen must keep what 5.5 established, all of it currently verified:
+
+- no horizontal scroll on the document at 380px;
+- ≥44px targets on every nav control;
+- a visible `:focus-visible` ring on every focusable (the global rule in
+  `theme.css` covers new elements automatically — don't opt out of it);
+- if it is a disclosure menu, it is a modal-ish surface and owes the same
+  keyboard contract the lightbox already implements: focus moves in, is trapped
+  while open, and returns to the trigger on close (see
+  `apps/web/src/components/ui/Lightbox.tsx` and its tests for the pattern).
+
+Related, same area: the **desktop half-star target is 8×24** in the rating input.
+Pre-existing and outside 5.5's mobile brief, but tight for a mouse. The fix is a
+wider star box, not larger type — `.stars` is monospace, so font size does not
+buy hit width (this is exactly why the mobile fix widens the box instead).
 
 ---
 
