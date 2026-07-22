@@ -8,7 +8,7 @@ import {
   StyleSheet,
 } from "react-native";
 import type { FeedItem } from "@soundlog/shared";
-import { getFeed, UnauthenticatedError } from "../../src/api";
+import { API_BASE_SOURCE, API_BASE_URL, ApiUnreachableError, getFeed, UnauthenticatedError } from "../../src/api";
 
 export default function Feed() {
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -22,7 +22,15 @@ export default function Feed() {
       setItems(page.items);
       setError(null);
     } catch (err) {
-      setError(err instanceof UnauthenticatedError ? err.message : "Couldn't load your feed.");
+      // A generic "couldn't load your feed" is useless on a device, where the
+      // usual cause is that the app is pointed somewhere unreachable. Both the
+      // auth and unreachable errors already explain themselves, so pass them
+      // through rather than flattening them.
+      if (err instanceof UnauthenticatedError || err instanceof ApiUnreachableError) {
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Couldn't load your feed.");
+      }
     }
   }, []);
 
@@ -56,9 +64,18 @@ export default function Feed() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c8a24b" />
       }
       ListEmptyComponent={
-        <Text style={styles.empty}>
-          {error ?? "Your feed is quiet — follow some members on the web to fill it."}
-        </Text>
+        <View>
+          <Text style={styles.empty}>
+            {error ?? "Your feed is quiet — follow some members on the web to fill it."}
+          </Text>
+          {/* Dev only: which API the app actually resolved, and how. Without
+              this, diagnosing a device means guessing at the base URL. */}
+          {__DEV__ && (
+            <Text style={styles.debug}>
+              API: {API_BASE_URL} ({API_BASE_SOURCE})
+            </Text>
+          )}
+        </View>
       }
     />
   );
@@ -110,6 +127,7 @@ const styles = StyleSheet.create({
   list: { padding: 12 },
   center: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   empty: { color: "#9c978b", textAlign: "center" },
+  debug: { color: "#6b675e", textAlign: "center", fontSize: 11, marginTop: 12, fontFamily: "monospace" },
   row: {
     backgroundColor: "#131316",
     borderColor: "#2a2a30",

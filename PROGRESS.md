@@ -138,8 +138,17 @@ only support 54), `expo-doctor` 18/18:
   mobile screens.
 - [ ] **Pull-to-refresh** (Phase 4) — the `RefreshControl` gesture has never run
   on a touch screen either.
-- **`EXPO_PUBLIC_API_URL`** must be the dev machine's LAN IP, not `localhost` —
-  on a device `localhost` is the phone.
+- **The API host is now derived automatically** — `src/apiHost.ts` reuses the
+  Expo bundler's own LAN host with port 4000, so there is no IP to set and it
+  survives network changes. `EXPO_PUBLIC_API_URL` remains an override and is
+  still required when running with `--tunnel`. Verified end to end: the bundler
+  reports `192.168.1.151:8083`, the resolver produces
+  `http://192.168.1.151:4000`, and that URL answers 200.
+- **The feed needs a token.** `/api/feed` is authenticated and 401s without one,
+  so a successful URL fix still shows "Sign in to see your feed" unless you
+  start with `EXPO_PUBLIC_DEV_TOKEN=<access token>`.
+- The dev feed screen prints the resolved base URL and the rule that produced it
+  (`configured` / `expo-lan` / `fallback`) beneath the empty state.
 
 **B · Mobile browser (the web layout).** A desktop browser narrowed to 380px
 reports a *fine* pointer, so it exercises the width half of the responsive rules

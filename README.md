@@ -151,6 +151,38 @@ npx expo-doctor                            # then fix what it reports
 npx expo export --platform ios             # proves Metro can still bundle
 ```
 
+#### Where the mobile app finds the API
+
+On a phone, `localhost` is the phone — a dev build pointed at
+`http://localhost:4000` reaches nothing and fails in a way that looks like the
+server is down. `apps/mobile/src/apiHost.ts` resolves the base URL instead of
+hardcoding it, in this order:
+
+1. **`EXPO_PUBLIC_API_URL`**, or **`extra.apiUrl`** from the app config. An
+   explicit setting always wins. **This is the production path** — Phase 6 sets
+   `extra.apiUrl` to the real API domain.
+2. **The Expo bundler's own host**, in development only. Expo already told the
+   device where to fetch JavaScript from and exposes it as
+   `Constants.expoConfig.hostUri` (`192.168.1.151:8081`); that host is reused
+   with the API port. No IP to update when the network changes, the router
+   reassigns a lease, or someone runs the repo on their own laptop.
+3. **localhost** — correct for a simulator sharing the host machine, a
+   deliberate last resort elsewhere, and warned about loudly.
+
+Tunnel hosts (`--tunnel`, `*.exp.direct`) are rejected at step 2 on purpose:
+they proxy the *bundler* port only, so appending `:4000` yields a URL that
+resolves but refuses. Use `EXPO_PUBLIC_API_URL` with a tunnel.
+
+The feed also needs a token — `/api/feed` is authenticated and returns 401
+without one. Until mobile auth lands, supply one:
+
+```bash
+EXPO_PUBLIC_DEV_TOKEN=<access token> pnpm --filter @soundlog/mobile dev
+```
+
+The dev feed screen prints the resolved base URL and which rule produced it, so
+a device failure names its own cause.
+
 **Two workspace-specific traps**, both hit during the 54 upgrade:
 
 - **Two React majors now coexist** — web on 18, mobile on 19. pnpm hoists a
@@ -165,6 +197,11 @@ npx expo export --platform ios             # proves Metro can still bundle
   `expo-constants`, `expo-linking`, `react-native-safe-area-context`,
   `react-native-screens`. These were missing since SDK 51 and would have crashed
   the app outside Expo Go. `expo-doctor` is what catches this; run it.
+- **`extra` does not round-trip through Expo's config serialiser.** A
+  `"apiUrl": null` in `app.json` arrives at runtime as `{}` — *truthy*. Treating
+  `extra` values as the types you wrote crashes at module load. Anything read
+  from `Constants.expoConfig.extra` must be validated, not asserted; see
+  `resolveApiBaseUrl`, which takes it as `unknown`.
 
 ### Phase 6 — Production deployment
 > "Finish the K8s manifests in infrastructure/k8s: web deployment, Elasticsearch StatefulSet, Redis deployment, Varnish deployment in front of the backend service, secrets, and a GitHub Actions pipeline (test → build → push → deploy). Target GKE Autopilot."
