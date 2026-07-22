@@ -9,20 +9,46 @@ we, what's live, what's next" for a session starting cold.
 
 ## Status
 
-`origin/main` is an exact mirror of local — head `44ed01c`, 0 ahead / 0 behind,
+`origin/main` is an exact mirror of local — head `564fa39`, 0 ahead / 0 behind,
 trees identical, clean working tree. History re-scanned across every commit: no
 `.env`, no key material, ever.
 
 **Phases 0 through 5.8 are done. Phase 5.5 (design polish) closes the feature
-work** — committed and pushed as `44ed01c`. Suites green: **backend 149 + web 79
-+ mobile 10 = 238 tests**, all three packages typecheck clean.
+work.** Suites green: **backend 149 + web 79 + mobile 28 = 256 tests**, all
+three packages typecheck clean.
 
-The 5.5 *code* is shipped; what remains is human sign-off. **Mobile is verified
-on a real device as of 2026-07-22** — the app loads over LAN, the feed
-populates, pull-to-refresh works (closing the Phase 4 item), and the New
-Architecture runs clean. What's left of the manual pass is the web layout in a
-phone browser, plus taste calls a browser can't make. Then **Phase 6 —
-production deployment.**
+Shipped since, all committed and pushed:
+
+| | |
+|---|---|
+| `44ed01c` | Phase 5.5 — design polish |
+| `578fc4f` | **Mobile: Expo SDK 54 upgrade** (from 51; `expo-doctor` 18/18) |
+| `22c4e77` | **Mobile: LAN-aware dev API host** |
+| `564fa39` | Real-device session recorded; mobile scope moved into Phase 7 |
+
+**Real-device session — 2026-07-22, confirmed:** the app loads in Expo Go over
+LAN, the feed populates, and **pull-to-refresh works — closing the Phase 4
+verification item.** The New Architecture (SDK 53 default) runs clean. Mobile's
+scope gaps are documented as Phase 7 work.
+
+*The feed populates **without covers**: mobile renders no images at all —
+`FeedRow` is text-only and there is no `<Image>` anywhere in `apps/mobile`.
+That is current design, not a failure.*
+
+## Remaining to close 5.5
+
+Nothing is in progress. Three items, none started:
+
+1. **Cover URL scheme fix, then verified on device.** See the open item below —
+   **not started, no diagnosis has been run.** 77% of stored cover URLs are
+   `http://`.
+2. **Mobile-Safari star-drag ruling** — the 380px *web* layout in a phone
+   browser (section B of the manual pass). Untouched by the native session.
+3. **Desktop checklist stragglers** — the taste calls under "judgement calls"
+   below: wordmark rule threshold, the glyph's two optical cuts, lifted palette
+   tokens, cover tint strength.
+
+Then **Phase 6 — production deployment.**
 
 Two 5.5 items turned out to be **blocked rather than pending**: haptic feel and
 the native half-star ruling both need mobile screens that don't exist. Both moved
@@ -247,13 +273,31 @@ app is actually used on — see the cookie-origin note under local environment.
 - **The API process died once mid-session** (Phase 5.5) and returned 503s until
   restarted. Cause not captured — the logs went with the process. If it recurs,
   grab `preview_logs` before restarting.
-- **Mobile cover images are an untested path with a known trap.** `FeedRow` is
-  text-only, so nothing on the device has ever loaded an image. Roughly half the
-  catalog's `coverUrl` values are `http://` (5 of 11 in a sampled feed page) and
-  iOS App Transport Security blocks cleartext loads in *release* builds while
-  Expo Go allows them — so images would work in dev and show a grid of blanks in
-  production. Fix at the source (store `https` URLs; the Cover Art Archive
-  serves both) rather than opening an ATS exception. Tracked in Phase 7.
+- **Cover URLs are stored over `http://` — NOT STARTED.** Measured across the
+  whole catalog, not sampled: **220 of 284 cover URLs (77%) are `http://`**,
+  every one of them `coverartarchive.org`. 152 releases.
+
+  This bites in two places, and the second one is closer than it looks:
+
+  - **iOS App Transport Security** blocks cleartext in *release* builds while
+    Expo Go permits it — so mobile covers would work in dev and show blanks in
+    production, once mobile renders images at all (it doesn't yet).
+  - **The production web app**, which Phase 6 will serve over HTTPS. Browsers
+    block mixed content, so 77% of covers would break on the *web* the moment
+    the site is no longer served over plain HTTP. This is a Phase 6 concern, not
+    only a Phase 7 one.
+
+  The `https` variants serve the same artwork — verified on 7 stored URLs, all
+  returning `200 image/jpeg`.
+
+  **The constraint that makes the obvious fix dangerous:** the Cover Art Archive
+  and its archive.org backend return **intermittent 500s on both schemes**. One
+  URL returned 500 four times in a row and 200 (49 KB) on the fifth. A
+  normalization script that verifies each URL and blanks or skips on failure
+  would destroy good artwork on a transient error — the exact class of bug
+  CLAUDE.md §1 exists to prevent. Rewrite the scheme unconditionally, or retry
+  hard before concluding anything is missing; never turn a retryable failure
+  into a permanent one.
 
 ## Local environment notes
 
