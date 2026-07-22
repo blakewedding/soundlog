@@ -111,8 +111,10 @@ Design polish. Details worth carrying forward:
 Everything in 5.5 was demoed in a browser, but a browser cannot judge taste and
 cannot vibrate. Outstanding human verification:
 
-**Real-device Expo session — the only way to check these at all.** Simulators
-have no vibration hardware and silently no-op:
+#### Real-device checklist
+
+Two different device contexts, both needing actual hardware. Start the stack
+once and both are reachable from a phone on the same network:
 
 ```bash
 docker compose up -d postgres redis elasticsearch
@@ -120,14 +122,37 @@ pnpm dev                              # api :4000, web :3000
 pnpm --filter @soundlog/mobile dev    # scan the QR with Expo Go on a real phone
 ```
 
-- **Haptics feel.** The intent→style table is unvalidated on hardware. Expect to
-  retune it; it is one table in one file, and no call site picks a style.
-  Note there is nothing to *trigger* a haptic on the device yet (see above), so
-  checking feel needs a temporary call site or waiting for the mobile screens.
-- **Pull-to-refresh** (Phase 4) — the `RefreshControl` gesture has never run on
-  a touch screen either.
+**A · Expo session (the native app).** Simulators have no vibration hardware and
+silently no-op, so these cannot be checked any other way:
+
+- [ ] **Haptics feel.** The intent→style table is unvalidated on hardware.
+  Expect to retune it; it is one table in one file, and no call site picks a
+  style. Note there is nothing to *trigger* a haptic on the device yet (see
+  above), so checking feel needs a temporary call site or waiting for the
+  mobile screens.
+- [ ] **Pull-to-refresh** (Phase 4) — the `RefreshControl` gesture has never run
+  on a touch screen either.
 - **`EXPO_PUBLIC_API_URL`** must be the dev machine's LAN IP, not `localhost` —
   on a device `localhost` is the phone.
+
+**B · Mobile browser (the web layout).** A desktop browser narrowed to 380px
+reports a *fine* pointer, so it exercises the width half of the responsive rules
+but never the touch half — and a mouse is far more precise than a thumb, which
+flatters every hit-target decision:
+
+- [ ] **Drag a half-star rating one-handed, thumb only, on the 380px web layout
+  in mobile Safari — rule on whether 22px per half-star is comfortably usable or
+  fiddly.** Deferred deliberately: a fine pointer cannot answer this. If it is
+  fiddly, the fix is a wider star box, **not** larger type — `.stars` is
+  JetBrains Mono, so font size does not buy hit width (this is exactly why the
+  mobile fix widened the box instead of the glyph). The box is
+  `.star-input > span { min-width }` in `theme.css`.
+- [ ] While there: **iOS focus-zoom** should not fire on any input (fields are
+  16px for this reason), and the nav's three wrapped rows should still be
+  thumb-reachable.
+
+Reach the web app from the phone at `http://<dev-machine-LAN-IP>:3000` — not
+`localhost`, and note the cookie-origin caveat below if sign-in looks broken.
 
 **Judgement calls worth a second opinion** — each was a deliberate choice, not
 an oversight, and each is cheap to reverse:
@@ -144,9 +169,10 @@ an oversight, and each is cheap to reverse:
   Functional and fully reachable, but tall. Logged as **Phase 7** scope in the
   README — a disclosure menu or tab bar is a new navigation component, not
   polish, so it was not built here.
-- **Desktop half-star targets are 8×24.** Pre-existing and outside 5.5's brief
-  (which specified mobile), but tight even for a mouse — also noted under
-  Phase 7 alongside the nav item.
+- **Half-star hit targets.** Mobile is 22×44 — **verdict deferred to the
+  real-device pass above**, not settled here, because a fine pointer flatters
+  it. Desktop is 8×24: pre-existing, outside 5.5's mobile brief, tight even for
+  a mouse, and noted under Phase 7 alongside the nav item.
 
 ### 2. Phase 6 — production deployment
 
