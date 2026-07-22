@@ -104,32 +104,38 @@ Monorepo, TypeScript backend with health checks, Prisma schema, web + mobile she
 ### Phase 5.5 — Design polish
 > "Wordmark and identity, micro-interactions, perceived performance, a 380px responsive audit, an accessibility floor, and mobile haptics. No new features — refinement only."
 
-**Requires a real device — cannot be verified in CI, a simulator, or a browser:**
+**Real-device session — 2026-07-22.** Ran in Expo Go on a physical phone over
+LAN. Confirmed working:
 
-- **Haptics.** `apps/mobile/src/haptics.ts` holds the whole vocabulary and its
-  tests cover the mapping, the per-half-star drag behaviour, and the
-  never-throw guarantee. What tests *cannot* cover is how it feels: simulators
-  have no vibration hardware and silently no-op, so the choice of impact style
-  per intent is unvalidated until it runs on a phone. Expect to retune the
-  table in that one file.
-- **Pull-to-refresh** (Phase 4, `apps/mobile/app/(tabs)/index.tsx`). The
-  `RefreshControl` gesture needs a touch screen; it has never been exercised on
-  hardware either.
-
-Both need an Expo session on a physical iOS or Android device. **Unblocked** —
-the app was on SDK 51, which current Expo Go builds no longer support; it now
-runs SDK 54 (see below):
+- [x] **The app loads and the feed populates** with live data from the API.
+- [x] **Pull-to-refresh** (Phase 4, `apps/mobile/app/(tabs)/index.tsx`) — the
+      `RefreshControl` gesture had never run on a touch screen. **This closes
+      the Phase 4 verification item.**
+- [x] **The LAN pipeline end to end** — Expo Go over `exp://` on the LAN, the
+      API host derived from the bundler (`src/apiHost.ts`), and the backend
+      reachable across the network.
+- [x] **The New Architecture**, default since SDK 53, runs without issue.
 
 ```bash
-pnpm --filter @soundlog/mobile dev   # scan the QR with Expo Go on a real phone
+# what the session used
+cd ~/Downloads/soundlog && EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts/dev-token.ts) \
+  pnpm --filter @soundlog/mobile dev --clear
 ```
 
-**Haptics wiring status.** The map is complete and centralised, but mobile
-currently ships only a feed tab and a placeholder profile — there is no rating
-input, log button, follow or like on the device yet, so *no intent has a call
-site*. The utility is deliberately ready ahead of those screens; wiring is one
-`haptic("commitLog")` per action when they land, and no call site ever picks an
-impact style itself.
+**Still unverified, and now known to be blocked rather than merely pending:**
+
+- **Haptic feel.** `apps/mobile/src/haptics.ts` holds the whole vocabulary and
+  its tests cover the mapping, the per-half-star drag behaviour and the
+  never-throw guarantee. What tests cannot cover is how it *feels* — and the
+  device session confirmed there is nothing to fire one: no rating, log, follow
+  or like exists on mobile, so **no intent has a call site**. This is not a
+  scheduling problem; it needs the Phase 7 screens. Retuning, when it happens,
+  is one table in one file and no call site picks an impact style itself.
+- **The native 22px half-star ruling** — same dependency. The mobile *web*
+  layout can be judged in mobile Safari today; the native star input cannot
+  exist until there is a release detail screen to host it.
+
+Both are carried into **Phase 7** below, alongside the screens they depend on.
 
 ### Mobile — Expo SDK 54
 
@@ -210,10 +216,47 @@ a device failure names its own cause.
 - [x] **Backend production image builds.** `infrastructure/docker/Dockerfile.backend` is pnpm-workspace-aware: it copies the lockfile + every workspace manifest (`--frozen-lockfile` validates all importers), installs, generates the Prisma client, compiles, then uses `pnpm deploy --prod` to emit a standalone runtime tree. Verified end-to-end with `docker build -f infrastructure/docker/Dockerfile.backend .` and by instantiating `PrismaClient` inside the resulting image.
 - [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames).
 
-### Phase 7 — Brand assets & deferred design work
+### Phase 7 — Brand assets, mobile app & deferred design work
 
-Design work that Phase 5.5 deliberately did not do, because each item is a new
-piece of design or a new component rather than polish on an existing one.
+Work that Phase 5.5 deliberately did not do, because each item is a new piece of
+design or a new component rather than polish on an existing one.
+
+#### Mobile app — the screens that don't exist yet
+
+**Device-verified 2026-07-22:** the app loads in Expo Go over LAN, the feed
+populates with live data from the API, and pull-to-refresh works — closing the
+Phase 4 verification item. The New Architecture (default from SDK 53) runs
+without issue. What follows is everything the device session confirmed is
+*absent by design*.
+
+- **Auth.** There is none. `expo-auth-session` is a dependency but is imported
+  nowhere, and the feed authenticates with a dev token minted by
+  `backend/scripts/dev-token.ts`. Needs email/password sign-in **and** the OAuth
+  code-exchange flow. The backend is not ready for the device half of this:
+  `CLIENT_URL`, `SPOTIFY_REDIRECT_URI` and `GOOGLE_REDIRECT_URI` all default to
+  `127.0.0.1`, which a phone cannot use — the redirect has to move to the
+  `soundlog://` scheme registered in `app.json`.
+- **Release detail screen**, with the half-star `StarRatingInput`.
+- **Log / review / list actions** — the write paths. Mobile is read-only today.
+
+Two Phase 5.5 items are **blocked on the above** and cannot be settled first:
+
+- **Haptic feel.** `apps/mobile/src/haptics.ts` holds the whole vocabulary and
+  its tests pass, but *no intent has a call site* — there is no rating, log,
+  follow or like on the device to fire one. Verifying how the intent→style table
+  actually feels needs those screens. Retuning is one table in one file.
+- **The native 22px half-star ruling.** The mobile web layout's hit target was
+  deferred to a device pass; the *native* star input cannot be judged until a
+  release detail screen exists to put one on.
+
+**Cover images are a trap waiting.** Mobile renders none today — `FeedRow` is
+text-only — so nothing has ever exercised image loading. When it does: roughly
+**half the catalog's `coverUrl` values are `http://`, not `https://`** (5 of 11
+in a sample feed page). iOS App Transport Security blocks arbitrary cleartext
+loads in release builds, so a naive `<Image source={{ uri: coverUrl }} />` will
+show a grid of blanks in production while working fine in Expo Go. Fix at the
+source — upgrade the stored URLs to `https` (the Cover Art Archive serves both)
+rather than opening an ATS exception.
 
 #### Icon set
 

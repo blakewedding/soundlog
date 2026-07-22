@@ -17,9 +17,17 @@ trees identical, clean working tree. History re-scanned across every commit: no
 work** — committed and pushed as `44ed01c`. Suites green: **backend 149 + web 79
 + mobile 10 = 238 tests**, all three packages typecheck clean.
 
-The 5.5 *code* is shipped; what remains is human sign-off. Everything was demoed
-in a browser, but a browser cannot judge taste and cannot vibrate — so **the 5.5
-manual pass** (below) comes before **Phase 6 — production deployment.**
+The 5.5 *code* is shipped; what remains is human sign-off. **Mobile is verified
+on a real device as of 2026-07-22** — the app loads over LAN, the feed
+populates, pull-to-refresh works (closing the Phase 4 item), and the New
+Architecture runs clean. What's left of the manual pass is the web layout in a
+phone browser, plus taste calls a browser can't make. Then **Phase 6 —
+production deployment.**
+
+Two 5.5 items turned out to be **blocked rather than pending**: haptic feel and
+the native half-star ruling both need mobile screens that don't exist. Both moved
+to **Phase 7**, which now carries the mobile app's missing surface — auth,
+release detail, and the write actions.
 
 ## Done
 
@@ -126,34 +134,46 @@ pnpm dev                              # api :4000, web :3000
 pnpm --filter @soundlog/mobile dev    # scan the QR with Expo Go on a real phone
 ```
 
-**A · Expo session (the native app).** Simulators have no vibration hardware and
-silently no-op, so these cannot be checked any other way. Mobile is on **Expo
-SDK 54** (upgraded from 51 specifically to unblock this — current Expo Go builds
-only support 54), `expo-doctor` 18/18:
+**A · Expo session (the native app) — DONE 2026-07-22.** Ran in Expo Go on a
+physical phone over LAN, on **Expo SDK 54** (upgraded from 51 specifically to
+unblock this), `expo-doctor` 18/18:
 
-- [ ] **Haptics feel.** The intent→style table is unvalidated on hardware.
-  Expect to retune it; it is one table in one file, and no call site picks a
-  style. Note there is nothing to *trigger* a haptic on the device yet (see
-  above), so checking feel needs a temporary call site or waiting for the
-  mobile screens.
-- [ ] **Pull-to-refresh** (Phase 4) — the `RefreshControl` gesture has never run
-  on a touch screen either.
-- **The API host is now derived automatically** — `src/apiHost.ts` reuses the
-  Expo bundler's own LAN host with port 4000, so there is no IP to set and it
-  survives network changes. `EXPO_PUBLIC_API_URL` remains an override and is
-  still required when running with `--tunnel`. Verified end to end: the bundler
-  reports `192.168.1.151:8083`, the resolver produces
-  `http://192.168.1.151:4000`, and that URL answers 200.
-- **The feed needs a token.** `/api/feed` is authenticated and 401s without one,
-  so a successful URL fix still shows "Sign in to see your feed" unless you
-  start with `EXPO_PUBLIC_DEV_TOKEN=<access token>`.
+- [x] **App loads over LAN and the feed populates** with live API data.
+- [x] **Pull-to-refresh** (Phase 4) — **closes the Phase 4 verification item.**
+- [x] **LAN pipeline end to end** — `exp://` over LAN, API host derived from the
+  bundler (`src/apiHost.ts`), backend reachable across the network.
+- [x] **New Architecture** (default since SDK 53) runs without issue.
+- [ ] **Haptics feel — BLOCKED, not pending.** The device session confirmed
+  there is nothing to fire a haptic: no rating, log, follow or like exists on
+  mobile, so **no intent has a call site**. This needs the Phase 7 screens, not
+  another device session. Retuning is one table in one file when it happens.
+
+How the session was started, for the next one:
+
+```bash
+cd ~/Downloads/soundlog && EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts/dev-token.ts) \
+  pnpm --filter @soundlog/mobile dev --clear
+```
+
+- **The API host derives itself** — `src/apiHost.ts` reuses the Expo bundler's
+  own LAN host with port 4000, so there is no IP to set and it survives network
+  changes. `EXPO_PUBLIC_API_URL` remains an override, still required with
+  `--tunnel`.
+- **The feed needs a token.** `/api/feed` 401s without one;
+  `backend/scripts/dev-token.ts` mints a 12h token (longer than the 15-minute
+  production TTL on purpose — a token expiring mid-session looks like an auth
+  bug).
+- **`EXPO_PUBLIC_*` is inlined at bundle time**, so the token must be in the
+  environment of the Metro process serving the bundle. Re-using an
+  already-running bundler that was started without it silently 401s.
 - The dev feed screen prints the resolved base URL and the rule that produced it
   (`configured` / `expo-lan` / `fallback`) beneath the empty state.
 
-**B · Mobile browser (the web layout).** A desktop browser narrowed to 380px
-reports a *fine* pointer, so it exercises the width half of the responsive rules
-but never the touch half — and a mouse is far more precise than a thumb, which
-flatters every hit-target decision:
+**B · Mobile browser (the web layout) — STILL OPEN.** Not covered by the
+2026-07-22 session, which exercised the *native* app. A desktop browser narrowed
+to 380px reports a *fine* pointer, so it exercises the width half of the
+responsive rules but never the touch half — and a mouse is far more precise than
+a thumb, which flatters every hit-target decision:
 
 - [ ] **Drag a half-star rating one-handed, thumb only, on the 380px web layout
   in mobile Safari — rule on whether 22px per half-star is comfortably usable or
@@ -162,6 +182,9 @@ flatters every hit-target decision:
   JetBrains Mono, so font size does not buy hit width (this is exactly why the
   mobile fix widened the box instead of the glyph). The box is
   `.star-input > span { min-width }` in `theme.css`.
+  *This is the WEB layout in a phone browser, and is doable today.* The
+  equivalent ruling for the **native** star input is Phase 7 work — there is no
+  release detail screen on mobile to host one yet.
 - [ ] While there: **iOS focus-zoom** should not fire on any input (fields are
   16px for this reason), and the nav's three wrapped rows should still be
   thumb-reachable.
@@ -184,10 +207,11 @@ an oversight, and each is cheap to reverse:
   Functional and fully reachable, but tall. Logged as **Phase 7** scope in the
   README — a disclosure menu or tab bar is a new navigation component, not
   polish, so it was not built here.
-- **Half-star hit targets.** Mobile is 22×44 — **verdict deferred to the
-  real-device pass above**, not settled here, because a fine pointer flatters
-  it. Desktop is 8×24: pre-existing, outside 5.5's mobile brief, tight even for
-  a mouse, and noted under Phase 7 alongside the nav item.
+- **Half-star hit targets.** The web layout is 22×44 — **verdict still deferred
+  to a mobile-Safari pass** (section B above), because a fine pointer flatters
+  it. The **native** ruling is Phase 7, gated on a mobile release detail screen
+  existing. Desktop is 8×24: pre-existing, outside 5.5's mobile brief, tight
+  even for a mouse, and noted under Phase 7 alongside the nav item.
 
 ### 2. Phase 6 — production deployment
 
@@ -223,6 +247,13 @@ app is actually used on — see the cookie-origin note under local environment.
 - **The API process died once mid-session** (Phase 5.5) and returned 503s until
   restarted. Cause not captured — the logs went with the process. If it recurs,
   grab `preview_logs` before restarting.
+- **Mobile cover images are an untested path with a known trap.** `FeedRow` is
+  text-only, so nothing on the device has ever loaded an image. Roughly half the
+  catalog's `coverUrl` values are `http://` (5 of 11 in a sampled feed page) and
+  iOS App Transport Security blocks cleartext loads in *release* builds while
+  Expo Go allows them — so images would work in dev and show a grid of blanks in
+  production. Fix at the source (store `https` URLs; the Cover Art Archive
+  serves both) rather than opening an ATS exception. Tracked in Phase 7.
 
 ## Local environment notes
 
@@ -272,6 +303,7 @@ seeded catalog in the `pgdata`/`esdata` volumes).
 | `trim-release-titles.ts` | Strip stray whitespace from titles (re-indexes ES) |
 | `reenrich-genres.ts` | Re-pull genres for named releases with current tag rules |
 | `mb-smoke.ts` | Live MusicBrainz smoke test (checks the outbound User-Agent) |
+| `dev-token.ts` | Mint a local access token (default `demo_blake`, 12h) for clients with no sign-in — i.e. the Expo app. Prints only the token, so it composes: `EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts/dev-token.ts)` |
 
 **Seeded data** (local dev DB): 143 releases, 56 artists, 94 labels, 3 users; 15
 artist discographies cached in Redis (7d TTL). Useful demo anchors:
