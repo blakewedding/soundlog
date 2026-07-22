@@ -216,7 +216,7 @@ export default function Release() {
           )}
 
           {user && (
-            <div className="card" style={{ display: "flex", alignItems: "center", gap: 12, padding: 12 }}>
+            <div className="card rating-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: 12 }}>
               <span className="meta">Your rating</span>
               <StarRatingInput value={release.myRating ?? null} onChange={rate} onClear={unrate} />
             </div>

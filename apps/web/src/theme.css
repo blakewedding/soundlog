@@ -525,6 +525,24 @@ input::placeholder { color: var(--text-faint); }
   }
 }
 
+/* ---------- 320px, the floor ----------
+   380 is the reference width and is signed off; this block only handles what
+   genuinely BREAKS below it, and deliberately does not restyle 380.
+
+   Rating rows are a label beside the star input. Touch sizing gives each star a
+   44px box, making the control a fixed 256px — at 320 that leaves ~8px for the
+   label, which cannot shrink below its longest word, so the row pushed the
+   whole document sideways. Wrapping the label onto its own line is the minimum
+   structural fix.
+
+   Scoped to 360 rather than 560 on purpose: at 380 the row does not overflow,
+   it just sets the label over two lines. Wrapping there would be nicer
+   typography but it is a layout change at a width that already works, which is
+   a redesign rather than a fix. */
+@media (max-width: 360px) {
+  .rating-row { flex-wrap: wrap; }
+}
+
 /* Touch targets. Applies to coarse pointers at any width (phones, tablets) AND
    to any narrow viewport, since a 380px window is being used like a phone even
    when the browser reports a mouse. A mouse-driven desktop at full width keeps
