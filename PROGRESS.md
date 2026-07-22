@@ -84,13 +84,17 @@ Design polish. Details worth carrying forward:
   `pointer: coarse` alone is untestable.
 - **Haptics map** — `apps/mobile/src/haptics.ts` is the only place a vibration is
   chosen. Call sites pass **intents** (`commitLog`), never impact styles, so
-  retuning on hardware is one edit in one table. `expo-haptics` is pinned to
-  `~13.0.1` for **SDK 51** — `pnpm add expo-haptics` grabs v57, which targets
-  SDK 54+ and will not work here. Nothing throws: a haptic can never break the
-  write that triggered it.
+  retuning on hardware is one edit in one table. Nothing throws: a haptic can
+  never break the write that triggered it.
   **No intent has a call site yet** — mobile ships only a feed tab and a
   placeholder profile, so there is no rating/log/follow/like to attach to. The
   map is deliberately ready ahead of those screens.
+  *(Written against SDK 51's `expo-haptics@13`; the SDK 54 upgrade moved it to
+  `15.0.8` with no source change — every API it uses is unchanged.)*
+- **Never install Expo packages with `pnpm add`.** Use `npx expo install`, which
+  resolves to the version matching the installed SDK. Plain `pnpm add
+  expo-haptics` fetches the npm `latest` tag, which during 5.5 was three majors
+  ahead of the SDK and silently wrong.
 
 **Accessibility floor (now the baseline — don't regress it):**
 
@@ -123,7 +127,9 @@ pnpm --filter @soundlog/mobile dev    # scan the QR with Expo Go on a real phone
 ```
 
 **A · Expo session (the native app).** Simulators have no vibration hardware and
-silently no-op, so these cannot be checked any other way:
+silently no-op, so these cannot be checked any other way. Mobile is on **Expo
+SDK 54** (upgraded from 51 specifically to unblock this — current Expo Go builds
+only support 54), `expo-doctor` 18/18:
 
 - [ ] **Haptics feel.** The intent→style table is unvalidated on hardware.
   Expect to retune it; it is one table in one file, and no call site picks a

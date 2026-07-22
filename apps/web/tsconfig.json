@@ -7,7 +7,25 @@
     "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+
+    "baseUrl": ".",
+    // Pin React's TYPES to this package's own copy.
+    //
+    // The workspace holds two React majors: web is on 18, mobile moved to 19
+    // with Expo SDK 54. pnpm hoists exactly one @types/react into its virtual
+    // store (.pnpm/node_modules), and packages that live in the store —
+    // react-router-dom among them — resolve React types by walking up to it.
+    // When mobile pulled in @types/react@19 that hoisted copy flipped to 19,
+    // and web's program loaded BOTH majors at once: every react-router
+    // component started failing as "cannot be used as a JSX component".
+    //
+    // A hoisted singleton cannot serve two majors, so resolution is pinned here
+    // rather than left to install order.
+    "paths": {
+      "react": ["./node_modules/@types/react"],
+      "react-dom": ["./node_modules/@types/react-dom"]
+    }
   },
   "include": ["src"]
 }

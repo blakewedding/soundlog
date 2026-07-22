@@ -116,7 +116,9 @@ Monorepo, TypeScript backend with health checks, Prisma schema, web + mobile she
   `RefreshControl` gesture needs a touch screen; it has never been exercised on
   hardware either.
 
-Both need an Expo session on a physical iOS or Android device:
+Both need an Expo session on a physical iOS or Android device. **Unblocked** —
+the app was on SDK 51, which current Expo Go builds no longer support; it now
+runs SDK 54 (see below):
 
 ```bash
 pnpm --filter @soundlog/mobile dev   # scan the QR with Expo Go on a real phone
@@ -128,6 +130,41 @@ input, log button, follow or like on the device yet, so *no intent has a call
 site*. The utility is deliberately ready ahead of those screens; wiring is one
 `haptic("commitLog")` per action when they land, and no call site ever picks an
 impact style itself.
+
+### Mobile — Expo SDK 54
+
+`apps/mobile` runs **Expo SDK 54**, upgraded from SDK 51 to unblock the
+real-device session (current Expo Go builds only support 54). `npx expo-doctor`
+passes 18/18.
+
+**Always install Expo packages with `npx expo install`, never `pnpm add`.**
+`expo install` resolves the version matching the installed SDK; `pnpm add` takes
+the npm `latest` tag, which is routinely several majors ahead of the SDK and
+fails at runtime rather than at install.
+
+The upgrade path, for the next one:
+
+```bash
+pnpm --filter @soundlog/mobile add expo@^<major>.0.0
+cd apps/mobile && npx expo install --fix   # resolves everything else to the SDK
+npx expo-doctor                            # then fix what it reports
+npx expo export --platform ios             # proves Metro can still bundle
+```
+
+**Two workspace-specific traps**, both hit during the 54 upgrade:
+
+- **Two React majors now coexist** — web on 18, mobile on 19. pnpm hoists a
+  single `@types/react` into its virtual store, and store-resident packages
+  (`react-router-dom`) resolve React types by walking up to it. When mobile
+  pulled in `@types/react@19` that hoisted copy flipped, and *web* broke with
+  "cannot be used as a JSX component" on every route. Fixed by pinning React
+  types per package in `apps/web/tsconfig.json` (`paths`), which no longer
+  depends on install order. Do the same for any future package that needs its
+  own React major.
+- **`expo-router` requires peers that Expo does not install for you** —
+  `expo-constants`, `expo-linking`, `react-native-safe-area-context`,
+  `react-native-screens`. These were missing since SDK 51 and would have crashed
+  the app outside Expo Go. `expo-doctor` is what catches this; run it.
 
 ### Phase 6 — Production deployment
 > "Finish the K8s manifests in infrastructure/k8s: web deployment, Elasticsearch StatefulSet, Redis deployment, Varnish deployment in front of the backend service, secrets, and a GitHub Actions pipeline (test → build → push → deploy). Target GKE Autopilot."
