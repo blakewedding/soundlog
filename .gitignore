@@ -3,8 +3,14 @@ dist/
 build/
 .turbo/
 .expo/
+# Every real env file. `.env` alone matches only that exact name, so
+# `.env.production` — which holds the production database password and JWT
+# secret — would otherwise be committable. The *.example templates are the only
+# ones that belong in the repo.
 .env
-.env.local
+.env.*
+!.env.example
+!.env.production.example
 *.log
 coverage/
 .DS_Store

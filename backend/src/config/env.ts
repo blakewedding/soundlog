@@ -1,6 +1,22 @@
 import "dotenv/config";
 import { z } from "zod";
 
+/**
+ * An absolute http(s) URL.
+ *
+ * `z.string().url()` alone is not enough: it delegates to `new URL()`, which
+ * happily parses `localhost:3000` as scheme `localhost:` with path `3000`. That
+ * is precisely the typo this validation exists to catch, and it would sail
+ * through — then produce a cookie policy derived from a protocol of
+ * "localhost:". The scheme check is the part that does the work.
+ */
+const httpUrl = z
+  .string()
+  .url()
+  .refine((v) => ["http:", "https:"].includes(new URL(v).protocol), {
+    message: "must be an absolute http(s) URL, e.g. https://soundlog.example.com",
+  });
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(4000),
@@ -10,11 +26,25 @@ const schema = z.object({
   JWT_SECRET: z.string().min(16),
   JWT_ACCESS_TTL: z.string().default("15m"),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().default(30),
-  // Where web OAuth flows redirect the browser back to once a code is issued.
-  CLIENT_URL: z.string().default("http://127.0.0.1:3000"),
+  // THE APP ORIGIN — scheme + host + port the browser actually uses. One origin
+  // serves the SPA and /api (Vite proxies in dev, nginx proxies in production),
+  // so the refresh cookie is same-origin by construction. Also where web OAuth
+  // flows hand the browser back once a code is issued.
+  //
+  // `localhost`, not `127.0.0.1`: browsers treat those as different cookie
+  // origins, so a session established under one is invisible on the other, and
+  // the app is used on localhost. The OAuth *provider* callbacks below may
+  // legitimately stay on 127.0.0.1 — see the note there.
+  CLIENT_URL: httpUrl.default("http://localhost:3000"),
   // Custom URL scheme the mobile app registers, used to whitelist the deep-link
   // redirect target for the expo-auth-session OAuth flow (e.g. soundlog://auth).
   MOBILE_APP_SCHEME: z.string().default("soundlog"),
+  // The provider callbacks are the ONE place 127.0.0.1 is still correct in dev:
+  // Spotify's dashboard rejects `localhost` and requires a literal loopback IP.
+  // That is safe despite CLIENT_URL being localhost, because this leg sets no
+  // cookie — the callback consumes the OAuth state, mints a one-time code and
+  // redirects to CLIENT_URL, where the SPA exchanges it same-origin. The
+  // session is therefore always established on the app origin, never here.
   SPOTIFY_CLIENT_ID: z.string().optional(),
   SPOTIFY_CLIENT_SECRET: z.string().optional(),
   SPOTIFY_REDIRECT_URI: z.string().default("http://127.0.0.1:4000/api/auth/spotify/callback"),
@@ -28,3 +58,33 @@ const schema = z.object({
 });
 
 export const env = schema.parse(process.env);
+
+/** The app origin, parsed once. */
+export const appOrigin = new URL(env.CLIENT_URL);
+
+/**
+ * Whether the refresh cookie carries `Secure`.
+ *
+ * Derived from the scheme the app is actually served over, NOT from NODE_ENV.
+ * The two disagree exactly where it hurts: the production stack running locally
+ * over http is NODE_ENV=production, and a `Secure` cookie there is accepted by
+ * Chrome (which treats localhost as trustworthy) and silently dropped by Safari
+ * — a "works on my machine" auth bug with no error anywhere. Tying the flag to
+ * the scheme makes it correct in both places by construction.
+ */
+export const cookieSecure = appOrigin.protocol === "https:";
+
+/**
+ * A production deployment served over plain http is a downgrade, not a
+ * configuration choice — the refresh cookie loses `Secure` and rides the wire in
+ * clear. Loopback is exempt: that is this stack, proving itself locally.
+ */
+export function warnIfInsecureOrigin(log: (msg: string) => void = console.warn): void {
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(appOrigin.hostname);
+  if (env.NODE_ENV === "production" && !cookieSecure && !loopback) {
+    log(
+      `[boot] CLIENT_URL is ${env.CLIENT_URL} — production over plain http. ` +
+        "The refresh cookie will NOT be marked Secure. Serve the app over https."
+    );
+  }
+}

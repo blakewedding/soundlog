@@ -1,10 +1,11 @@
 import { createApp } from "./app.js";
-import { env } from "./config/env.js";
+import { env, warnIfInsecureOrigin } from "./config/env.js";
 import { ensureIndices } from "./config/elasticsearch.js";
 import { redis } from "./config/redis.js";
 import { startActivityWorker } from "./jobs/activityQueue.js";
 
 async function main() {
+  warnIfInsecureOrigin();
   try { await redis.connect(); } catch { console.warn("[boot] Redis unavailable — continuing"); }
   try { await ensureIndices(); } catch { console.warn("[boot] Elasticsearch unavailable — continuing"); }
 

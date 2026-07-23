@@ -18,7 +18,7 @@ import { validate } from "../middleware/validate.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { prisma } from "../config/database.js";
-import { env } from "../config/env.js";
+import { env, cookieSecure } from "../config/env.js";
 import { passport, oauthProviders, type OAuthProvider } from "../config/passport.js";
 import { registerUser, verifyCredentials, toPublicUser } from "../services/authService.js";
 import {
@@ -42,7 +42,11 @@ const REFRESH_COOKIE = "refresh_token";
 function refreshCookieOptions(): CookieOptions {
   return {
     httpOnly: true,
-    secure: env.NODE_ENV === "production",
+    // Follows the app's own scheme, not NODE_ENV — see cookieSecure in
+    // config/env.ts for why those two must not be conflated.
+    secure: cookieSecure,
+    // The SPA and /api are one origin, so every request carrying this cookie is
+    // same-site; `lax` costs nothing and blocks cross-site POSTs.
     sameSite: "lax",
     path: "/api/auth",
     maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,

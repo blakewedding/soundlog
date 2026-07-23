@@ -1,9 +1,49 @@
-FROM node:24-alpine AS build
-WORKDIR /app
-COPY apps/web ./
-RUN npm install && npm run build
+# syntax=docker/dockerfile:1
+# Production image for @soundlog/web: a Vite build served by nginx.
+#
+# Like the backend image, this has to respect the pnpm workspace. The previous
+# version ran `npm install && npm run build` with apps/web as the build context,
+# which cannot work for two independent reasons:
+#   1. apps/web depends on "@soundlog/shared": "workspace:*", a protocol npm
+#      does not understand — the install fails outright.
+#   2. @soundlog/shared is consumed FROM SOURCE (no build step), so the sibling
+#      package has to be present in the image; a context of apps/web alone can
+#      never see it.
+# The context is therefore the repo root, as it already is for the backend.
 
-FROM nginx:1.27-alpine
-COPY --from=build /app/dist /usr/share/nginx/html
+# ---------------------------------------------------------------------------
+# Build: install the workspace, compile the SPA.
+# ---------------------------------------------------------------------------
+FROM node:24-alpine AS build
+RUN corepack enable
+WORKDIR /repo
+
+# Manifests + lockfile first so the dependency layer caches independently of
+# source changes. Every workspace member must be present even though only web is
+# built here: --frozen-lockfile validates the lockfile against ALL importers.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+COPY apps/web/package.json apps/web/
+COPY apps/mobile/package.json apps/mobile/
+COPY packages/shared/package.json packages/shared/
+COPY backend/package.json backend/
+
+# Filtered install: `@soundlog/web...` is web plus its workspace dependencies.
+# Without the filter this pulls Expo and React Native into an image that serves
+# static files — minutes of install for nothing.
+RUN pnpm install --frozen-lockfile --filter @soundlog/web...
+
+COPY apps/web apps/web
+COPY packages/shared packages/shared
+
+# `tsc -b && vite build`. The build stamp resolves to "unknown" in here (no git
+# repo in the build context) and is dead-code eliminated anyway: BuildStamp
+# renders only under import.meta.env.DEV, false in a production build.
+RUN pnpm --filter @soundlog/web run build
+
+# ---------------------------------------------------------------------------
+# Runtime: nginx serving the built assets, proxying /api to the Varnish edge.
+# ---------------------------------------------------------------------------
+FROM nginx:1.27-alpine AS runtime
+COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
 COPY infrastructure/docker/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80

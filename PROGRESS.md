@@ -13,10 +13,11 @@ we, what's live, what's next" for a session starting cold.
 drawing as whole stars on device — was diagnosed and fixed on 2026-07-23; the
 section below is kept for what it taught, not as work outstanding.
 
-**Phases 0 through 5.8 are done.** Suites green: **backend 176 + web 138 +
-mobile 38 = 352 tests**, all three packages typecheck clean, `expo-doctor` 18/18.
+**Phases 0 through 5.8 are done, and Phase 6a (production stack, locally proven)
+is done** — see its section below. Suites green: **backend 182 + web 138 +
+mobile 38 = 358 tests**, all three packages typecheck clean, `expo-doctor` 18/18.
 
-**Next: Phase 6 — production deployment.**
+**Next: Phase 6 proper — K8s manifests, CI/CD pipeline, GKE Autopilot.**
 
 ### What 5.5 delivered
 
@@ -381,19 +382,57 @@ an oversight, and each is cheap to reverse:
 
 ### 2. Phase 6 — production deployment
 
-Finish the K8s manifests, GitHub Actions (test → build → push → deploy), GKE
-Autopilot. The first open item below is the thing to close first.
+**Phase 6a is DONE** (below): the production stack boots and is proven
+end-to-end locally. What remains for Phase 6 proper: the K8s manifests, a
+GitHub Actions pipeline (test → build → push → deploy), and GKE Autopilot.
 
-Reconcile `CLIENT_URL` (`http://127.0.0.1:3000`) with the `localhost` host the
-app is actually used on — see the cookie-origin note under local environment.
+## Phase 6a — production stack, locally proven (DONE 2026-07-23)
+
+The deliberately-unchecked README item — "full production compose stack boots
+end-to-end" — is closed. `docker-compose.prod.yml` (its own project,
+`soundlog-prod`, its own volumes) runs the cluster's shape: nginx serving the
+built SPA and fronting Varnish, Varnish fronting the backend *container*, data
+stores by service name, and a `migrate` job (`prisma migrate deploy`) gating the
+API via `service_completed_successfully`.
+
+**Proven over the public edge only** (nginx :8090, nothing else published), on a
+**cold boot from empty volumes**, green in ~20s. The whole journey is a script,
+`infrastructure/scripts/verify-prod-stack.sh`, so it stays a regression test:
+health through nginx → Varnish → backend · register/login (HttpOnly refresh
+cookie, `/api/auth` scoped) · search fan-out to live MB/Discogs from inside the
+container · seed a release by MBID · rate 4.5 + review · second user follows,
+sees the RATING and REVIEW in the feed · Varnish **HIT** on the anonymous
+popular feed and forced **MISS** on the authenticated one · SPA shell no-cache,
+hashed assets immutable, deep links fall back. ES `ensureIndices()` runs on the
+backend's own boot (five indices on the cold start). MB throttle intact in-container
+(4 concurrent searches serialise to ~3.8s). CAA timed out mid-cold-boot and the
+cover **healed on retry** — CLAUDE.md §1 holding: a transient failure did not
+corrupt the row.
+
+**Four defects fixed, none of which any existing test could have caught** — they
+live between the containers, where unit tests don't reach:
+
+| Defect | Why it hid | Fix |
+|---|---|---|
+| Web image could never build | `npm install` on `apps/web` alone can't resolve `workspace:*` → `@soundlog/shared` | Rewrote `Dockerfile.web` workspace-aware from the repo root |
+| nginx 400'd every **bodyless** mutation (follow/like/delete) | nginx speaks HTTP/1.0 upstream, sends no Content-Length for an empty body; Varnish rejects it. POSTs *with* a body (login, review) worked, so it hid | `proxy_http_version 1.1` + `Connection ""` |
+| Web edge reported **unhealthy** while serving fine | healthcheck hit `localhost` → `::1`, but nginx binds IPv4 | healthcheck uses `127.0.0.1` |
+| Migrations had no production path | schema applied ad-hoc in dev only | `migrate` target running `prisma migrate deploy`, gating the API |
+
+**Cookie-origin policy resolved** (the Phase 6 pre-work wrinkle): `CLIENT_URL`
+is THE APP ORIGIN — one origin serves SPA + `/api`, so the refresh cookie is
+same-origin by construction. Dev moved `127.0.0.1` → `localhost` (browsers keep
+per-host cookie jars; the app is browsed on localhost). OAuth provider callbacks
+stay on `127.0.0.1` (Spotify requires a loopback IP) — safe, that leg sets no
+cookie. The cookie's `Secure` flag now follows the served scheme, not `NODE_ENV`
+(they disagree exactly where Safari drops a `Secure` cookie on local http prod).
+Unit-tested in `backend/tests/unit/appOrigin.test.ts`.
+
+Boot: `docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build`
+— both flags load-bearing (interpolation reads `./.env` without `--env-file`;
+`-f` suppresses the dev override). Full procedure in the README.
 
 ## Open items
-
-- **Full production compose stack boots end-to-end** — still unverified. The
-  backend image builds and Varnish is proven against the dev server, but the
-  containerized backend has never been booted as a full stack (needs migrations
-  against the compose Postgres and in-cluster env wiring). Tracked as a Phase 6
-  verification item in the README.
 - **401 → refresh → replay against a genuinely aged token** — unit-tested, never
   exercised against a real >15-minute session. Low risk, but it is the one auth
   path no automated test can honestly claim.
@@ -508,8 +547,10 @@ everything works except Spotify/Google sign-in.
 **Use `localhost:3000`, not `127.0.0.1:3000`.** Cookies treat them as different
 origins, and the refresh-token cookie is set under whichever host you logged in
 with — the other one renders logged-out and looks like a broken session.
-`CLIENT_URL` is `http://127.0.0.1:3000`, so the two disagree; worth reconciling
-before Phase 6.
+*Reconciled in Phase 6a:* `CLIENT_URL` is now `http://localhost:3000` (was
+`127.0.0.1`), so browse the app on `localhost` and the two agree. The provider
+callbacks stay on `127.0.0.1` by design (Spotify requires it) — that leg sets no
+cookie. Policy detail is in the Phase 6a section above.
 
 If port 3000 is held by an unrecognised `node`, it is usually an orphaned Vite:
 

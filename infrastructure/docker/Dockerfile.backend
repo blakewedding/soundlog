@@ -48,6 +48,24 @@ RUN cd /prod \
  && /repo/backend/node_modules/.bin/prisma generate --schema=/prod/prisma/schema.prisma
 
 # ---------------------------------------------------------------------------
+# Migrations: `prisma migrate deploy`, run once before the API starts.
+#
+# A separate target rather than a step in the runtime image, because the two
+# have opposite requirements. The runtime bundle is `deploy --prod`, which by
+# definition excludes the Prisma CLI (a devDependency) and the migrations
+# directory; this target is the build stage, which has both. It also keeps the
+# privilege narrow: only this image can alter the schema.
+#
+# `deploy`, never `dev`: it applies committed migrations and nothing else — it
+# never generates, never prompts, and never resets a database it finds
+# unexpected. In K8s this is the Job/initContainer that gates the Deployment,
+# which is exactly what compose's service_completed_successfully expresses.
+# ---------------------------------------------------------------------------
+FROM build AS migrate
+WORKDIR /repo/backend
+CMD ["node_modules/.bin/prisma", "migrate", "deploy", "--schema=/repo/backend/prisma/schema.prisma"]
+
+# ---------------------------------------------------------------------------
 # Runtime: lean image, non-root, no build toolchain.
 # ---------------------------------------------------------------------------
 FROM node:24-alpine AS runtime

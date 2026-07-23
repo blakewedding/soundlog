@@ -48,11 +48,64 @@ curl -i 127.0.0.1:8080/api/feed/popular   # X-Cache: MISS, then HIT on repeat
 for local work. The caching policy itself lives in `cache-policy.vcl` and is shared
 verbatim with production, so dev and prod can't drift.
 
-To run the **full containerized stack** instead — Varnish fronting the backend
-*container*, as in production — bypass the override explicitly:
+To run the **full production stack** instead — every tier containerized, nginx
+serving the built SPA and fronting Varnish, Varnish fronting the backend
+*container* — see the next section. It is a separate compose file, not this one.
+
+### The production stack, locally (`docker-compose.prod.yml`)
+
+The shape the cluster runs: nginx → Varnish → backend, backed by postgres,
+redis and elasticsearch reached by service name, with schema migrations applied
+by a one-shot job before the API starts. It runs as its own compose project
+(`name: soundlog-prod`) on its own volumes, so it coexists with the dev infra
+above — both can be up at once, which is the normal state of this machine.
 
 ```bash
-docker compose -f docker-compose.yml up -d
+# 1. Config. Copy the template and fill in the SECRET-marked values
+#    (POSTGRES_PASSWORD and JWT_SECRET at minimum).
+cp .env.production.example .env.production
+#    openssl rand -hex 32   # for JWT_SECRET
+#    openssl rand -hex 16   # for POSTGRES_PASSWORD
+
+# 2. Build and boot. Both flags are load-bearing (see below).
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+
+# 3. Prove it end to end — health through the edge, register/login/search/seed/
+#    rate/review/feed, Varnish HIT on the popular feed, SPA served correctly.
+./infrastructure/scripts/verify-prod-stack.sh
+```
+
+The app is then on **http://localhost:8090** (nginx). Nothing else publishes a
+port — postgres, redis, elasticsearch, the backend and Varnish are all
+network-internal, reached with `docker compose … exec`.
+
+Two things about that boot command are not optional:
+
+- **`--env-file .env.production`** — Compose interpolates `${VARS}` in the
+  compose file from `./.env` (the *dev* file) unless pointed elsewhere. A
+  service-level `env_file:` only populates a container's environment; it does
+  not affect interpolation. Without this flag the database password and derived
+  `DATABASE_URL` resolve from the development `.env`.
+- **`-f docker-compose.prod.yml`** — naming a file explicitly suppresses the
+  auto-loaded `docker-compose.override.yml`. That override points Varnish at the
+  host's dev server; merged into the production stack it would have Varnish
+  front `pnpm dev` instead of the backend container.
+
+**Migrations run as a job, not on API boot.** The `migrate` service is the
+backend image's `migrate` target running `prisma migrate deploy` (apply
+committed migrations, never generate or reset); the backend `depends_on` it with
+`condition: service_completed_successfully`, so the API never sees an un-migrated
+schema. This is exactly the K8s Job/initContainer relationship.
+
+**Elasticsearch indices are created on the backend's own boot** by
+`ensureIndices()` — the production path, verified on a cold boot from empty
+volumes (five indices present, `docs.count` climbing as releases seed).
+
+To tear it down — and **only** it, never the dev infra:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml down      # keep data
+docker compose --env-file .env.production -f docker-compose.prod.yml down -v   # wipe prod volumes
 ```
 
 ---
@@ -281,27 +334,69 @@ a device failure names its own cause.
   persist and healed catalog-wide — 0 of 285 remain. Re-check after any bulk
   import with `npx tsx scripts/heal-cover-https.ts --dry-run`.
 - [x] **Backend production image builds.** `infrastructure/docker/Dockerfile.backend` is pnpm-workspace-aware: it copies the lockfile + every workspace manifest (`--frozen-lockfile` validates all importers), installs, generates the Prisma client, compiles, then uses `pnpm deploy --prod` to emit a standalone runtime tree. Verified end-to-end with `docker build -f infrastructure/docker/Dockerfile.backend .` and by instantiating `PrismaClient` inside the resulting image.
-- [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames). **This is the first thing to close in Phase 6.**
+- [x] **Full production compose stack boots end-to-end — DONE (Phase 6a).**
+  `docker-compose.prod.yml` brings up postgres + redis + elasticsearch + a
+  migrate job + the backend container + Varnish + nginx, and the whole journey
+  was proven against it over the public edge: `/api/health` green through
+  nginx → Varnish → backend, then register / login / search / seed-from-MB /
+  rate / review / follow / feed, a Varnish HIT on the anonymous popular feed and
+  a forced MISS on the authenticated one, and the SPA served with correct cache
+  headers. Verified on a **cold boot from empty volumes** (`down -v` then `up`),
+  green in ~20s. The journey is a script — `./infrastructure/scripts/verify-prod-stack.sh`
+  — so it stays a regression test, not a one-off. Boot procedure is under
+  "[The production stack, locally](#the-production-stack-locally-docker-composeprodyml)".
+
+  Four things had rotted or were missing, all fixed in 6a:
+  - **The web image could never have built** — it ran `npm install` on
+    `apps/web` alone, which cannot resolve the `workspace:*` dependency on
+    `@soundlog/shared`. Rewritten to be workspace-aware from the repo root, like
+    the backend image.
+  - **nginx 400'd every bodyless mutation** (follow, unfollow, like, delete). It
+    speaks HTTP/1.0 upstream by default and sends no Content-Length for an empty
+    body, which Varnish rejects; POSTs that carried a body (login, review) got
+    through, so the bug hid. Fixed with `proxy_http_version 1.1`.
+  - **The web healthcheck reported a working edge as unhealthy** — it hit
+    `localhost`, which resolves to `::1` in that image while nginx binds IPv4.
+  - **Migrations had no production path** — added a `migrate` target
+    (`prisma migrate deploy`) gating the API via
+    `service_completed_successfully`.
 - [ ] **Swap the OAuth redirect URIs for production.** Three values in
   `backend/src/config/env.ts` still default to loopback and will silently break
   sign-in the moment the app is served from a real domain:
 
   | Variable | Dev default | Production needs |
   |---|---|---|
-  | `CLIENT_URL` | `http://127.0.0.1:3000` | the real web origin |
+  | `CLIENT_URL` | `http://localhost:3000` | the real web origin |
   | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:4000/api/auth/spotify/callback` | the real API origin |
   | `GOOGLE_REDIRECT_URI` | `http://127.0.0.1:4000/api/auth/google/callback` | the real API origin |
 
   Changing the env vars is only half of it — **the same URLs must be registered
   in the Spotify and Google consoles**, or the provider rejects the callback
   with a redirect-URI mismatch. Both go in the K8s secret, never a ConfigMap
-  (CLAUDE.md §7).
+  (CLAUDE.md §7). `.env.production.example` documents all of them.
 
-  Related dev-only wrinkle worth fixing at the same time: `CLIENT_URL` is
-  `127.0.0.1` while the app is actually used on `localhost`, and browsers treat
-  those as different cookie origins — so the refresh cookie set under one host
-  is invisible on the other. Harmless locally once you know; a real
-  inconsistency to resolve before it is baked into production config.
+#### One origin, one cookie jar (resolved in Phase 6a)
+
+The `127.0.0.1`-vs-`localhost` cookie wrinkle is settled, and the policy it
+settled on is what production TLS will use:
+
+- **`CLIENT_URL` is THE APP ORIGIN.** One origin serves the SPA and `/api` —
+  Vite proxies `/api` in dev, nginx proxies it in the production stack — so the
+  refresh cookie is same-origin by construction. There is no second host for it
+  to be invisible on. In production this is the one HTTPS site origin.
+- **Dev now uses `localhost`, not `127.0.0.1`.** Browsers keep separate cookie
+  jars per host; the app is browsed on `localhost`, so a session set under
+  `127.0.0.1` rendered logged-out. Changed in `env.ts`, `.env.example` and the
+  dev `.env`. The **OAuth provider callbacks** deliberately stay on `127.0.0.1`
+  (Spotify's dashboard requires a literal loopback IP) — safe because that leg
+  sets no cookie: it mints a one-time code and redirects to `CLIENT_URL`, where
+  the SPA completes sign-in same-origin.
+- **The cookie's `Secure` flag follows the app's scheme, not `NODE_ENV`.** The
+  two disagree exactly where it bites: this stack runs `NODE_ENV=production`
+  over plain `http` locally, and a `Secure` cookie there is silently dropped by
+  Safari. `cookieSecure` in `env.ts` derives from `CLIENT_URL`'s protocol; a
+  real production deployment served over `http` also logs a boot warning. The
+  policy is unit-tested in `backend/tests/unit/appOrigin.test.ts`.
 
 ### Phase 7 — Brand assets, mobile app & deferred design work
 

@@ -1,0 +1,181 @@
+# Soundlog — PRODUCTION stack, locally.
+#
+# The full shape the cluster will run: nginx serving the built SPA and proxying
+# /api to Varnish, Varnish fronting the backend CONTAINER, the backend talking
+# to postgres/redis/elasticsearch by service name, and migrations applied by a
+# one-shot job before the API is allowed to start.
+#
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+#
+# Two things about that command line are load-bearing:
+#
+#   --env-file  Compose interpolates ${VARS} from ./.env (the DEV file) unless
+#               told otherwise. `env_file:` on a service does NOT affect
+#               interpolation — it only populates that container's environment.
+#               Without --env-file the credentials below silently resolve from
+#               the development .env.
+#   -f          Naming a file explicitly suppresses docker-compose.override.yml,
+#               which exists to point Varnish at the host's dev server. If it
+#               were merged in here, Varnish would front `pnpm dev` instead of
+#               the backend container and the whole stack would be a lie.
+#
+# `name:` gives this stack its own project, so its containers, network and
+# volumes never collide with the development infra from docker-compose.yml —
+# both can run at once, which is the normal state of this machine.
+name: soundlog-prod
+
+services:
+  # -------------------------------------------------------------------------
+  # Data stores. No published ports: in production these are cluster-internal,
+  # and nothing outside the network has any business reaching them. Use
+  # `docker compose ... exec` to inspect them.
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-soundlog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.production.example}
+      POSTGRES_DB: ${POSTGRES_DB:-soundlog}
+    volumes: [prod_pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-soundlog} -d ${POSTGRES_DB:-soundlog}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes: [prod_redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes: [prod_esdata:/usr/share/elasticsearch/data]
+    healthcheck:
+      # `yellow` is healthy for a single node: every index has an unassigned
+      # replica because there is nowhere to put it. Waiting for green here would
+      # hang forever the moment the first index is created.
+      test:
+        ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Schema migrations — runs to completion, then the API starts. See the
+  # `migrate` target in Dockerfile.backend for why this is its own image.
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+      target: migrate
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-soundlog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soundlog}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # -------------------------------------------------------------------------
+  # The API. Elasticsearch indices are created on boot by ensureIndices()
+  # (src/server.ts) — the production path, not a dev-only convenience.
+  # -------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+      target: runtime
+    env_file: [.env.production]
+    environment:
+      # In-cluster addressing, set here rather than in .env.production so a
+      # copied-from-dev file can never point the production API at a laptop.
+      # These names are the compose service names, and the same names the K8s
+      # Services use.
+      NODE_ENV: production
+      PORT: "4000"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-soundlog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soundlog}
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      # No curl in a node:alpine image, and adding one to the runtime image to
+      # satisfy a healthcheck is the wrong trade. Node 24 has global fetch.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # The cache edge. default.vcl points at the backend CONTAINER; the policy
+  # itself is cache-policy.vcl, shared verbatim with dev so the two cannot
+  # drift (CLAUDE.md's reasoning for the split).
+  # -------------------------------------------------------------------------
+  varnish:
+    image: varnish:7.5
+    volumes:
+      - ./infrastructure/varnish/default.vcl:/etc/varnish/default.vcl:ro
+      - ./infrastructure/varnish/cache-policy.vcl:/etc/varnish/cache-policy.vcl:ro
+    command: ["-p", "default_ttl=60"]
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      # The image ships no curl or wget, but varnishadm talks to the running
+      # child over the management port — a PONG means the cache is actually up,
+      # not merely that the process exists.
+      test: ["CMD", "varnishadm", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # The only published port in the stack: the public edge. In the cluster this
+  # is the Ingress, and this port becomes 443.
+  # -------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+    ports: ["${WEB_PORT:-8090}:80"]
+    depends_on:
+      varnish: { condition: service_started }
+    healthcheck:
+      # 127.0.0.1, NOT localhost. In this image `localhost` resolves to ::1
+      # only, while `listen 80` binds IPv4 — so a healthcheck against localhost
+      # gets connection refused and the edge reports unhealthy while serving
+      # traffic perfectly. In a cluster that is a container the load balancer
+      # takes out of rotation for no reason.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+volumes:
+  prod_pgdata:
+  prod_redisdata:
+  prod_esdata:
