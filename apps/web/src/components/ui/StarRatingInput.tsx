@@ -185,7 +185,9 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
       }}
       className="star-input-row"
       style={{
-        display: "inline-flex",
+        // `display` lives in theme.css, not here: touch layouts widen the star
+        // boxes by letting the row grow, and an inline style would win over the
+        // media query that does it.
         cursor: disabled ? "default" : "pointer",
         userSelect: "none",
         // Vertical scrolling still belongs to the page; horizontal movement is
@@ -199,13 +201,13 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
         key={commitCount}
         ref={rowRef}
         className={`star-input${commitCount > 0 ? " star-commit" : ""}`}
-        style={{ display: "inline-flex", transformOrigin: "left center" }}
+        style={{ transformOrigin: "left center" }}
       >
         {[1, 2, 3, 4, 5].map((star) => {
           const half = star - 0.5;
           const glyph = shown >= star ? "★" : shown >= half ? "⯪" : "☆";
           return (
-            <span key={star} style={{ position: "relative", fontSize: "inherit", lineHeight: 1 }}>
+            <span key={star} className="star-cell" style={{ fontSize: "inherit", lineHeight: 1 }}>
               <span
                 className="stars"
                 style={{ fontSize: "inherit", color: shown >= half ? "var(--gold)" : "var(--text-faint)" }}

@@ -245,9 +245,14 @@ a:hover .cover,
 }
 .stars .count { color: var(--text-faint); margin-left: var(--space-2); }
 
-/* Rating input glyph size. Lives here, not inline on the component, so the
-   coarse-pointer media query can enlarge it for thumbs. */
-.star-input { font-size: 24px; }
+/* Rating input. Sizing and layout live here rather than inline on the component
+   so the coarse-pointer media query can widen the hit boxes for thumbs — an
+   inline style would win over it. */
+.star-input-row { display: inline-flex; }
+.star-input { display: inline-flex; font-size: 24px; }
+/* One star = two half-star hit zones. The BOX is what carries the target size;
+   the glyph is JetBrains Mono, so font size buys no hit width. */
+.star-cell { position: relative; }
 
 /* Rating input: the stars scale up and settle when a rating commits. This is
    the one overshoot in the system — rating is the signature interaction, and
@@ -578,21 +583,44 @@ input::placeholder { color: var(--text-faint); }
     justify-content: center;
   }
 
-  /* Rating input: each half-star is its own hit zone, so a 24px glyph gives a
-     ~12px target. Enlarging the glyph alone is NOT enough — .stars is set in
-     JetBrains Mono, whose 0.6em advance meant even 34px type left an ~11px
-     half-star. The hit zone has to be widened independently of the type size,
-     so each star gets a 44px box and the glyph is centred inside it. That
-     makes every half-star a 22x44 target, and the whole control also remains
-     operable with arrow keys. */
-  .star-input { font-size: 30px; }
-  .star-input > span {
+  /* Rating input. Each half-star is its own hit zone, so a 24px glyph gives a
+     ~12px target. Enlarging the glyph is NOT the lever — .stars is JetBrains
+     Mono, whose 0.6em advance meant even 34px type left an ~11px half-star.
+     The BOX carries the target size, with the glyph centred inside it.
+
+     A fixed 44px box (22px per half-star) shipped first and was ruled fiddly on
+     a real device. The boxes now FLEX to fill the row instead, which lands
+     ~57px per star — 28.8px per half-star — at 380px, inside the 28–32px
+     target. The bounds matter more than the ideal:
+       min-width 44px — never worse than what shipped before;
+       max-width 64px — 32px per half-star, past which the row looks silly on a
+                        wide tablet card and starts wasting horizontal space.
+     Between them the row simply takes what it is given, so a 320px screen
+     shrinks gracefully rather than overflowing. */
+  .star-input-row {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+  }
+  .star-input {
+    display: flex;
+    flex: 1 1 auto;
+    font-size: 30px;
+  }
+  .star-cell {
+    flex: 1 1 0;
     min-width: 44px;
+    max-width: 64px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
   }
-  .star-input-row { min-height: 44px; }
+
+  /* The label has to clear the row for the stars to have that width — at 380px
+     "Your rating" plus a nowrap star row leaves only ~39px per star, which is
+     WORSE than what we started from. This supersedes the narrower max-width:360
+     wrap rule above: on any touch layout the label takes its own line. */
+  .rating-row { flex-wrap: wrap; }
 
   /* Native controls: a <select> renders ~35px and a checkbox ~13px by default.
      The 16px font size is not cosmetic — iOS Safari zooms the whole page when

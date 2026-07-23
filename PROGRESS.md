@@ -214,20 +214,24 @@ to 380px reports a *fine* pointer, so it exercises the width half of the
 responsive rules but never the touch half — and a mouse is far more precise than
 a thumb, which flatters every hit-target decision:
 
-- [ ] **Drag a half-star rating one-handed, thumb only, on the 380px web layout
-  in mobile Safari — rule on whether 22px per half-star is comfortably usable or
-  fiddly.** *Re-rule this now that dragging actually works.* The first pass
-  found the real bug rather than answering the question: there was **no touch
-  drag at all**, so the only way to rate on a phone was a precise tap, and a
-  half-star meant hitting the left sliver of a glyph. Press-and-drag with live
-  preview now works (5.5 close-out), so the width can finally be judged on its
-  merits. **No hit-box change has been made** — that waits on this verdict.
-  If it is still fiddly, the fix is a wider star box, **not** larger type:
-  `.stars` is JetBrains Mono, so font size does not buy hit width. The box is
-  `.star-input > span { min-width }` in `theme.css`.
-  *This is the WEB layout in a phone browser.* The equivalent ruling for the
-  **native** star input is Phase 7 — there is no release detail screen on mobile
-  to host one yet.
+- [x] **Half-star precision on a real device — RULED AND FIXED.** Two rounds.
+  The first pass found the actual bug rather than answering the question: there
+  was **no touch drag at all**, so rating on a phone meant a precise tap and a
+  half-star meant the left sliver of a glyph. With press-and-drag working, the
+  width was re-ruled on its merits and came back **fiddly at 22px**.
+
+  The star boxes now flex to fill the row rather than sitting at a fixed 44px,
+  giving **28.6px per half-star at 380px** (28–32 target), bounded by
+  `min-width: 44px` (never worse than before) and `max-width: 64px` (32px/half).
+  Widened via the box, never the glyph — `.stars` is JetBrains Mono, so type
+  size buys no hit width.
+
+  At **320px** it degrades to 22.6px with no overflow: 264px of card interior
+  minus the 36px readout leaves 228px, so 28px/half is not physically available
+  there. 320 is the floor, not the target.
+
+  The **native** star input still has no ruling — Phase 7, since mobile has no
+  release detail screen to host one.
 - [ ] While there: **iOS focus-zoom** should not fire on any input (fields are
   16px for this reason), and the nav's three wrapped rows should still be
   thumb-reachable.
@@ -250,11 +254,11 @@ an oversight, and each is cheap to reverse:
   Functional and fully reachable, but tall. Logged as **Phase 7** scope in the
   README — a disclosure menu or tab bar is a new navigation component, not
   polish, so it was not built here.
-- **Half-star hit targets.** The web layout is 22×44 — **verdict still deferred
-  to a mobile-Safari pass** (section B above), because a fine pointer flatters
-  it. The **native** ruling is Phase 7, gated on a mobile release detail screen
-  existing. Desktop is 8×24: pre-existing, outside 5.5's mobile brief, tight
-  even for a mouse, and noted under Phase 7 alongside the nav item.
+- **Half-star hit targets — settled for the web layout.** Touch/narrow is now
+  ~28.6×44 at 380px (was 22×44, ruled fiddly on device). Desktop is unchanged at
+  **8×24**: pre-existing, outside 5.5's mobile brief, tight even for a mouse,
+  and noted under Phase 7 alongside the nav item. The **native** input is
+  Phase 7.
 
 ### 2. Phase 6 — production deployment
 
