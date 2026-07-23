@@ -254,6 +254,34 @@ a:hover .cover,
    the glyph is JetBrains Mono, so font size buys no hit width. */
 .star-cell { position: relative; }
 
+/* The mark, inside the box. These are separate on purpose: the box flexes with
+   the layout (44–64px on touch) while the glyph is always ~0.6em, so the two
+   are only the same width on the desktop layout.
+
+   That is what broke half-stars on a phone. The half mask was anchored to the
+   CELL — clip-path at 50% of a 58.8px box, over a 19.6px glyph the flexbox had
+   centred — so the masked half sat entirely off the glyph and 2.5 rendered as
+   three whole gold stars while the readout said 2.5. Anchoring the mask to the
+   glyph box makes 50% mean half the star at any cell width.
+
+   letter-spacing must stay 0 here — the seam splits this box, and a trailing
+   letter-space would push it off centre. The 0.05em .stars used to contribute
+   moves to the margin instead, outside the masked box, so star spacing (and
+   therefore the pointer geometry that reads these cells) is unchanged. */
+.star-glyph {
+  position: relative;
+  display: inline-block;
+  font-family: var(--font-data);
+  letter-spacing: 0;
+  margin-right: 0.05em;
+}
+.star-glyph-half {
+  position: absolute;
+  inset: 0;
+  color: var(--text-faint);
+  clip-path: inset(0 0 0 50%);
+}
+
 /* Rating input: the stars scale up and settle when a rating commits. This is
    the one overshoot in the system — rating is the signature interaction, and
    the settle is what makes an optimistic write feel landed rather than

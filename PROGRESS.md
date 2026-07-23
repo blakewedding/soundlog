@@ -9,12 +9,12 @@ we, what's live, what's next" for a session starting cold.
 
 ## Status
 
-**PHASE 5.5 IS COMPLETE.** The polish phase is closed with **one tracked open
-defect** (star half-star geometry on device — see below), which blocks nothing
-in Phase 6.
+**PHASE 5.5 IS COMPLETE, with no open defects.** The last one — half-stars
+drawing as whole stars on device — was diagnosed and fixed on 2026-07-23; the
+section below is kept for what it taught, not as work outstanding.
 
-**Phases 0 through 5.8 are done.** Suites green: **backend 176 + web 122 +
-mobile 38 = 336 tests**, all three packages typecheck clean, `expo-doctor` 18/18.
+**Phases 0 through 5.8 are done.** Suites green: **backend 176 + web 138 +
+mobile 38 = 352 tests**, all three packages typecheck clean, `expo-doctor` 18/18.
 
 **Next: Phase 6 — production deployment.**
 
@@ -65,76 +65,77 @@ and there is no `<Image>` anywhere in `apps/mobile`.*
 | `ad78ad7` | 5.5 close-out: widen half-star hit boxes on touch |
 | `4cdf7c5` | Star geometry: derive mapping from rendered boxes |
 | `fa2cc49` | Star input: on-device diagnostics |
+| `fa0f7a1` | Phase 5.5 complete (one tracked open defect) |
+| `5407694` | Star input: render half-star fills (closes the last 5.5 defect) |
 
-## OPEN DEFECT (the only one from 5.5) — star half-star offset on device
+## RESOLVED — the last 5.5 defect: half-stars drew as whole stars on device
 
-**Blocks nothing in Phase 6.** Web and desktop are correct; this is the touch
-drag on a physical phone. Carried as a tracked defect rather than holding the
-phase open, because the next step needs a device reading, not more code.
+**Closed 2026-07-23.** The on-device readout answered it in one session, and the
+answer was not where three rounds of work had been looking: **the mapping was
+right, the rendering was wrong.**
 
-**Status: the mapping is no longer the suspect. The verification is.**
+### What the two drags settled
 
-The device shows the preview one half-star high (3 while the thumb is on 2.5).
-Two fixes shipped — `4cdf7c5` reworked the mapping to read rendered boxes, and
-`ad78ad7` widened the boxes — and **two real-browser verifications passed** while
-the phone kept failing with the *identical* symptom. A third fix is not
-warranted until something reproduces the way the device does.
+Read off the glass on the phone, both drags:
 
-**Do not change `lib/starGeometry.ts` until a repro fails.** It is exhaustively
-tested against measured geometry and verified in-browser; changing it again
-without a failing case is guessing.
+- `build` matched HEAD (`fa0f7a1`) — **stale bundle (candidate 1) dead.** The
+  first thing checked, and the reason the stamp exists.
+- `vv scale 1` — no zoom, layout and visual viewports agree; **visualViewport
+  divergence (candidates 2 and 3, the leading suspects) dead.**
+- `calc 2.5 / was 2.5`, `calc 4.5 / was 4.5` — the mapping computed the value
+  under the thumb, React rendered that value, and the numeric readout printed
+  it. Every candidate about coordinates, boxes, and event delivery died with
+  those two lines. `lib/starGeometry.ts` was never touched — correctly.
 
-### Instrumented diagnosis, staged and shipped
+What was actually wrong: at `2.5` the row drew **three whole gold stars**. The
+value was right, the number beside it was right, and the community aggregate on
+the same page rendered `★★½` correctly. The only surface that lied was the
+interactive one, and "the preview is one half-star high" is exactly what a
+correct value drawn as a whole star looks like to a user's eye.
 
-- **Build stamp** — commit hash + server start time, fixed bottom-right on every
-  dev page (`components/ui/BuildStamp.tsx`, hash injected by `vite.config.ts`).
-  `+dirty` means the tree had uncommitted changes when the server started.
-  **Check this first**: if it does not match `git rev-parse --short HEAD`, the
-  phone is on a cached bundle and nothing else in the report means anything.
-- **Live pointer readout** — bottom-left on the release page
-  (`components/ui/StarDebugReadout.tsx`). One drag prints every input the
-  mapping consumes. Both are `import.meta.env.DEV` only and dead-code eliminated
-  from production.
+### Cause
 
-Vite already sends `Cache-Control: no-cache` + ETag on source modules, so a
-stale bundle requires a 304 against a changed file — unlikely but not
-impossible, hence the stamp.
+The half mask was anchored to the **cell** rather than the **glyph**. On the
+desktop layout the cell shrink-wraps the glyph, so `clip-path: inset(0 0 0 50%)`
+of the cell *was* half the star and the mask was correct. On touch the cell
+flexes to 44–64px while the glyph stays ~0.6em, and the flexbox centres the
+glyph inside it: measured on the release card, a **58.8px** cell holding an
+**18.1px** glyph, with the mask clipped to everything past **x+29.4** — entirely
+off the star. Nothing was drawn, so the star stayed fully gold.
 
-### Repro candidates, most-likely first
+This is the same shape of bug as `4cdf7c5` (the arithmetic mapping) and has the
+same root: **the box is not the mark.** They are equal only on the desktop
+layout, which is the one every browser verification had been run at.
 
-Each is stated with the reading that would confirm or kill it, so tomorrow's
-numbers land directly on one:
+### Fix
 
-1. **Stale bundle on the device.** Kill: stamp matches HEAD. Confirm: it does
-   not, or the time predates the last restart. Costs nothing to check and
-   invalidates everything else.
-2. **visualViewport divergence (pinch-zoom).** iOS reports
-   `getBoundingClientRect()` in the *layout* viewport while a pinch moves the
-   *visual* one; touch `clientX` then no longer shares an origin with the boxes.
-   A half-star at ~28px needs only a small zoom to drift one step. Confirm:
-   `vv scale ≠ 1` or `offL ≠ 0`. This is my leading candidate — it is invisible
-   to every synthetic test because the harness never zooms.
-3. **Page zoom / text-size setting**, the same divergence from a different
-   cause. Confirm: `vv scale ≠ 1` with no pinch, or `vw` not matching the
-   device's CSS width.
-4. **Coordinate space mismatch.** Confirm: `x` and `pageX` differ by a constant
-   ≈ the scroll offset, meaning something upstream is feeding page coordinates
-   where client coordinates are expected.
-5. **Stale box measurement.** The boxes are read fresh per event, so this needs
-   a layout shift *during* the drag — sticky nav resize, keyboard, or the
-   `key={commitCount}` remount landing mid-gesture. Confirm: `cells L…` shifting
-   between samples in one drag.
-6. **iOS not delivering pointer events as assumed** — e.g. `pointercancel` mid
-   drag with the gesture continuing as touch events. Confirm: `evt` shows
-   something other than a clean `pointermove` run, or stops updating.
-7. **devicePixelRatio.** Both rects and `clientX` are CSS pixels, so this
-   *should* be irrelevant. Printed only to rule it out rather than assume it.
-   Confirm: drift scales with `dpr` (2 or 3).
+`.star-glyph` — an inline-block that shrink-wraps the glyph — now carries both
+the star and the mask, so 50% means half the star at any cell width. The 0.05em
+`.stars` used to contribute moves to the glyph's *margin*, outside the masked
+box, so the cell keeps its exact previous width: desktop boxes measure
+`116.2/15.6 …` before and after, i.e. **the pointer geometry is unchanged by
+this fix**.
 
-### What to send back
+Each cell now exposes `data-fill="full|half|empty"`, and
+`StarRatingInput.test.tsx` asserts the rendered fill at every half step at rest,
+under hover preview, and mid-drag — plus that the half mark is nested inside the
+glyph box, which is the invariant that broke. jsdom lays nothing out, so the
+alignment itself is still browser-verified, not unit-tested.
 
-A single slow drag to the 2.5 position, then the readout verbatim — especially
-`build`, `vv`, `x`/`pageX`, `cells`, and `box`/`calc`.
+**The law this leaves behind:** a committed value, an `aria-valuenow`, and a
+numeric readout agreeing with each other is **not** evidence that the control
+draws the right thing. Assert the mark.
+
+### Instruments
+
+- **Build stamp kept** (`components/ui/BuildStamp.tsx`) — dev-only, general
+  purpose, and it is what killed candidate 1 for free. It stays for the next
+  device session.
+- **Star pointer readout removed** (`components/ui/StarDebugReadout.tsx`, and
+  the `onDebugSample` sink it needed inside the component's pointer path). Its
+  question is answered, and it was the only reason diagnostics code sat in a hot
+  event handler. `data-fill` is the durable instrument now, and it is asserted
+  in CI rather than read off the glass.
 
 ## 5.5 close-out — how each item landed
 
@@ -145,7 +146,7 @@ A single slow drag to the 2.5 position, then the readout verbatim — especially
 | Desktop taste calls | **Accepted as shipped** — wordmark rule threshold, the glyph's two optical cuts, lifted palette tokens, cover tint strength. Reversible; details under "judgement calls" below. |
 | Haptic feel verification | **Moved to Phase 7** — blocked, not pending: no mobile screen fires an intent. |
 | Native half-star ruling | **Moved to Phase 7** — needs a mobile release detail screen to host a star input. |
-| Star half-star offset on device | **Open, tracked** — see the defect section above. |
+| Star half-star offset on device | **Done, closed 2026-07-23.** Not a geometry offset at all — the mapping was correct and the fill was drawn whole. See the resolved section above. |
 
 Phase 7 now carries the mobile app's missing surface: auth, release detail, and
 the write actions.
@@ -169,7 +170,7 @@ the write actions.
 | — | `CLAUDE.md` project laws | `ee75364` |
 | — | Systemic test mock-leakage fix (`clearMocks`) + title-trim-at-persist | `515b7d0` |
 | 5.6.1b | Log-listen feedback states — transient "Logged ✓" → "Log again", "In your diary ×N" | `d8be781` |
-| 5.5 | **Design polish — COMPLETE** (one tracked open defect). Wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380/320px audit, accessibility floor, haptics map, touch star input, fixture-debris purge, real-device verification | `44ed01c` … `fa2cc49` |
+| 5.5 | **Design polish — COMPLETE**, no open defects. Wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380/320px audit, accessibility floor, haptics map, touch star input, fixture-debris purge, real-device verification, half-star fill fix | `44ed01c` … `5407694` |
 
 > Numbering is out of order on purpose: 5.7, 5.8, 5.6 and 5.6.1 all ran ahead of
 > 5.5, because reliability and data-integrity bugs outranked design polish.
@@ -230,6 +231,14 @@ Design polish. Details worth carrying forward:
   Both were invisible at 380px, where the boxes divide evenly and row equals
   stars. **Verifying one width proves nothing here.** `lib/starGeometry.test.ts`
   sweeps real measured geometry from 320/380/430 so flex drift fails in CI.
+- **The star BOX is not the star MARK, and nothing may be positioned as if it
+  were.** The box is the hit target and flexes from 44px to 64px on touch; the
+  glyph is ~0.6em and sits centred inside it. Anchoring the half mask to the
+  cell put a 50% clip 29px from the cell's left edge, over an 18px glyph — off
+  the star entirely, so every half rendered as a whole gold star while the value
+  and the readout were correct. Both bugs in this list are the same mistake made
+  twice: measuring the mark by the container. Anything that must line up with
+  the glyph hangs off `.star-glyph`, which shrink-wraps it.
 - **Haptics map** — `apps/mobile/src/haptics.ts` is the only place a vibration is
   chosen. Call sites pass **intents** (`commitLog`), never impact styles, so
   retuning on hardware is one edit in one table. Nothing throws: a haptic can
@@ -336,6 +345,12 @@ a thumb, which flatters every hit-target decision:
 
   The **native** star input still has no ruling — Phase 7, since mobile has no
   release detail screen to host one.
+- [x] **Half-star FILL — fixed 2026-07-23, one device confirmation left.** The
+  third round of this bug was not geometry at all: the value was right and the
+  row drew whole stars (resolved section above). Fixed and verified in a real
+  browser at 380px — the failing layout — and at desktop width, at rest, on
+  hover, and mid-drag. What a phone would still add: the same read on real touch
+  hardware. Look at the stars, not the number — the number was never wrong.
 - [ ] While there: **iOS focus-zoom** should not fire on any input (fields are
   16px for this reason), and the nav's three wrapped rows should still be
   thumb-reachable.

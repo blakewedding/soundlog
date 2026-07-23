@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import { boxesFromElements, stepFromX } from "../../lib/starGeometry";
-import type { StarDebugSample } from "./StarDebugReadout";
 
 interface Props {
   value: number | null; // 0.5–5 in half steps, or null = unrated
@@ -13,12 +12,6 @@ interface Props {
    * accessible name is ambiguous for screen readers — so callers distinguish them.
    */
   label?: string;
-  /**
-   * Dev-only diagnostics sink. Receives every pointer sample the mapping sees;
-   * see StarDebugReadout. Never set in production — the call site is gated on
-   * import.meta.env.DEV, which is a build-time constant.
-   */
-  onDebugSample?: (sample: StarDebugSample) => void;
 }
 
 /** Movement past this many pixels turns a press into a drag rather than a tap. */
@@ -45,7 +38,6 @@ export function StarRatingInput({
   onClear,
   disabled,
   label = "Your rating",
-  onDebugSample,
 }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   // Bumped on every commit. Used as a React key so the settle animation
@@ -93,30 +85,6 @@ export function StarRatingInput({
     return stepFromX(boxesFromElements(cellRefs.current), clientX);
   }
 
-  /**
-   * Record what the mapping just saw, for the dev-only on-screen readout.
-   * Diagnostics only — it must never influence the value, so it runs after the
-   * decision is made and touches nothing the pointer path reads.
-   */
-  function record(e: React.PointerEvent, calc: number | null) {
-    if (!import.meta.env.DEV || !onDebugSample) return;
-    const boxes = boxesFromElements(cellRefs.current);
-    const boxIndex =
-      calc === null ? null : Math.max(0, Math.min(boxes.length - 1, Math.ceil(calc) - 1));
-    onDebugSample({
-      evt: e.type,
-      pointerType: e.pointerType,
-      x: e.clientX,
-      pageX: e.pageX,
-      screenX: e.screenX,
-      boxes,
-      boxIndex,
-      calc,
-      shown,
-      dragging: isDragging.current,
-    });
-  }
-
   function onPointerDown(e: React.PointerEvent) {
     if (disabled) return;
     pressX.current = e.clientX;
@@ -124,7 +92,6 @@ export function StarRatingInput({
     // Capture so the drag keeps tracking after the finger leaves the row, and
     // so pointerup lands here rather than on whatever is underneath.
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    record(e, stepFromClientX(e.clientX));
   }
 
   function onPointerMove(e: React.PointerEvent) {
@@ -136,7 +103,6 @@ export function StarRatingInput({
       }
       if (isDragging.current) {
         const step = stepFromClientX(e.clientX);
-        record(e, step);
         if (step !== null) setHover(step);
       }
       return;
@@ -159,7 +125,6 @@ export function StarRatingInput({
 
     if (commitIt && wasDragging) {
       const step = stepFromClientX(e.clientX) ?? hover;
-      record(e, step);
       swallowNextClick.current = true;
       setHover(null);
       if (step !== null) commit(step);
@@ -247,7 +212,11 @@ export function StarRatingInput({
       >
         {[1, 2, 3, 4, 5].map((star) => {
           const half = star - 0.5;
-          const glyph = shown >= star ? "★" : shown >= half ? "⯪" : "☆";
+          // One of three, from whatever is being shown — value at rest, hover
+          // preview, or drag preview. Exposed as data-fill so the rendered fill
+          // is assertable: the numeric readout agreeing with the value is not
+          // evidence that the stars do.
+          const fill = shown >= star ? "full" : shown >= half ? "half" : "empty";
           return (
             <span
               key={star}
@@ -255,32 +224,28 @@ export function StarRatingInput({
                 cellRefs.current[star - 1] = el;
               }}
               className="star-cell"
+              data-fill={fill}
+              data-testid={`star-${star}`}
               style={{ fontSize: "inherit", lineHeight: 1 }}
             >
+              {/* The glyph box shrink-wraps the star, and the half mask is
+                  anchored to IT rather than to the cell. The cell is the hit
+                  target, not the mark: on touch it flexes to 44–64px while the
+                  glyph stays ~0.6em, so a mask at 50% of the cell landed
+                  entirely off the glyph and every half rendered as a whole
+                  star. See .star-glyph in theme.css. */}
               <span
-                className="stars"
-                style={{ fontSize: "inherit", color: shown >= half ? "var(--gold)" : "var(--text-faint)" }}
+                className="star-glyph"
+                style={{ fontSize: "inherit", color: fill === "empty" ? "var(--text-faint)" : "var(--gold)" }}
                 aria-hidden
               >
-                {glyph === "⯪" ? "★" : glyph}
+                {fill === "empty" ? "☆" : "★"}
+                {fill === "half" && (
+                  <span aria-hidden className="star-glyph-half">
+                    ★
+                  </span>
+                )}
               </span>
-              {/* Half-star mask: cover the right half with the empty color. */}
-              {glyph === "⯪" && (
-                <span
-                  aria-hidden
-                  className="stars"
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    overflow: "hidden",
-                    fontSize: "inherit",
-                    color: "var(--text-faint)",
-                    clipPath: "inset(0 0 0 50%)",
-                  }}
-                >
-                  ★
-                </span>
-              )}
               {/* Hit zones — the tap path. Drag is handled on the row above. */}
               <span
                 data-testid={`rate-${half}`}

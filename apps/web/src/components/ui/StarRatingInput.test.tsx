@@ -112,6 +112,111 @@ describe("StarRatingInput", () => {
   });
 });
 
+// The other 5.5 bug, and the more embarrassing one: the mapping was right all
+// along — a drag to 2.5 committed 2.5 and the numeric readout said 2.5 — but
+// the row drew three whole gold stars, because the half mask was anchored to
+// the flexed CELL instead of the glyph. Nothing here could catch it: the tests
+// asserted committed values, and the readout agreed with them.
+//
+// jsdom lays nothing out, so the alignment itself is not assertable here (it is
+// checked in a browser at touch width). What these lock is what the row CLAIMS
+// to draw at every half step, and that a half actually renders a half mark
+// nested INSIDE the glyph box — the invariant whose absence was the bug.
+describe("StarRatingInput — the fill agrees with the value", () => {
+  const F = "full";
+  const H = "half";
+  const E = "empty";
+
+  const fills = () => [1, 2, 3, 4, 5].map((s) => screen.getByTestId(`star-${s}`).dataset.fill);
+
+  it.each([
+    [null, [E, E, E, E, E]],
+    [0.5, [H, E, E, E, E]],
+    [1, [F, E, E, E, E]],
+    [1.5, [F, H, E, E, E]],
+    [2, [F, F, E, E, E]],
+    [2.5, [F, F, H, E, E]],
+    [3, [F, F, F, E, E]],
+    [3.5, [F, F, F, H, E]],
+    [4, [F, F, F, F, E]],
+    [4.5, [F, F, F, F, H]],
+    [5, [F, F, F, F, F]],
+  ])("renders %s as %s at rest", (value, expected) => {
+    render(<StarRatingInput value={value} onChange={() => {}} />);
+    expect(fills()).toEqual(expected);
+  });
+
+  it("never draws more filled stars than the number it displays", () => {
+    for (const value of [0.5, 1.5, 2.5, 3.5, 4.5]) {
+      const { unmount } = render(<StarRatingInput value={value} onChange={() => {}} />);
+      expect(screen.getByText(value.toFixed(1))).toBeInTheDocument();
+      expect(fills().filter((f) => f === F)).toHaveLength(Math.floor(value));
+      expect(fills().filter((f) => f === H)).toHaveLength(1);
+      unmount();
+    }
+  });
+
+  it("draws a half as a half mark inside the glyph box, not over the hit box", () => {
+    render(<StarRatingInput value={2.5} onChange={() => {}} />);
+
+    const cell = screen.getByTestId("star-3");
+    const glyph = cell.querySelector(".star-glyph");
+    expect(glyph?.textContent).toContain("★");
+    // The mask's parent must be the glyph box. Anchored to the cell instead, it
+    // clips against a box that is up to 64px wide on touch while the glyph is
+    // ~0.6em, and lands entirely off the star.
+    expect(cell.querySelector(".star-glyph > .star-glyph-half")).not.toBeNull();
+
+    expect(screen.getByTestId("star-2").querySelector(".star-glyph-half")).toBeNull();
+    expect(screen.getByTestId("star-4").querySelector(".star-glyph-half")).toBeNull();
+    expect(screen.getByTestId("star-4").querySelector(".star-glyph")?.textContent).toBe("☆");
+  });
+
+  it("shows halves while previewing a hover, not just at rest", () => {
+    render(<StarRatingInput value={null} onChange={() => {}} />);
+    const slider = screen.getByRole("slider");
+
+    fireEvent.pointerMove(slider, { clientX: xFor(3.5), pointerId: 1, pointerType: "mouse" });
+    expect(fills()).toEqual([F, F, F, H, E]);
+    expect(screen.getByText("3.5")).toBeInTheDocument();
+
+    fireEvent.pointerMove(slider, { clientX: xFor(4), pointerId: 1, pointerType: "mouse" });
+    expect(fills()).toEqual([F, F, F, F, E]);
+  });
+
+  it("shows halves while dragging, before and after the commit", () => {
+    const onChange = vi.fn();
+    render(<StarRatingInput value={null} onChange={onChange} />);
+    const slider = screen.getByRole("slider");
+
+    fireEvent.pointerDown(slider, { clientX: xFor(1), pointerId: 1, pointerType: "touch" });
+    fireEvent.pointerMove(slider, { clientX: xFor(4.5), pointerId: 1, pointerType: "touch" });
+    // Drag preview — the finger is on 4.5, so four whole stars and a half.
+    expect(fills()).toEqual([F, F, F, F, H]);
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(slider, { clientX: xFor(4.5), pointerId: 1, pointerType: "touch" });
+    expect(onChange).toHaveBeenLastCalledWith(4.5);
+  });
+
+  it("previews every half step of a drag as a half", () => {
+    render(<StarRatingInput value={null} onChange={() => {}} />);
+    const slider = screen.getByRole("slider");
+
+    // Press on 5 and sweep back down: a press that never moves past the drag
+    // threshold is a tap and previews nothing, so the sweep has to start away
+    // from the first step it checks.
+    fireEvent.pointerDown(slider, { clientX: xFor(5), pointerId: 1, pointerType: "touch" });
+    for (const step of [0.5, 1.5, 2.5, 3.5, 4.5]) {
+      fireEvent.pointerMove(slider, { clientX: xFor(step), pointerId: 1, pointerType: "touch" });
+      const half = Math.ceil(step) - 1;
+      expect(fills()[half]).toBe(H);
+      expect(fills().filter((f) => f === F)).toHaveLength(Math.floor(step));
+    }
+    fireEvent.pointerCancel(slider, { clientX: xFor(4.5), pointerId: 1, pointerType: "touch" });
+  });
+});
+
 // The 5.5 bug: on a phone there is no hover, so before this the only way to
 // rate was a precise tap on a ~22px zone — and a half-star meant hitting the
 // left sliver of a glyph. Pressing and dragging now previews live and commits

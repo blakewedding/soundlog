@@ -8,7 +8,6 @@ import { patchReleaseEverywhere } from "../lib/releaseCache";
 import { useAuth } from "../contexts/AuthContext";
 import { StarRating } from "../components/ui/StarRating";
 import { StarRatingInput } from "../components/ui/StarRatingInput";
-import { StarDebugReadout, type StarDebugSample } from "../components/ui/StarDebugReadout";
 import { CoverImage } from "../components/ui/CoverImage";
 import { ArtistCredit } from "../components/album/ArtistCredit";
 import { Lightbox } from "../components/ui/Lightbox";
@@ -22,8 +21,6 @@ export default function Release() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   // Transient "Logged ✓" confirmation; the durable signal is myLogCount.
   const [justLogged, setJustLogged] = useState(false);
-  // Dev-only star-input diagnostics; see StarDebugReadout.
-  const [debugSample, setDebugSample] = useState<StarDebugSample | null>(null);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["release", id, user?.id],
@@ -225,7 +222,6 @@ export default function Release() {
                 value={release.myRating ?? null}
                 onChange={rate}
                 onClear={unrate}
-                onDebugSample={import.meta.env.DEV ? setDebugSample : undefined}
               />
             </div>
           )}
@@ -282,7 +278,6 @@ export default function Release() {
           />
         ))}
       </section>
-      <StarDebugReadout sample={debugSample} />
     </div>
   );
 }
