@@ -35,6 +35,72 @@ scope gaps are documented as Phase 7 work.
 `FeedRow` is text-only and there is no `<Image>` anywhere in `apps/mobile`.
 That is current design, not a failure.*
 
+## OPEN — star input half-star drift on device (unresolved)
+
+**Status: the mapping is no longer the suspect. The verification is.**
+
+The device shows the preview one half-star high (3 while the thumb is on 2.5).
+Two fixes shipped — `4cdf7c5` reworked the mapping to read rendered boxes, and
+`ad78ad7` widened the boxes — and **two real-browser verifications passed** while
+the phone kept failing with the *identical* symptom. A third fix is not
+warranted until something reproduces the way the device does.
+
+**Do not change `lib/starGeometry.ts` until a repro fails.** It is exhaustively
+tested against measured geometry and verified in-browser; changing it again
+without a failing case is guessing.
+
+### Shipped for tomorrow's session
+
+- **Build stamp** — commit hash + server start time, fixed bottom-right on every
+  dev page (`components/ui/BuildStamp.tsx`, hash injected by `vite.config.ts`).
+  `+dirty` means the tree had uncommitted changes when the server started.
+  **Check this first**: if it does not match `git rev-parse --short HEAD`, the
+  phone is on a cached bundle and nothing else in the report means anything.
+- **Live pointer readout** — bottom-left on the release page
+  (`components/ui/StarDebugReadout.tsx`). One drag prints every input the
+  mapping consumes. Both are `import.meta.env.DEV` only and dead-code eliminated
+  from production.
+
+Vite already sends `Cache-Control: no-cache` + ETag on source modules, so a
+stale bundle requires a 304 against a changed file — unlikely but not
+impossible, hence the stamp.
+
+### Repro candidates, most-likely first
+
+Each is stated with the reading that would confirm or kill it, so tomorrow's
+numbers land directly on one:
+
+1. **Stale bundle on the device.** Kill: stamp matches HEAD. Confirm: it does
+   not, or the time predates the last restart. Costs nothing to check and
+   invalidates everything else.
+2. **visualViewport divergence (pinch-zoom).** iOS reports
+   `getBoundingClientRect()` in the *layout* viewport while a pinch moves the
+   *visual* one; touch `clientX` then no longer shares an origin with the boxes.
+   A half-star at ~28px needs only a small zoom to drift one step. Confirm:
+   `vv scale ≠ 1` or `offL ≠ 0`. This is my leading candidate — it is invisible
+   to every synthetic test because the harness never zooms.
+3. **Page zoom / text-size setting**, the same divergence from a different
+   cause. Confirm: `vv scale ≠ 1` with no pinch, or `vw` not matching the
+   device's CSS width.
+4. **Coordinate space mismatch.** Confirm: `x` and `pageX` differ by a constant
+   ≈ the scroll offset, meaning something upstream is feeding page coordinates
+   where client coordinates are expected.
+5. **Stale box measurement.** The boxes are read fresh per event, so this needs
+   a layout shift *during* the drag — sticky nav resize, keyboard, or the
+   `key={commitCount}` remount landing mid-gesture. Confirm: `cells L…` shifting
+   between samples in one drag.
+6. **iOS not delivering pointer events as assumed** — e.g. `pointercancel` mid
+   drag with the gesture continuing as touch events. Confirm: `evt` shows
+   something other than a clean `pointermove` run, or stops updating.
+7. **devicePixelRatio.** Both rects and `clientX` are CSS pixels, so this
+   *should* be irrelevant. Printed only to rule it out rather than assume it.
+   Confirm: drift scales with `dpr` (2 or 3).
+
+### What to send back
+
+A single slow drag to the 2.5 position, then the readout verbatim — especially
+`build`, `vv`, `x`/`pageX`, `cells`, and `box`/`calc`.
+
 ## Remaining to close 5.5
 
 Nothing is in progress. Three items, none started:

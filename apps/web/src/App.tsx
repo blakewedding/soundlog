@@ -1,5 +1,6 @@
 import { Routes, Route, useLocation } from "react-router-dom";
 import { Nav } from "./components/ui/Nav";
+import { BuildStamp } from "./components/ui/BuildStamp";
 import Home from "./pages/Home";
 import Search from "./pages/Search";
 import Explore from "./pages/Explore";
@@ -45,6 +46,7 @@ export default function App() {
           <Route path="/:username" element={<Profile />} />
         </Routes>
       </main>
+      <BuildStamp />
     </>
   );
 }

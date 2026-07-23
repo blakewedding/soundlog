@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { boxesFromElements, stepFromX } from "../../lib/starGeometry";
+import type { StarDebugSample } from "./StarDebugReadout";
 
 interface Props {
   value: number | null; // 0.5–5 in half steps, or null = unrated
@@ -12,6 +13,12 @@ interface Props {
    * accessible name is ambiguous for screen readers — so callers distinguish them.
    */
   label?: string;
+  /**
+   * Dev-only diagnostics sink. Receives every pointer sample the mapping sees;
+   * see StarDebugReadout. Never set in production — the call site is gated on
+   * import.meta.env.DEV, which is a build-time constant.
+   */
+  onDebugSample?: (sample: StarDebugSample) => void;
 }
 
 /** Movement past this many pixels turns a press into a drag rather than a tap. */
@@ -32,7 +39,14 @@ const DRAG_THRESHOLD_PX = 4;
  *
  * Gold mono glyphs per the design system.
  */
-export function StarRatingInput({ value, onChange, onClear, disabled, label = "Your rating" }: Props) {
+export function StarRatingInput({
+  value,
+  onChange,
+  onClear,
+  disabled,
+  label = "Your rating",
+  onDebugSample,
+}: Props) {
   const [hover, setHover] = useState<number | null>(null);
   // Bumped on every commit. Used as a React key so the settle animation
   // restarts — re-adding a class the element already has does not replay a CSS
@@ -79,6 +93,30 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
     return stepFromX(boxesFromElements(cellRefs.current), clientX);
   }
 
+  /**
+   * Record what the mapping just saw, for the dev-only on-screen readout.
+   * Diagnostics only — it must never influence the value, so it runs after the
+   * decision is made and touches nothing the pointer path reads.
+   */
+  function record(e: React.PointerEvent, calc: number | null) {
+    if (!import.meta.env.DEV || !onDebugSample) return;
+    const boxes = boxesFromElements(cellRefs.current);
+    const boxIndex =
+      calc === null ? null : Math.max(0, Math.min(boxes.length - 1, Math.ceil(calc) - 1));
+    onDebugSample({
+      evt: e.type,
+      pointerType: e.pointerType,
+      x: e.clientX,
+      pageX: e.pageX,
+      screenX: e.screenX,
+      boxes,
+      boxIndex,
+      calc,
+      shown,
+      dragging: isDragging.current,
+    });
+  }
+
   function onPointerDown(e: React.PointerEvent) {
     if (disabled) return;
     pressX.current = e.clientX;
@@ -86,6 +124,7 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
     // Capture so the drag keeps tracking after the finger leaves the row, and
     // so pointerup lands here rather than on whatever is underneath.
     e.currentTarget.setPointerCapture?.(e.pointerId);
+    record(e, stepFromClientX(e.clientX));
   }
 
   function onPointerMove(e: React.PointerEvent) {
@@ -97,6 +136,7 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
       }
       if (isDragging.current) {
         const step = stepFromClientX(e.clientX);
+        record(e, step);
         if (step !== null) setHover(step);
       }
       return;
@@ -119,6 +159,7 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
 
     if (commitIt && wasDragging) {
       const step = stepFromClientX(e.clientX) ?? hover;
+      record(e, step);
       swallowNextClick.current = true;
       setHover(null);
       if (step !== null) commit(step);

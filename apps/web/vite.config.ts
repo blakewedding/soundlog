@@ -1,7 +1,26 @@
 /// <reference types="vitest/config" />
+import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 import type { ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
+
+/**
+ * The commit the running bundle was built from, stamped in at config load.
+ *
+ * Exists because a device kept reproducing a bug that two real-browser
+ * verifications said was fixed. Before diagnosing anything like that again, the
+ * first question has to be answerable by eye: is the phone even running this
+ * code? The dev build renders this in a corner (see BuildStamp).
+ */
+function buildStamp(): string {
+  try {
+    const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+    const dirty = execSync("git status --porcelain", { encoding: "utf8" }).trim().length > 0;
+    return `${sha}${dirty ? "+dirty" : ""}`;
+  } catch {
+    return "unknown";
+  }
+}
 
 // While the backend hot-reloads (tsx watch restarts it on every source edit),
 // port 4000 is unreachable for ~1s. Vite's default proxy reports that upstream
@@ -25,6 +44,11 @@ const apiProxy: ProxyOptions = {
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    // Read at config load, so restarting the dev server re-stamps it.
+    __BUILD_STAMP__: JSON.stringify(buildStamp()),
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
