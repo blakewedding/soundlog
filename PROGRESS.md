@@ -310,6 +310,18 @@ app is actually used on — see the cookie-origin note under local environment.
   cleartext**. Re-running the heal is a clean no-op. The heal makes **no network
   calls**, for the reason directly above. Kept here because the *reasoning* still
   governs any future URL migration.
+- **Resolved, don't re-investigate: red screen "Unable to resolve module
+  expo-secure-store".** The package was installed correctly (`npx expo install`,
+  config plugin registered in `app.json`, lockfile and symlink present, and a
+  fresh `expo export` bundles it — 972 modules, `ExpoSecureStore` in the graph).
+  The bundler serving the phone had started **50 minutes before the install**
+  (Metro 23:22:54, symlink 00:12:25) and caches its module map at startup, so it
+  never saw the package. **A running Metro must be restarted after any install**
+  — `pnpm --filter @soundlog/mobile dev --clear`.
+
+  Now caught automatically: `pnpm --filter @soundlog/mobile verify` runs
+  typecheck, tests, a real Metro bundle, **and** a bundler-freshness check that
+  fails when the running Metro predates the last dependency change.
 - **Resolved, don't re-investigate: "the mobile feed suddenly demands sign-in".**
   Not a regression, not an expiry, and nothing to do with the covers commit or
   the SDK upgrade. `/api/feed` is `requireAuth` **by design** (`/api/feed/popular`

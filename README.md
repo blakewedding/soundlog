@@ -146,7 +146,34 @@ passes 18/18.
 **Always install Expo packages with `npx expo install`, never `pnpm add`.**
 `expo install` resolves the version matching the installed SDK; `pnpm add` takes
 the npm `latest` tag, which is routinely several majors ahead of the SDK and
-fails at runtime rather than at install.
+fails at runtime rather than at install. It also registers config plugins —
+`expo-secure-store` appearing under `expo.plugins` in `app.json` is what a
+correct install looks like.
+
+**Then restart Metro.** A running bundler caches its module map at startup, so a
+package installed afterwards is invisible to it: the device shows
+`Unable to resolve module <x>` while `package.json`, the lockfile, `node_modules`
+and a fresh `expo export` are all perfectly correct. It reads as a code bug and
+sends you hunting through a diff where nothing is wrong.
+
+```bash
+pnpm --filter @soundlog/mobile dev --clear
+```
+
+**Verify mobile with the bundle, not just types and tests:**
+
+```bash
+pnpm --filter @soundlog/mobile verify   # typecheck + tests + real Metro bundle + bundler freshness
+```
+
+Typecheck and unit tests can both pass on an app that cannot run. `tsc` will
+resolve a package hoisted into pnpm's virtual store even when the app's own
+`node_modules` has no link to it, and Vitest mocks native modules
+(`vi.mock("expo-secure-store")`) — so the suite proves the logic and says
+nothing about resolvability on a device. Only bundling exercises Metro's real
+resolver over the real graph. `verify` also fails when the running bundler
+predates the last dependency change, which is the one failure no repo-level
+check can see.
 
 The upgrade path, for the next one:
 
