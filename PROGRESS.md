@@ -194,6 +194,9 @@ cd ~/Downloads/soundlog && EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts
 - **`EXPO_PUBLIC_*` is inlined at bundle time**, so the token must be in the
   environment of the Metro process serving the bundle. Re-using an
   already-running bundler that was started without it silently 401s.
+  **This bit once and cost a session** — see below. It is now fixed properly:
+  sign in on the device via the **You** tab, and the token is kept in
+  SecureStore, surviving Metro restarts, `--clear`, and app reloads.
 - The dev feed screen prints the resolved base URL and the rule that produced it
   (`configured` / `expo-lan` / `fallback`) beneath the empty state.
 
@@ -307,6 +310,22 @@ app is actually used on — see the cookie-origin note under local environment.
   cleartext**. Re-running the heal is a clean no-op. The heal makes **no network
   calls**, for the reason directly above. Kept here because the *reasoning* still
   governs any future URL migration.
+- **Resolved, don't re-investigate: "the mobile feed suddenly demands sign-in".**
+  Not a regression, not an expiry, and nothing to do with the covers commit or
+  the SDK upgrade. `/api/feed` is `requireAuth` **by design** (`/api/feed/popular`
+  is the public one), exactly mirroring the web, where `Home.tsx` renders the
+  personal feed only as `{user && <FeedSection />}`.
+
+  What actually changed: the afternoon Metro was started with
+  `EXPO_PUBLIC_DEV_TOKEN` in its environment, and `EXPO_PUBLIC_*` is inlined by
+  Babel **at bundle time**. A later Metro started without it produced a bundle
+  that sends no `Authorization` header at all. Evidence: the running Metro's
+  environment had the variable absent (`ps eww`), anonymous `/api/feed` returns
+  `401 {"error":"Missing access token"}` — the screen's exact message — and the
+  afternoon token had *not* expired (12h TTL, minted ~15:20, checked at 00:00).
+
+  Fixed by moving the credential off the bundle: sign in on-device via the
+  **You** tab (dev builds only), token persisted in SecureStore.
 - **Stray test-fixture row in the dev catalog.** One release — `Record 7`,
   mbid `disco-rg-mrwiup8e-7` — carries `https://caa.example/7.jpg`, a fake
   domain, so it renders as a permanently blank tile on Explore. Left behind by

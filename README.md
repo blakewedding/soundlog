@@ -179,12 +179,34 @@ Tunnel hosts (`--tunnel`, `*.exp.direct`) are rejected at step 2 on purpose:
 they proxy the *bundler* port only, so appending `:4000` yields a URL that
 resolves but refuses. Use `EXPO_PUBLIC_API_URL` with a tunnel.
 
-The feed also needs a token — `/api/feed` is authenticated and returns 401
-without one. Until mobile auth lands, supply one:
+#### Signing in on a device (development only)
+
+`/api/feed` is authenticated **by design** — the personal feed is private, and
+`/api/feed/popular` is the public one. This mirrors the web, where `Home.tsx`
+renders the personal feed only for a signed-in user.
+
+Mobile has no real auth until Phase 7, so dev builds ship a sign-in on the
+**You** tab. It posts to the same `/api/auth/login` the web client uses — there
+is no development-only backend surface — and stores the token with
+`expo-secure-store`.
+
+Use the device sign-in rather than `EXPO_PUBLIC_DEV_TOKEN`. Those variables are
+inlined by Babel **at bundle time**, so a Metro restarted without the variable
+silently serves a build that sends no `Authorization` header, and a working
+session becomes "Sign in to see your feed" with nothing in the diff to explain
+it. A SecureStore token survives Metro restarts, `--clear`, and reloads.
+
+The env variable still works as a fallback if you prefer it:
 
 ```bash
-EXPO_PUBLIC_DEV_TOKEN=<access token> pnpm --filter @soundlog/mobile dev
+EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts/dev-token.ts) \
+  pnpm --filter @soundlog/mobile dev
 ```
+
+The whole dev sign-in is gated on `__DEV__`, which is a build-time constant, so
+it is dead-code eliminated from release bundles — verified by grepping the
+production Hermes bytecode for its strings (all absent; the plain placeholder
+screen is what remains).
 
 The dev feed screen prints the resolved base URL and which rule produced it, so
 a device failure names its own cause.

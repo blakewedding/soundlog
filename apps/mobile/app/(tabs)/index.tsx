@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import type { FeedItem } from "@soundlog/shared";
 import { API_BASE_SOURCE, API_BASE_URL, ApiUnreachableError, getFeed, UnauthenticatedError } from "../../src/api";
+import { devTokenSource, loadDevToken } from "../../src/devAuth";
 
 export default function Feed() {
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -35,7 +36,12 @@ export default function Feed() {
   }, []);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
+    // The dev token lives in secure storage, so it must be read before the
+    // first request — otherwise a signed-in device still 401s on cold start.
+    // Resolves to null immediately in a release build.
+    loadDevToken()
+      .then(() => load())
+      .finally(() => setLoading(false));
   }, [load]);
 
   // Pull-to-refresh.
@@ -72,7 +78,7 @@ export default function Feed() {
               this, diagnosing a device means guessing at the base URL. */}
           {__DEV__ && (
             <Text style={styles.debug}>
-              API: {API_BASE_URL} ({API_BASE_SOURCE})
+              API: {API_BASE_URL} ({API_BASE_SOURCE}){"\n"}auth: {devTokenSource()}
             </Text>
           )}
         </View>
