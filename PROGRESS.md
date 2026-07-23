@@ -5,37 +5,72 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-21
+**Last updated:** 2026-07-23
 
 ## Status
 
-`origin/main` is an exact mirror of local — head `564fa39`, 0 ahead / 0 behind,
-trees identical, clean working tree. History re-scanned across every commit: no
-`.env`, no key material, ever.
+**PHASE 5.5 IS COMPLETE.** The polish phase is closed with **one tracked open
+defect** (star half-star geometry on device — see below), which blocks nothing
+in Phase 6.
 
-**Phases 0 through 5.8 are done. Phase 5.5 (design polish) closes the feature
-work.** Suites green: **backend 149 + web 79 + mobile 28 = 256 tests**, all
-three packages typecheck clean.
+**Phases 0 through 5.8 are done.** Suites green: **backend 176 + web 122 +
+mobile 38 = 336 tests**, all three packages typecheck clean, `expo-doctor` 18/18.
 
-Shipped since, all committed and pushed:
+**Next: Phase 6 — production deployment.**
+
+### What 5.5 delivered
+
+- **Wordmark system** — Groove glyph + Struck letterforms, flat gold throughout,
+  no gradients. The hairline rule is **size-derived**: on at display sizes
+  (≥32px), off in the nav, so the two cannot drift apart as call sites multiply.
+  Icon assets are **placeholders**, flagged for Phase 7.
+- **Micro-interactions** — motion tokens in `:root`, star-commit settle, cover
+  hover lift, page fade, feed stagger. `prefers-reduced-motion` is a blanket
+  wildcard, not a per-rule list.
+- **Optimistic follow + list edits** — `followCache` / `listCache` join
+  `reviewCache` / `releaseCache`; every bare `await` is gone.
+- **Perceived performance** — dominant-colour cover placeholders, hover prefetch
+  that refuses un-seeded refs (a GET on those *writes* a row).
+- **Responsive audit at 380px and 320px** — no horizontal scroll anywhere, tap
+  targets ≥44px.
+- **Accessibility floor** — every gold-on-ink pairing clears WCAG AA 4.5:1; one
+  global `:focus-visible` rule; lightbox is a real modal; search tabs are a real
+  tablist.
+- **Haptics utility** — the whole vocabulary in one file, intents not impact
+  styles, fault-isolated. No call site yet (Phase 7 screens).
+- **Touch star input** — press-and-drag with live preview, commit on release,
+  alongside tap and keyboard. Widened to **~29px per half-star** on touch
+  layouts per the device ruling (was 22px, ruled fiddly).
+- **Fixture debris purged** — failure-proof suite teardown plus ES-vs-Postgres
+  reconciliation; 1,070 orphaned search documents removed.
+- **Real-device verification complete** — LAN pipeline, durable SecureStore
+  auth, pull-to-refresh (closing the Phase 4 item), New Architecture clean.
+
+*The mobile feed populates **without covers** by design: `FeedRow` is text-only
+and there is no `<Image>` anywhere in `apps/mobile`.*
+
+### Shipped in 5.5, all committed and pushed
 
 | | |
 |---|---|
 | `44ed01c` | Phase 5.5 — design polish |
-| `578fc4f` | **Mobile: Expo SDK 54 upgrade** (from 51; `expo-doctor` 18/18) |
-| `22c4e77` | **Mobile: LAN-aware dev API host** |
+| `578fc4f` | Mobile: Expo SDK 54 upgrade (from 51; `expo-doctor` 18/18) |
+| `22c4e77` | Mobile: LAN-aware dev API host |
 | `564fa39` | Real-device session recorded; mobile scope moved into Phase 7 |
+| `a6e8abe` | Cover-URL scheme measured |
+| `7cda5e8` | Covers: https normalization + device-reachable URLs |
+| `a44c8f4` | Mobile: on-device dev sign-in (SecureStore), replacing the inlined token |
+| `7fe5854` | Mobile: expo-secure-store + bundle-resolution check |
+| `171775f` | 5.5 close-out: fixture cleanup + touch star input |
+| `ad78ad7` | 5.5 close-out: widen half-star hit boxes on touch |
+| `4cdf7c5` | Star geometry: derive mapping from rendered boxes |
+| `fa2cc49` | Star input: on-device diagnostics |
 
-**Real-device session — 2026-07-22, confirmed:** the app loads in Expo Go over
-LAN, the feed populates, and **pull-to-refresh works — closing the Phase 4
-verification item.** The New Architecture (SDK 53 default) runs clean. Mobile's
-scope gaps are documented as Phase 7 work.
+## OPEN DEFECT (the only one from 5.5) — star half-star offset on device
 
-*The feed populates **without covers**: mobile renders no images at all —
-`FeedRow` is text-only and there is no `<Image>` anywhere in `apps/mobile`.
-That is current design, not a failure.*
-
-## OPEN — star input half-star drift on device (unresolved)
+**Blocks nothing in Phase 6.** Web and desktop are correct; this is the touch
+drag on a physical phone. Carried as a tracked defect rather than holding the
+phase open, because the next step needs a device reading, not more code.
 
 **Status: the mapping is no longer the suspect. The verification is.**
 
@@ -49,7 +84,7 @@ warranted until something reproduces the way the device does.
 tested against measured geometry and verified in-browser; changing it again
 without a failing case is guessing.
 
-### Shipped for tomorrow's session
+### Instrumented diagnosis, staged and shipped
 
 - **Build stamp** — commit hash + server start time, fixed bottom-right on every
   dev page (`components/ui/BuildStamp.tsx`, hash injected by `vite.config.ts`).
@@ -101,27 +136,19 @@ numbers land directly on one:
 A single slow drag to the 2.5 position, then the readout verbatim — especially
 `build`, `vv`, `x`/`pageX`, `cells`, and `box`/`calc`.
 
-## Remaining to close 5.5
+## 5.5 close-out — how each item landed
 
-Nothing is in progress. Three items, none started:
+| Item | Outcome |
+|---|---|
+| Cover URL scheme | **Done.** Normalized at persist, catalog healed, 0 of 285 cleartext. Not device-verifiable as framed — mobile renders no images; verified on web + API payload. |
+| Mobile-Safari star-drag ruling | **Done.** Ruled fiddly at 22px; boxes widened to ~29px per half-star on touch (`ad78ad7`). |
+| Desktop taste calls | **Accepted as shipped** — wordmark rule threshold, the glyph's two optical cuts, lifted palette tokens, cover tint strength. Reversible; details under "judgement calls" below. |
+| Haptic feel verification | **Moved to Phase 7** — blocked, not pending: no mobile screen fires an intent. |
+| Native half-star ruling | **Moved to Phase 7** — needs a mobile release detail screen to host a star input. |
+| Star half-star offset on device | **Open, tracked** — see the defect section above. |
 
-1. ~~**Cover URL scheme fix**~~ — **done**: normalized at persist and healed
-   catalog-wide (0 of 285 cleartext). *Cannot be "verified on device" as
-   originally framed:* mobile renders no images at all, so there is nothing on
-   the phone to check. Verified where it is observable — the web app and the API
-   payload. The device check arrives with the Phase 7 image work.
-2. **Mobile-Safari star-drag ruling** — the 380px *web* layout in a phone
-   browser (section B of the manual pass). Untouched by the native session.
-3. **Desktop checklist stragglers** — the taste calls under "judgement calls"
-   below: wordmark rule threshold, the glyph's two optical cuts, lifted palette
-   tokens, cover tint strength.
-
-Then **Phase 6 — production deployment.**
-
-Two 5.5 items turned out to be **blocked rather than pending**: haptic feel and
-the native half-star ruling both need mobile screens that don't exist. Both moved
-to **Phase 7**, which now carries the mobile app's missing surface — auth,
-release detail, and the write actions.
+Phase 7 now carries the mobile app's missing surface: auth, release detail, and
+the write actions.
 
 ## Done
 
@@ -142,7 +169,7 @@ release detail, and the write actions.
 | — | `CLAUDE.md` project laws | `ee75364` |
 | — | Systemic test mock-leakage fix (`clearMocks`) + title-trim-at-persist | `515b7d0` |
 | 5.6.1b | Log-listen feedback states — transient "Logged ✓" → "Log again", "In your diary ×N" | `d8be781` |
-| 5.5 | Design polish — wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380px audit, accessibility floor, haptics map | `44ed01c` |
+| 5.5 | **Design polish — COMPLETE** (one tracked open defect). Wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380/320px audit, accessibility floor, haptics map, touch star input, fixture-debris purge, real-device verification | `44ed01c` … `fa2cc49` |
 
 > Numbering is out of order on purpose: 5.7, 5.8, 5.6 and 5.6.1 all ran ahead of
 > 5.5, because reliability and data-integrity bugs outranked design polish.

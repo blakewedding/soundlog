@@ -101,8 +101,21 @@ Monorepo, TypeScript backend with health checks, Prisma schema, web + mobile she
 - **Tabbed search including Labels** — the planned tabs become Releases / Artists / Members / Lists / Labels. Artists are already indexed in ES (Phase 2.5) ready for their tab.
 - **Open design question — editorial genre descriptions:** genre pages likely deserve short written descriptions. No API provides these; they'd be content we author and maintain ourselves (where do they live, who writes them, how do they localize?). Decide before building genre pages.
 
-### Phase 5.5 — Design polish
+### Phase 5.5 — Design polish ✅ (one tracked open defect)
 > "Wordmark and identity, micro-interactions, perceived performance, a 380px responsive audit, an accessibility floor, and mobile haptics. No new features — refinement only."
+
+**Complete.** Wordmark system (Groove glyph + Struck letterforms, rule at
+display sizes only, placeholder icons deferred to Phase 7), micro-interactions,
+optimistic follow/list edits, responsive audit at 380px **and** 320px, an
+accessibility floor at WCAG AA, the haptics utility, a touch star input with
+press-and-drag preview and commit-on-release (~29px per half-star on touch), and
+a fixture-debris purge with failure-proof teardown.
+
+**One open defect**, tracked in PROGRESS.md and blocking nothing in Phase 6: on a
+physical phone the star drag previews one half-star high. It survived two fixes
+that each verified clean in a desktop browser, so diagnosis is now instrumented
+rather than speculative — a build stamp and an on-screen pointer readout are
+shipped and awaiting one device reading.
 
 **Real-device session — 2026-07-22.** Ran in Expo Go on a physical phone over
 LAN. Confirmed working:
@@ -268,12 +281,45 @@ a device failure names its own cause.
   persist and healed catalog-wide — 0 of 285 remain. Re-check after any bulk
   import with `npx tsx scripts/heal-cover-https.ts --dry-run`.
 - [x] **Backend production image builds.** `infrastructure/docker/Dockerfile.backend` is pnpm-workspace-aware: it copies the lockfile + every workspace manifest (`--frozen-lockfile` validates all importers), installs, generates the Prisma client, compiles, then uses `pnpm deploy --prod` to emit a standalone runtime tree. Verified end-to-end with `docker build -f infrastructure/docker/Dockerfile.backend .` and by instantiating `PrismaClient` inside the resulting image.
-- [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames).
+- [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames). **This is the first thing to close in Phase 6.**
+- [ ] **Swap the OAuth redirect URIs for production.** Three values in
+  `backend/src/config/env.ts` still default to loopback and will silently break
+  sign-in the moment the app is served from a real domain:
+
+  | Variable | Dev default | Production needs |
+  |---|---|---|
+  | `CLIENT_URL` | `http://127.0.0.1:3000` | the real web origin |
+  | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:4000/api/auth/spotify/callback` | the real API origin |
+  | `GOOGLE_REDIRECT_URI` | `http://127.0.0.1:4000/api/auth/google/callback` | the real API origin |
+
+  Changing the env vars is only half of it — **the same URLs must be registered
+  in the Spotify and Google consoles**, or the provider rejects the callback
+  with a redirect-URI mismatch. Both go in the K8s secret, never a ConfigMap
+  (CLAUDE.md §7).
+
+  Related dev-only wrinkle worth fixing at the same time: `CLIENT_URL` is
+  `127.0.0.1` while the app is actually used on `localhost`, and browsers treat
+  those as different cookie origins — so the refresh cookie set under one host
+  is invisible on the other. Harmless locally once you know; a real
+  inconsistency to resolve before it is baked into production config.
 
 ### Phase 7 — Brand assets, mobile app & deferred design work
 
 Work that Phase 5.5 deliberately did not do, because each item is a new piece of
-design or a new component rather than polish on an existing one.
+design or a new component rather than polish on an existing one. The full
+deferral list, with reasons detailed in the sections below:
+
+| Deferred | Why it is not 5.5 work |
+|---|---|
+| **Mobile auth** (real email/password + OAuth code exchange) | New feature. Dev-only SecureStore sign-in exists as scaffolding; the backend's redirect URIs still point at `127.0.0.1` and must move to the `soundlog://` scheme. |
+| **Mobile release detail screens** | New screens. Mobile is read-only — feed tab only. |
+| **Mobile star input** | Needs a release detail screen to live on. |
+| **Haptic feel verification** | Blocked, not pending: no mobile screen fires an intent, so there is nothing to feel. |
+| **Native half-star ruling** | Same dependency — no native star input exists to judge. |
+| **Covers on device** | Mobile renders no images at all; the URL data is already https-safe, the rendering is unbuilt. |
+| **Mobile nav pattern** (disclosure or tab bar) | A new navigation component, not a refinement. Current wrap costs ~18% of a 380px viewport. |
+| **Final app icon design** | Current icons are geometrically faithful placeholders, not finished design. |
+| **Desktop star hit-width** (8×24) | Pre-existing and outside 5.5's mobile brief. |
 
 #### Mobile app — the screens that don't exist yet
 
@@ -299,9 +345,17 @@ Two Phase 5.5 items are **blocked on the above** and cannot be settled first:
   its tests pass, but *no intent has a call site* — there is no rating, log,
   follow or like on the device to fire one. Verifying how the intent→style table
   actually feels needs those screens. Retuning is one table in one file.
-- **The native 22px half-star ruling.** The mobile web layout's hit target was
-  deferred to a device pass; the *native* star input cannot be judged until a
-  release detail screen exists to put one on.
+- **The native half-star ruling.** The *web* layout's target was ruled on a real
+  device in 5.5 — fiddly at 22px, widened to ~29px per half-star on touch. The
+  *native* input cannot be judged until a release detail screen exists to put
+  one on, and it should start from the web ruling rather than 22px.
+
+**Carry this into the mobile star input:** there is an **open defect** on the
+web control — on a physical phone the drag preview reads one half-star high
+(3 while the thumb is on 2.5), surviving two fixes that both verified clean in a
+desktop browser. Diagnostics are staged (build stamp + on-screen pointer
+readout); see PROGRESS.md. Whatever that turns out to be probably applies to a
+native implementation too, so resolve it before porting the mapping.
 
 **Cover images — the URL half is fixed; the rendering half is still to build.**
 Mobile renders no images today (`FeedRow` is text-only), so adding them is
