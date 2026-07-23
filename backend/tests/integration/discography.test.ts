@@ -134,8 +134,13 @@ afterAll(async () => {
   vi.unstubAllGlobals();
   await settleDiscographies().catch(() => {});
   await settleEnrichments().catch(() => {});
+  // By PREFIX, not by a list of two known ids. This suite exercises
+  // click-to-materialize against a 250-group discography, so any of
+  // `disco-rg-<run>-N` can end up seeded — the previous explicit list missed
+  // whichever ones a test happened to materialize, and "Record 7 — Prolific
+  // <run>" ended up live in the dev catalogue and visible in Explore.
   const seededNow = await prisma.release.findMany({
-    where: { musicbrainzId: { in: [SEEDED_MBID, UNSEEDED_EP_MBID] } },
+    where: { musicbrainzId: { startsWith: `disco-rg-${RUN}-` } },
     select: { id: true },
   });
   for (const r of seededNow) await deleteReleaseEverywhere(r.id).catch(() => {});

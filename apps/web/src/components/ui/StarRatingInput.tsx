@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 interface Props {
   value: number | null; // 0.5–5 in half steps, or null = unrated
@@ -13,13 +13,23 @@ interface Props {
   label?: string;
 }
 
-const STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) / 2); // 0.5 … 5.0
+/** Movement past this many pixels turns a press into a drag rather than a tap. */
+const DRAG_THRESHOLD_PX = 4;
 
 /**
- * Half-star rating input. Each star is two hit zones (left half = .5); hover
- * previews, click commits, clicking your current rating clears it. Keyboard:
- * arrows adjust by half a star, Delete clears. Gold mono glyphs per the
- * design system.
+ * Half-star rating input.
+ *
+ * Three ways to drive it, all committing the same values:
+ *
+ *  - **Tap / click** a half-star hit zone (left half of a star = .5). Tapping
+ *    your current rating clears it.
+ *  - **Press and drag** across the row — the preview follows your finger or
+ *    cursor and the release commits. This is the touch path: on a phone there
+ *    is no hover, so without it the only way to rate was a precise tap on a
+ *    22px zone, and a half-star meant hitting the left sliver of a glyph.
+ *  - **Keyboard**: arrows adjust by half a star, Delete clears.
+ *
+ * Gold mono glyphs per the design system.
  */
 export function StarRatingInput({ value, onChange, onClear, disabled, label = "Your rating" }: Props) {
   const [hover, setHover] = useState<number | null>(null);
@@ -28,6 +38,18 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
   // animation, and remounting is the cheapest way to force it. Hover previews
   // deliberately do not bump it: the motion marks the write, not the aim.
   const [commitCount, setCommitCount] = useState(0);
+
+  const rowRef = useRef<HTMLSpanElement>(null);
+  /** Where the press started, so small jitter still counts as a tap. */
+  const pressX = useRef<number | null>(null);
+  const isDragging = useRef(false);
+  /**
+   * A drag ends with a synthetic click on whichever zone the pointer is over.
+   * That click would commit a second time, so the drag's own commit sets this
+   * and the zone handler consumes it.
+   */
+  const swallowNextClick = useRef(false);
+
   const shown = hover ?? value ?? 0;
 
   function settle() {
@@ -39,6 +61,90 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
     if (value === step && onClear) onClear();
     else onChange(step);
     settle();
+  }
+
+  /**
+   * Which half-star sits under this x coordinate. Measured against the row, so
+   * dragging works continuously across stars instead of per-zone.
+   */
+  function stepFromClientX(clientX: number): number | null {
+    const el = rowRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0) return null;
+    const ratio = (clientX - rect.left) / rect.width;
+    const clamped = Math.min(1, Math.max(0, ratio));
+    // 10 half-steps across the row; ceil so the first pixel already reads 0.5.
+    return Math.min(5, Math.max(0.5, Math.ceil(clamped * 10) / 2));
+  }
+
+  function onPointerDown(e: React.PointerEvent) {
+    if (disabled) return;
+    pressX.current = e.clientX;
+    isDragging.current = false;
+    // Capture so the drag keeps tracking after the finger leaves the row, and
+    // so pointerup lands here rather than on whatever is underneath.
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+
+  function onPointerMove(e: React.PointerEvent) {
+    if (disabled) return;
+
+    if (pressX.current !== null) {
+      if (!isDragging.current && Math.abs(e.clientX - pressX.current) > DRAG_THRESHOLD_PX) {
+        isDragging.current = true;
+      }
+      if (isDragging.current) {
+        const step = stepFromClientX(e.clientX);
+        if (step !== null) setHover(step);
+      }
+      return;
+    }
+
+    // Not pressed: hover preview, which only a fine pointer can produce. Touch
+    // devices never reach here without a press, so a finger resting mid-scroll
+    // cannot change the preview.
+    if (e.pointerType !== "touch") {
+      const step = stepFromClientX(e.clientX);
+      if (step !== null) setHover(step);
+    }
+  }
+
+  function endPress(e: React.PointerEvent, commitIt: boolean) {
+    if (pressX.current === null) return;
+    const wasDragging = isDragging.current;
+    pressX.current = null;
+    isDragging.current = false;
+
+    if (commitIt && wasDragging) {
+      const step = stepFromClientX(e.clientX) ?? hover;
+      swallowNextClick.current = true;
+      setHover(null);
+      if (step !== null) commit(step);
+      return;
+    }
+    // A tap: leave it to the hit zone's click handler, which is also what a
+    // mouse click and a keyboard-driven click go through.
+    if (!wasDragging) return;
+    setHover(null);
+  }
+
+  function onPointerUp(e: React.PointerEvent) {
+    endPress(e, true);
+  }
+
+  function onPointerCancel(e: React.PointerEvent) {
+    // Scroll took over, or the gesture was interrupted — abandon without writing.
+    endPress(e, false);
+    setHover(null);
+  }
+
+  function onZoneClick(step: number) {
+    if (swallowNextClick.current) {
+      swallowNextClick.current = false;
+      return;
+    }
+    commit(step);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -70,64 +176,74 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
       aria-valuetext={value ? `${value} out of 5` : "Not rated"}
       tabIndex={disabled ? -1 : 0}
       onKeyDown={onKeyDown}
-      onMouseLeave={() => setHover(null)}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onPointerLeave={() => {
+        if (pressX.current === null) setHover(null);
+      }}
       className="star-input-row"
-      style={{ display: "inline-flex", cursor: disabled ? "default" : "pointer", userSelect: "none" }}
+      style={{
+        display: "inline-flex",
+        cursor: disabled ? "default" : "pointer",
+        userSelect: "none",
+        // Vertical scrolling still belongs to the page; horizontal movement is
+        // ours, so a drag across the stars is never stolen by the scroller.
+        touchAction: "pan-y",
+      }}
     >
-      {/* Glyph size comes from the .star-input class rather than an inline
-          fontSize so the touch-pointer media query can enlarge it — each half
-          star is its own hit zone, and at 24px that is a ~12px target. Inline
-          styles would win over the media query. */}
+      {/* Keyed wrapper: remounting replays star-settle. Focus lives on the
+          slider above, so this never steals or drops it. */}
       <span
         key={commitCount}
+        ref={rowRef}
         className={`star-input${commitCount > 0 ? " star-commit" : ""}`}
         style={{ display: "inline-flex", transformOrigin: "left center" }}
       >
-      {[1, 2, 3, 4, 5].map((star) => {
-        const half = star - 0.5;
-        const glyph = shown >= star ? "★" : shown >= half ? "⯪" : "☆";
-        return (
-          <span key={star} style={{ position: "relative", fontSize: "inherit", lineHeight: 1 }}>
-            <span
-              className="stars"
-              style={{ fontSize: "inherit", color: shown >= half ? "var(--gold)" : "var(--text-faint)" }}
-              aria-hidden
-            >
-              {glyph === "⯪" ? "★" : glyph}
-            </span>
-            {/* Half-star mask: cover the right half with the empty color. */}
-            {glyph === "⯪" && (
+        {[1, 2, 3, 4, 5].map((star) => {
+          const half = star - 0.5;
+          const glyph = shown >= star ? "★" : shown >= half ? "⯪" : "☆";
+          return (
+            <span key={star} style={{ position: "relative", fontSize: "inherit", lineHeight: 1 }}>
               <span
-                aria-hidden
                 className="stars"
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  overflow: "hidden",
-                  fontSize: "inherit",
-                  color: "var(--text-faint)",
-                  clipPath: "inset(0 0 0 50%)",
-                }}
+                style={{ fontSize: "inherit", color: shown >= half ? "var(--gold)" : "var(--text-faint)" }}
+                aria-hidden
               >
-                ★
+                {glyph === "⯪" ? "★" : glyph}
               </span>
-            )}
-            {/* Hit zones */}
-            <span
-              data-testid={`rate-${half}`}
-              style={{ position: "absolute", inset: "0 50% 0 0" }}
-              onMouseEnter={() => !disabled && setHover(half)}
-              onClick={() => commit(half)}
-            />
-            <span
-              data-testid={`rate-${star}`}
-              style={{ position: "absolute", inset: "0 0 0 50%" }}
-              onMouseEnter={() => !disabled && setHover(star)}
-              onClick={() => commit(star)}
-            />
-          </span>
-        );
-      })}
+              {/* Half-star mask: cover the right half with the empty color. */}
+              {glyph === "⯪" && (
+                <span
+                  aria-hidden
+                  className="stars"
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    overflow: "hidden",
+                    fontSize: "inherit",
+                    color: "var(--text-faint)",
+                    clipPath: "inset(0 0 0 50%)",
+                  }}
+                >
+                  ★
+                </span>
+              )}
+              {/* Hit zones — the tap path. Drag is handled on the row above. */}
+              <span
+                data-testid={`rate-${half}`}
+                style={{ position: "absolute", inset: "0 50% 0 0" }}
+                onClick={() => onZoneClick(half)}
+              />
+              <span
+                data-testid={`rate-${star}`}
+                style={{ position: "absolute", inset: "0 0 0 50%" }}
+                onClick={() => onZoneClick(star)}
+              />
+            </span>
+          );
+        })}
       </span>
       <span className="meta" style={{ marginLeft: 8, alignSelf: "center", minWidth: 28 }}>
         {shown > 0 ? shown.toFixed(1) : ""}

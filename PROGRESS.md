@@ -118,6 +118,14 @@ Design polish. Details worth carrying forward:
 - **Responsive rules key on `(pointer: coarse), (max-width: 560px)`**, both on
   purpose: a desktop browser at 380px reports a *fine* pointer, so
   `pointer: coarse` alone is untestable.
+- **The star input is driven by pointer events, not hover.** Hover does not
+  exist on a phone, so tap-only rating meant hitting a 22px zone exactly. It now
+  takes press-and-drag with live preview, committing on release, alongside the
+  original tap and keyboard paths. Two details are load-bearing:
+  `touch-action: pan-y` (vertical scroll still belongs to the page, horizontal
+  drag belongs to the control) and a 4px movement threshold that separates a tap
+  from a drag — a drag ends with a synthetic click on whatever zone is
+  underneath, which would otherwise commit twice.
 - **Haptics map** — `apps/mobile/src/haptics.ts` is the only place a vibration is
   chosen. Call sites pass **intents** (`commitLog`), never impact styles, so
   retuning on hardware is one edit in one table. Nothing throws: a haptic can
@@ -208,14 +216,18 @@ a thumb, which flatters every hit-target decision:
 
 - [ ] **Drag a half-star rating one-handed, thumb only, on the 380px web layout
   in mobile Safari — rule on whether 22px per half-star is comfortably usable or
-  fiddly.** Deferred deliberately: a fine pointer cannot answer this. If it is
-  fiddly, the fix is a wider star box, **not** larger type — `.stars` is
-  JetBrains Mono, so font size does not buy hit width (this is exactly why the
-  mobile fix widened the box instead of the glyph). The box is
+  fiddly.** *Re-rule this now that dragging actually works.* The first pass
+  found the real bug rather than answering the question: there was **no touch
+  drag at all**, so the only way to rate on a phone was a precise tap, and a
+  half-star meant hitting the left sliver of a glyph. Press-and-drag with live
+  preview now works (5.5 close-out), so the width can finally be judged on its
+  merits. **No hit-box change has been made** — that waits on this verdict.
+  If it is still fiddly, the fix is a wider star box, **not** larger type:
+  `.stars` is JetBrains Mono, so font size does not buy hit width. The box is
   `.star-input > span { min-width }` in `theme.css`.
-  *This is the WEB layout in a phone browser, and is doable today.* The
-  equivalent ruling for the **native** star input is Phase 7 work — there is no
-  release detail screen on mobile to host one yet.
+  *This is the WEB layout in a phone browser.* The equivalent ruling for the
+  **native** star input is Phase 7 — there is no release detail screen on mobile
+  to host one yet.
 - [ ] While there: **iOS focus-zoom** should not fire on any input (fields are
   16px for this reason), and the nav's three wrapped rows should still be
   thumb-reachable.
@@ -338,12 +350,18 @@ app is actually used on — see the cookie-origin note under local environment.
 
   Fixed by moving the credential off the bundle: sign in on-device via the
   **You** tab (dev builds only), token persisted in SecureStore.
-- **Stray test-fixture row in the dev catalog.** One release — `Record 7`,
-  mbid `disco-rg-mrwiup8e-7` — carries `https://caa.example/7.jpg`, a fake
-  domain, so it renders as a permanently blank tile on Explore. Left behind by
-  `tests/integration/discography.test.ts`. Pre-existing cleanup gap, unrelated
-  to the covers work; harmless but it makes any "are covers loading?" check
-  read one short.
+- ~~**Stray test-fixture row in the dev catalog**~~ — **RESOLVED.** `Record 7 /
+  Prolific mrwiup8e` was live in Explore's recently-added. Three causes, all
+  fixed: `discography.test.ts` cleaned only two hardcoded MBIDs while the suite
+  materializes any of 250 (now cleans by prefix); no backstop ran when a suite
+  failed or was interrupted (now `tests/support/globalTeardown.ts`, which Vitest
+  runs pass or fail, and which **fails the run** if anything synthetic survives);
+  and suites delete users/lists with `prisma.deleteMany`, which never touches
+  Elasticsearch — **1,070 orphaned documents** had accumulated, 999 of them
+  users. The teardown now reconciles ES against Postgres too (CLAUDE.md §5).
+  Detection lives in `scripts/lib/fixtures.ts`, shared by the teardown and the
+  operator script so they cannot drift, and is unit-tested in both directions —
+  it must catch every fixture shape and must never match real data.
 
 ## Local environment notes
 
@@ -394,6 +412,7 @@ seeded catalog in the `pgdata`/`esdata` volumes).
 | `reenrich-genres.ts` | Re-pull genres for named releases with current tag rules |
 | `mb-smoke.ts` | Live MusicBrainz smoke test (checks the outbound User-Agent) |
 | `heal-cover-https.ts` | Rewrite stored `http://` cover URLs to `https://` and re-index. `--dry-run` supported. No network calls — a pure scheme rewrite (see the covers open item) |
+| `purge-test-fixtures.ts` | Remove synthetic test rows from Postgres **and** orphaned Elasticsearch docs (docs with no Postgres row). `--dry-run` supported. Detection is shared with the suite teardown via `scripts/lib/fixtures.ts` |
 | `dev-token.ts` | Mint a local access token (default `demo_blake`, 12h) for clients with no sign-in — i.e. the Expo app. Prints only the token, so it composes: `EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts/dev-token.ts)` |
 
 **Seeded data** (local dev DB): 143 releases, 56 artists, 94 labels, 3 users; 15
