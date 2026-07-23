@@ -126,6 +126,17 @@ Design polish. Details worth carrying forward:
   drag belongs to the control) and a 4px movement threshold that separates a tap
   from a drag — a drag ends with a synthetic click on whatever zone is
   underneath, which would otherwise commit twice.
+- **The pointer→value mapping reads the RENDERED BOXES, never a container width
+  and a constant** (`lib/starGeometry.ts`). This is not a style preference; the
+  arithmetic version shipped and drifted half a star on a real phone:
+  - the row is not the stars — above ~412px the boxes hit their 64px cap and
+    stop growing while the row keeps filling its flex line (336px row vs 320px
+    of stars at 430px), skewing every ratio;
+  - `Math.ceil` puts a boundary pixel in the zone *below*, while DOM hit zones
+    are `[left, right)` — a half-star flip at every boundary.
+  Both were invisible at 380px, where the boxes divide evenly and row equals
+  stars. **Verifying one width proves nothing here.** `lib/starGeometry.test.ts`
+  sweeps real measured geometry from 320/380/430 so flex drift fails in CI.
 - **Haptics map** — `apps/mobile/src/haptics.ts` is the only place a vibration is
   chosen. Call sites pass **intents** (`commitLog`), never impact styles, so
   retuning on hardware is one edit in one table. Nothing throws: a haptic can

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { boxesFromElements, stepFromX } from "../../lib/starGeometry";
 
 interface Props {
   value: number | null; // 0.5–5 in half steps, or null = unrated
@@ -40,6 +41,12 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
   const [commitCount, setCommitCount] = useState(0);
 
   const rowRef = useRef<HTMLSpanElement>(null);
+  /**
+   * The rendered star boxes. The pointer mapping reads these directly rather
+   * than dividing the row width by ten — the boxes flex between a 44px floor
+   * and a 64px cap, so the row is not always the same span as the stars.
+   */
+  const cellRefs = useRef<(HTMLSpanElement | null)[]>([]);
   /** Where the press started, so small jitter still counts as a tap. */
   const pressX = useRef<number | null>(null);
   const isDragging = useRef(false);
@@ -64,18 +71,12 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
   }
 
   /**
-   * Which half-star sits under this x coordinate. Measured against the row, so
-   * dragging works continuously across stars instead of per-zone.
+   * Which half-star sits under this x coordinate, resolved against the boxes as
+   * actually rendered. See lib/starGeometry — deriving it from the row width
+   * instead drifted by half a star once the boxes started flexing.
    */
   function stepFromClientX(clientX: number): number | null {
-    const el = rowRef.current;
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0) return null;
-    const ratio = (clientX - rect.left) / rect.width;
-    const clamped = Math.min(1, Math.max(0, ratio));
-    // 10 half-steps across the row; ceil so the first pixel already reads 0.5.
-    return Math.min(5, Math.max(0.5, Math.ceil(clamped * 10) / 2));
+    return stepFromX(boxesFromElements(cellRefs.current), clientX);
   }
 
   function onPointerDown(e: React.PointerEvent) {
@@ -207,7 +208,14 @@ export function StarRatingInput({ value, onChange, onClear, disabled, label = "Y
           const half = star - 0.5;
           const glyph = shown >= star ? "★" : shown >= half ? "⯪" : "☆";
           return (
-            <span key={star} className="star-cell" style={{ fontSize: "inherit", lineHeight: 1 }}>
+            <span
+              key={star}
+              ref={(el) => {
+                cellRefs.current[star - 1] = el;
+              }}
+              className="star-cell"
+              style={{ fontSize: "inherit", lineHeight: 1 }}
+            >
               <span
                 className="stars"
                 style={{ fontSize: "inherit", color: shown >= half ? "var(--gold)" : "var(--text-faint)" }}

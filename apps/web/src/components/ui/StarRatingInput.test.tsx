@@ -4,28 +4,48 @@ import userEvent from "@testing-library/user-event";
 import { StarRatingInput } from "./StarRatingInput";
 
 /**
- * jsdom lays nothing out, so the row measures 0×0 and the pointer path — which
- * maps an x coordinate onto a half-star — has nothing to work with. Give the
- * star row a real 200px box starting at x=0, so each of the ten half-steps is
- * 20px wide and a coordinate maps to a predictable rating.
+ * jsdom lays nothing out, so the pointer path has nothing to measure.
+ *
+ * This stubs the individual STAR BOXES, not one rect for the whole row. The
+ * earlier version stubbed only the row, which meant these tests could not see
+ * geometry at all: they kept passing while a quarter of the control mapped to
+ * the wrong half-star on a real phone. Exhaustive coordinate coverage lives in
+ * lib/starGeometry.test.ts; what matters here is that the component reads the
+ * boxes it actually renders.
+ *
+ * Geometry is the real 380px release-card measurement: five 57.2px boxes
+ * starting at x=29, so a half-star is 28.6px.
  */
-const ROW_LEFT = 0;
-const ROW_WIDTH = 200;
+const ROW_LEFT = 29;
+const CELL_WIDTH = 57.2;
 
-function stubRowGeometry() {
+const rect = (left: number, width: number): DOMRect =>
+  ({ left, width, right: left + width, top: 0, bottom: 44, height: 44, x: left, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+function stubStarGeometry() {
   Element.prototype.getBoundingClientRect = function () {
-    // Only the star row matters; anything else can stay empty.
-    if ((this as HTMLElement).classList?.contains("star-input")) {
-      return { left: ROW_LEFT, width: ROW_WIDTH, right: ROW_LEFT + ROW_WIDTH, top: 0, bottom: 24, height: 24, x: ROW_LEFT, y: 0, toJSON: () => ({}) } as DOMRect;
+    const el = this as HTMLElement;
+    if (el.classList?.contains("star-cell")) {
+      const index = Array.prototype.indexOf.call(el.parentElement?.children ?? [], el);
+      return rect(ROW_LEFT + index * CELL_WIDTH, CELL_WIDTH);
     }
-    return { left: 0, width: 0, right: 0, top: 0, bottom: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    if (el.classList?.contains("star-input")) {
+      return rect(ROW_LEFT, CELL_WIDTH * 5);
+    }
+    return rect(0, 0);
   };
 }
 
-/** x coordinate that sits inside the given half-star step (0.5 … 5). */
-const xFor = (step: number) => ROW_LEFT + (step / 5) * ROW_WIDTH - 1;
+/** x coordinate inside the given half-star step (0.5 … 5), from the boxes. */
+function xFor(step: number): number {
+  const starIndex = Math.ceil(step) - 1;
+  const left = ROW_LEFT + starIndex * CELL_WIDTH;
+  const isHalf = step % 1 !== 0;
+  // Middle of the left half for x.5, middle of the right half for whole stars.
+  return left + (isHalf ? CELL_WIDTH * 0.25 : CELL_WIDTH * 0.75);
+}
 
-beforeEach(stubRowGeometry);
+beforeEach(stubStarGeometry);
 
 describe("StarRatingInput", () => {
   it("commits half-star values from the left hit zone and full from the right", async () => {
