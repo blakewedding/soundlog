@@ -8,6 +8,7 @@ import { prisma } from "../config/database.js";
 import { getConfiguredSources, getSource } from "./sources/registry.js";
 import type { SourceCandidate, ReleaseDetail, SourceName } from "./sources/types.js";
 import { dedupeMerge, candidateKey, normalizeText, stripArtistDisambiguation } from "./catalog/merge.js";
+import { toSecureCovers, toSecureUrl } from "./coverUrl.js";
 import {
   esSearchReleases,
   esSearchArtists,
@@ -346,8 +347,11 @@ async function enrichNewRelease(
       if (match) {
         if (!release.spotifyId && match.spotifyId) data.spotifyId = match.spotifyId;
         if (match.coverUrl && preferSpotifyCover(covers.thumb, match.coverWidth)) {
-          covers.thumb = match.coverUrl;
-          covers.large ??= match.coverUrl;
+          // Spotify overrides the resolved cover after resolveCovers has already
+          // normalized, so it needs securing on the way in too.
+          const secure = toSecureUrl(match.coverUrl);
+          covers.thumb = secure;
+          covers.large ??= secure;
         }
       }
     }
@@ -587,7 +591,8 @@ async function enrichExisting(
     } else if (!existing.coverUrlLarge) {
       const effectiveMbid = mbid ?? existing.musicbrainzId;
       const caa = effectiveMbid ? await getCoverArtUrls(effectiveMbid) : null;
-      const large = caa?.large ?? detail.coverUrl ?? existing.coverUrl;
+      // `existing.coverUrl` may predate normalization, so secure it here too.
+      const large = toSecureUrl(caa?.large ?? detail.coverUrl ?? existing.coverUrl);
       if (large) data.coverUrlLarge = large;
     }
   } catch (err) {
@@ -601,7 +606,20 @@ async function enrichExisting(
   return updated;
 }
 
+/**
+ * Every cover source funnels through here, and every return is normalized to
+ * HTTPS at this single exit — so a source added later cannot reintroduce a
+ * cleartext URL by forgetting to call the helper. See coverUrl.ts for why
+ * this is a rewrite and never a reachability check.
+ */
 async function resolveCovers(
+  detail: ReleaseDetail,
+  mbid: string | null
+): Promise<{ thumb: string | null; large: string | null }> {
+  return toSecureCovers(await resolveCoversFromSources(detail, mbid));
+}
+
+async function resolveCoversFromSources(
   detail: ReleaseDetail,
   mbid: string | null
 ): Promise<{ thumb: string | null; large: string | null }> {

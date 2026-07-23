@@ -39,9 +39,11 @@ That is current design, not a failure.*
 
 Nothing is in progress. Three items, none started:
 
-1. **Cover URL scheme fix, then verified on device.** See the open item below —
-   **not started, no diagnosis has been run.** 77% of stored cover URLs are
-   `http://`.
+1. ~~**Cover URL scheme fix**~~ — **done**: normalized at persist and healed
+   catalog-wide (0 of 285 cleartext). *Cannot be "verified on device" as
+   originally framed:* mobile renders no images at all, so there is nothing on
+   the phone to check. Verified where it is observable — the web app and the API
+   payload. The device check arrives with the Phase 7 image work.
 2. **Mobile-Safari star-drag ruling** — the 380px *web* layout in a phone
    browser (section B of the manual pass). Untouched by the native session.
 3. **Desktop checklist stragglers** — the taste calls under "judgement calls"
@@ -273,9 +275,9 @@ app is actually used on — see the cookie-origin note under local environment.
 - **The API process died once mid-session** (Phase 5.5) and returned 503s until
   restarted. Cause not captured — the logs went with the process. If it recurs,
   grab `preview_logs` before restarting.
-- **Cover URLs are stored over `http://` — NOT STARTED.** Measured across the
-  whole catalog, not sampled: **220 of 284 cover URLs (77%) are `http://`**,
-  every one of them `coverartarchive.org`. 152 releases.
+- ~~**Cover URLs are stored over `http://`**~~ — **RESOLVED**, details below.
+  Measured across the whole catalog, not sampled: **220 of 284 cover URLs (77%)
+  were `http://`**, every one of them `coverartarchive.org`.
 
   This bites in two places, and the second one is closer than it looks:
 
@@ -298,6 +300,19 @@ app is actually used on — see the cookie-origin note under local environment.
   CLAUDE.md §1 exists to prevent. Rewrite the scheme unconditionally, or retry
   hard before concluding anything is missing; never turn a retryable failure
   into a permanent one.
+
+  **RESOLVED 2026-07-22.** Normalized at persist (`src/services/coverUrl.ts`,
+  applied at the single `resolveCovers` exit so a future source cannot bypass
+  it) and healed catalog-wide: **110 rows rewritten, 0 of 285 cover URLs remain
+  cleartext**. Re-running the heal is a clean no-op. The heal makes **no network
+  calls**, for the reason directly above. Kept here because the *reasoning* still
+  governs any future URL migration.
+- **Stray test-fixture row in the dev catalog.** One release — `Record 7`,
+  mbid `disco-rg-mrwiup8e-7` — carries `https://caa.example/7.jpg`, a fake
+  domain, so it renders as a permanently blank tile on Explore. Left behind by
+  `tests/integration/discography.test.ts`. Pre-existing cleanup gap, unrelated
+  to the covers work; harmless but it makes any "are covers loading?" check
+  read one short.
 
 ## Local environment notes
 
@@ -347,6 +362,7 @@ seeded catalog in the `pgdata`/`esdata` volumes).
 | `trim-release-titles.ts` | Strip stray whitespace from titles (re-indexes ES) |
 | `reenrich-genres.ts` | Re-pull genres for named releases with current tag rules |
 | `mb-smoke.ts` | Live MusicBrainz smoke test (checks the outbound User-Agent) |
+| `heal-cover-https.ts` | Rewrite stored `http://` cover URLs to `https://` and re-index. `--dry-run` supported. No network calls — a pure scheme rewrite (see the covers open item) |
 | `dev-token.ts` | Mint a local access token (default `demo_blake`, 12h) for clients with no sign-in — i.e. the Expo app. Prints only the token, so it composes: `EXPO_PUBLIC_DEV_TOKEN=$(cd backend && npx tsx scripts/dev-token.ts)` |
 
 **Seeded data** (local dev DB): 143 releases, 56 artists, 94 labels, 3 users; 15

@@ -213,10 +213,11 @@ a device failure names its own cause.
 > "Finish the K8s manifests in infrastructure/k8s: web deployment, Elasticsearch StatefulSet, Redis deployment, Varnish deployment in front of the backend service, secrets, and a GitHub Actions pipeline (test → build → push → deploy). Target GKE Autopilot."
 
 **Verification items:**
-- [ ] **Cover URLs must be `https` before the site is served over HTTPS.** 77% of
-  stored cover URLs are `http://`; browsers block mixed content, so they would
-  break on the production web app. Details and the retry caveat are under
-  Phase 7 → "Cover images are a trap waiting".
+- [x] **Cover URLs are `https`, so TLS won't blank the catalog.** 77% were
+  cleartext (220 of 284); browsers block mixed content, so they would have
+  broken on the production web app the day it got a certificate. Normalized at
+  persist and healed catalog-wide — 0 of 285 remain. Re-check after any bulk
+  import with `npx tsx scripts/heal-cover-https.ts --dry-run`.
 - [x] **Backend production image builds.** `infrastructure/docker/Dockerfile.backend` is pnpm-workspace-aware: it copies the lockfile + every workspace manifest (`--frozen-lockfile` validates all importers), installs, generates the Prisma client, compiles, then uses `pnpm deploy --prod` to emit a standalone runtime tree. Verified end-to-end with `docker build -f infrastructure/docker/Dockerfile.backend .` and by instantiating `PrismaClient` inside the resulting image.
 - [ ] **Full production compose stack boots end-to-end.** `docker compose -f docker-compose.yml up -d` must bring up postgres + redis + elasticsearch + the built backend image + Varnish, with `/api/health` green *through* Varnish on :8080 and container-to-container VCL (`default.vcl`) in use. Currently unverified: the backend image builds and Varnish is proven against the dev server, but the containerized backend has not been booted as a full stack (it needs migrations run against the compose Postgres and the `.env` wired for in-cluster hostnames).
 
@@ -253,24 +254,21 @@ Two Phase 5.5 items are **blocked on the above** and cannot be settled first:
   deferred to a device pass; the *native* star input cannot be judged until a
   release detail screen exists to put one on.
 
-**Cover images are a trap waiting.** Mobile renders none today — `FeedRow` is
-text-only — so nothing has ever exercised image loading. When it does:
-**220 of 284 stored cover URLs (77%) are `http://`**, all `coverartarchive.org`.
-iOS App Transport Security blocks cleartext in release builds, so a naive
-`<Image source={{ uri: coverUrl }} />` shows a grid of blanks in production
-while working fine in Expo Go.
+**Cover images — the URL half is fixed; the rendering half is still to build.**
+Mobile renders no images today (`FeedRow` is text-only), so adding them is
+Phase 7 work. The data they will consume is now safe: cover URLs are normalized
+to `https` at persist and the existing catalog has been healed (**0 of 285
+cleartext**, was 220 of 284). That closes both the iOS ATS failure — cleartext
+is blocked in release builds but allowed in Expo Go, so it would have passed
+every dev test and failed only once shipped — and mixed-content blocking on the
+web once Phase 6 serves the site over TLS.
 
-The same data breaks the **web** app the moment Phase 6 serves it over HTTPS —
-browsers block mixed content — so this is not a mobile-only problem. Fix the
-stored URLs rather than opening an ATS exception; the `https` variants serve the
-same artwork (verified on 7 of them).
-
-**Do not write a "verify each URL, drop the broken ones" script.** The Cover Art
-Archive returns intermittent 500s on *both* schemes — one URL returned 500 four
-times consecutively and 200 on the fifth. Blanking on a failed check would
+**Do not "fix" this by verifying URLs and dropping the broken ones.** The Cover
+Art Archive returns intermittent 500s on *both* schemes — one URL returned 500
+four times consecutively and 200 on the fifth. Blanking on a failed check would
 delete good artwork on a transient error, which is precisely what CLAUDE.md §1
-forbids. Rewrite the scheme unconditionally, or retry hard before concluding
-anything is missing.
+forbids. `toSecureUrl` is a pure rewrite and makes no network call; keep it that
+way.
 
 #### Icon set
 
