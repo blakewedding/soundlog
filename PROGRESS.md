@@ -66,7 +66,7 @@ and there is no `<Image>` anywhere in `apps/mobile`.*
 | `4cdf7c5` | Star geometry: derive mapping from rendered boxes |
 | `fa2cc49` | Star input: on-device diagnostics |
 | `fa0f7a1` | Phase 5.5 complete (one tracked open defect) |
-| `5407694` | Star input: render half-star fills (closes the last 5.5 defect) |
+| `b0cbf06` | Star input: render half-star fills (closes the last 5.5 defect) |
 
 ## RESOLVED — the last 5.5 defect: half-stars drew as whole stars on device
 
@@ -170,7 +170,7 @@ the write actions.
 | — | `CLAUDE.md` project laws | `ee75364` |
 | — | Systemic test mock-leakage fix (`clearMocks`) + title-trim-at-persist | `515b7d0` |
 | 5.6.1b | Log-listen feedback states — transient "Logged ✓" → "Log again", "In your diary ×N" | `d8be781` |
-| 5.5 | **Design polish — COMPLETE**, no open defects. Wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380/320px audit, accessibility floor, haptics map, touch star input, fixture-debris purge, real-device verification, half-star fill fix | `44ed01c` … `5407694` |
+| 5.5 | **Design polish — COMPLETE**, no open defects. Wordmark + placeholder icons, motion system, optimistic follow/list, cover tints + hover prefetch, 380/320px audit, accessibility floor, haptics map, touch star input, fixture-debris purge, real-device verification, half-star fill fix | `44ed01c` … `b0cbf06` |
 
 > Numbering is out of order on purpose: 5.7, 5.8, 5.6 and 5.6.1 all ran ahead of
 > 5.5, because reliability and data-integrity bugs outranked design polish.
