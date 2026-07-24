@@ -661,6 +661,55 @@ public. Ask the user, or reset via the register endpoint.
 
 ---
 
+## Post-launch checklist
+
+Dated items that cannot be done at launch because they need elapsed time, a
+service that does not exist yet, or a dashboard visit. None blocks the site.
+
+1. **DMARC `p=none` → `p=quarantine`** — after roughly **3–4 weeks of clean
+   sending** (from 2026-07-24, so on or after ~2026-08-21). `p=none` is
+   monitor-only: it publishes alignment results without acting on them, which is
+   the correct posture for a domain that has never sent mail, because a
+   misconfiguration under `quarantine` silently sends real verification mail to
+   spam. Tighten only once real traffic has shown DKIM and SPF passing
+   consistently. Consider adding `rua=mailto:` first so there are reports to
+   judge "clean" by. Record at launch: SPF, DKIM and DMARC all verified passing
+   against an independent receiver on day one (10/10, `dkim=pass`
+   `header.d=soundlog.app`, `dmarc=pass`).
+
+2. **Cloudflare Email Routing for inbound `hello@soundlog.app`** — required
+   **before any public contact listing**. Outbound from that address already
+   works (the Resend domain is verified), but nothing receives: a reply to a
+   verification email currently bounces. Publishing a contact address that
+   silently discards mail is worse than publishing none.
+
+3. **Swap `MUSICBRAINZ_USER_AGENT` to `hello@soundlog.app`** — once (2) exists.
+   It is currently the personal Gmail, deliberately: MusicBrainz requires a
+   *reachable* contact (§7), and an address that bounces would be worse than a
+   personal one that works. This is a one-line `.env.production` edit plus a
+   backend recreate.
+
+4. **Spotify and Google OAuth consoles — PENDING, deliberately deferred.** Both
+   client IDs are blank in production, so the strategies never register and the
+   routes answer 503 rather than crashing; email/password is unaffected. To
+   enable, register these exact redirect URIs in the provider consoles AND fill
+   the four values in `.env.production` — changing one without the other is a
+   redirect-URI mismatch:
+
+   | Provider | Redirect URI |
+   |---|---|
+   | Spotify | `https://soundlog.app/api/auth/spotify/callback` |
+   | Google | `https://soundlog.app/api/auth/google/callback` |
+
+   *Minor note for whoever does it:* an unconfigured provider answers **503**,
+   which by §1's own logic reads as "retry-able" when it is in fact permanent
+   until configured. Harmless today (nothing links to those routes while
+   dormant), but 501 would be the honest code. Pre-existing Phase 1 behaviour,
+   not introduced by 6b.
+
+5. **Enable the Hetzner backup toggle** (server → Backups) and **conclude the
+   DPA** in the Hetzner dashboard.
+
 ## Next session — Phase 6b: deploy to the live server
 
 Opens in a **fresh session**; the 6b prompt is written and ready to paste. The
