@@ -696,9 +696,27 @@ not just that a process is listening.
 curl -s https://soundlog.app/api/health | python3 -m json.tool
 ```
 
+**Live since launch (2026-07-24):** UptimeRobot, HTTP(s) monitor against
+`https://soundlog.app/api/health`, **5-minute interval**, alerting to Blake's
+personal email.
+
 An external monitor is genuinely external: a check running on the box cannot
-report that the box is down. See the setup notes in `PROGRESS.md` for the
-UptimeRobot configuration.
+report that the box is down. That is also why the target is `/api/health` and
+not `/` — the SPA shell is static files served by nginx and will keep returning
+200 with Postgres on fire. `/api/health` traverses host nginx → container nginx
+→ Varnish → backend → all three data stores, so a 200 means the whole chain
+answered.
+
+What it will NOT catch, and what to reach for instead:
+
+- **A degraded-but-answering stack** (e.g. Elasticsearch down, search returning
+  `[]` by design under §5). Health reports each store separately, so read the
+  body, not just the status code.
+- **Certificate expiry.** Renewal is proven and automatic, but if it ever
+  silently stops, a monitor hitting https will fail only *after* expiry. Enable
+  UptimeRobot's SSL expiry notification on the same monitor.
+- **A full disk**, which usually shows up as failing writes long before health
+  fails. `df -h` is in the runbook above for a reason.
 
 ### Throwaway accounts from verification
 

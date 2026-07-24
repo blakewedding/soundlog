@@ -5,24 +5,37 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-24 — **LAUNCH DAY**
 
 ## Status
 
-**PHASE 5.5 IS COMPLETE, with no open defects.** The last one — half-stars
-drawing as whole stars on device — was diagnosed and fixed on 2026-07-23; the
-section below is kept for what it taught, not as work outstanding.
+# 🎉 SOUNDLOG IS LIVE AT https://soundlog.app
 
-**Phases 0 through 5.8 are done, Phase 6a (production stack, locally proven) is
-done, and the production server is live** — a Hetzner CX33 at
-`95.216.158.204`, firewalled and reachable over key-only SSH, with nothing
-deployed to it yet. Suites green: **backend 182 + web 138 + mobile 38 = 358
-tests**, all three packages typecheck clean, `expo-doctor` 18/18.
+**Phase 6b is COMPLETE.** Phases 0 through 6b are done. The site is public,
+served over TLS from a Hetzner VPS in Helsinki, with real users able to
+register, verify an email address, and log music.
 
-**Next: Phase 6b — put the 6a stack on that server and serve
-https://soundlog.app.** Sequence at the end of this file. Hosting moved from
-GKE Autopilot to a Hetzner VPS on cost; the K8s manifests remain the documented
-funded-migration path, not dead work.
+Suites green: **backend 231 + web 150 + mobile 38 = 419 tests**, all three
+packages typecheck clean, `expo-doctor` 18/18.
+
+**The launch was proven the only way that counts** — a full journey from a
+phone on **cellular**, not LAN: registered, received and clicked a real
+verification email, signed out and back in, seeded Burial's *Untrue* from
+MusicBrainz, rated it 4.5, and posted the platform's first review. The
+half-star fix from 5.5 held on real touch hardware: four gold stars and one
+half, read off the glass.
+
+**Launch state** (2026-07-24): 1 verified member, 12 releases, 3 artists,
+9 labels, 12 ratings, 12 logs, 2 reviews. The database opened **empty** —
+every throwaway account from verification was purged first, from both
+Postgres and Elasticsearch, so the first durable account is a real one.
+
+**Next: Phase 7** — the mobile app's missing surface (auth, release detail,
+write actions), real icon design, and the navigation component the 380px
+three-row nav is standing in for. See the README.
+
+Hosting moved from GKE Autopilot to a Hetzner VPS on cost; the K8s manifests
+remain the documented funded-migration path, not dead work.
 
 ### What 5.5 delivered
 
@@ -453,7 +466,7 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 | | |
 |---|---|
 | IPv4 | `95.216.158.204` |
-| IPv6 | `2a01:4f9:c015:2f9f::/64` |
+| IPv6 | `2a01:4f9:c015:2f9f::1` (host address; Hetzner assigns the `/64` `2a01:4f9:c015:2f9f::/64`) |
 | SSH alias | `soundlog-prod` (`~/.ssh/config`, `600`) |
 
 - **Firewall applied BEFORE first boot**, not after: Hetzner Cloud Firewall,
@@ -476,8 +489,11 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 - **Resend** account created (`hello.soundlog@gmail.com`); API key minted and
   held **in the password manager only**. It goes into `.env.production` **on the
   server**, per CLAUDE.md §7 — never committed, never `scp`'d from a machine
-  where it could land in shell history. It is deliberately not written here:
-  this repo is public.
+  where it could land in shell history. It is deliberately not written here.
+  *(Corrected in 6b: this repo is **private**, not public as this file and
+  CLAUDE.md both previously asserted — an anonymous clone 404s, which is how it
+  was found. Keeping secrets out of the repo is right either way, so the
+  discipline stands; only the stated reason was wrong.)*
 - **Identity inventory**: `soundlog.app` (Cloudflare, auto-renew) ·
   `hello.soundlog@gmail.com` (2FA'd, the recovery root for everything else) ·
   **@soundlogapp** on TikTok, Instagram, X, YouTube and Bluesky, bios written.
@@ -656,10 +672,152 @@ artist discographies cached in Redis (7d TTL). Useful demo anchors:
   "more than one" rather than an exact figure.*
 
 **Demo accounts.** `demo_blake@demo.local`, `sasha@demo.local` (plus `big_sigh`).
-Passwords are local-seed only and deliberately not written here — this repo is
-public. Ask the user, or reset via the register endpoint.
+Passwords are local-seed only and deliberately not written here. Ask the user, or
+reset via the register endpoint. *(The old reason given — "this repo is public" —
+was wrong; it is private. Credentials stay out of it regardless.)*
 
 ---
+
+## Phase 6b — soundlog.app live (DONE 2026-07-24)
+
+The 6a artifact is on the box and serving the public internet. What follows is
+what the phase actually taught, not a replay of the runbook — the runbook is the
+README's **Production operations** section.
+
+### The prompt assumed a feature that did not exist
+
+6b step 6 read "wire the backend's email service to Resend". There was no email
+service: no mailer, no `RESEND_API_KEY`, no verification flow, no reset flow, no
+`emailVerified` column. `authRouter` had register/login/refresh/logout/me/
+exchange and the four OAuth legs, and nothing else. Step 9's proof — "receive
+the verification email" — depended on all of it.
+
+Built as part of 6b (`891fd00`):
+
+- **One `VerificationToken` model with a `purpose` enum**, not two near-identical
+  tables, so expiry / single-use / hashing have one implementation and one set of
+  tests. Only the SHA-256 hash is stored — same discipline as `RefreshToken`, for
+  a stronger reason: **a password-reset token IS a credential.**
+- **`emailService`** wraps Resend under §1. A busy provider (5xx/429/timeout/
+  dropped socket) throws `UpstreamUnavailableError`; a definitive rejection (bad
+  address, unverified sending domain) returns `delivered: false`. Collapsing
+  those is how *"your email is invalid"* gets shown to someone whose email is
+  fine. Optional like Last.fm and Discogs, which is what let the stack deploy and
+  prove itself **before** the sending domain finished DNS verification.
+- **Sends never fail the write that triggered them.** A failed welcome mail has a
+  resend button behind it; a failed registration is data loss.
+- **Launch policy: unverified accounts are FULL accounts.** They can log in and
+  see a dismissible reminder. Hard-blocking sign-in on verification means any
+  wobble in delivery locks out every new user — including the first one — with no
+  way back in.
+- Security details worth keeping: `forgot-password` answers identically for known
+  and unknown addresses **and the UI does not undo that**; OAuth-only accounts get
+  no reset link (mailbox access could otherwise CREATE a password on them); a
+  reset revokes every other refresh token; issuing a token consumes any
+  outstanding one of the same purpose.
+
+### Four things that were only visible in production
+
+1. **The repo is private.** Both this file and CLAUDE.md asserted it was public —
+   an anonymous clone 404s. Fixed by generating a **read-only deploy key on the
+   server**, so the private half never left the box.
+2. **Docker's iptables rules are evaluated before ufw's.** A normally-published
+   port is reachable from the internet while `ufw status` shows it denied. The
+   container edge binds to **`127.0.0.1:8090`** and host nginx terminates TLS in
+   front of it.
+3. **Docker's `json-file` log driver has no rotation at all.** Unbounded by
+   default. Capped at 10 MB × 5 per container — and log options apply at
+   container *creation*, so adopting them required `--force-recreate`.
+4. **`compose run` uses the built image, not the working tree.** A maintenance
+   script pulled into `/srv/soundlog` is invisible until the image is rebuilt —
+   which also meant the fixture purge would have run *stale detection*.
+
+### Two bugs found in my own work, both in the verification, not the thing
+
+- **The backup script rejected every good dump.** It piped a custom-format
+  archive into `pg_restore -l`, and those must be **seekable**. Since the check
+  deletes on failure it would have destroyed a good backup nightly, silently. A
+  verification step that reports a working thing as broken is worse than none.
+- **certbot's generated nginx put the ACME challenge behind a server-level
+  `return`**, which nginx evaluates *before* location matching — leaving renewal
+  wholly dependent on the authenticator rewriting config at runtime. Rewritten as
+  a location. The dry-run passes a real ACME exchange.
+
+**And one bug that wasn't.** The verification link arrived looking broken —
+`?token*…`, 62 characters instead of 64, and it failed to verify. Pulling the
+**raw** message showed `token=3D…` with a full 64-char token: `=3D` is simply
+quoted-printable for `=`, and the mail tooling was mis-decoding it. The product
+was correct the whole time. *The lesson is 5.5's, restated: the instrument can be
+the thing that is broken. Confirm against the raw artifact before believing a
+reading.*
+
+### TLS, and the policy that activated itself
+
+`CLIENT_URL` flipping from `http://95.216.158.204` to `https://soundlog.app` was
+the entire change. Before, the boot log carried
+`[boot] CLIENT_URL is … production over plain http`; after, that line is gone and
+a real registration returns `HttpOnly; Secure; SameSite=Lax`. **No code
+changed** — the 6a `cookieSecure` design paid off exactly as written.
+
+Cloudflare is **proxied (orange)** with SSL mode **Full (strict)**, set in that
+order: proxy-before-cert gives a redirect loop, because Cloudflare would speak
+HTTP to an origin that redirects to HTTPS. HSTS is `max-age=15552000;
+includeSubDomains`, deliberately matching what helmet already sends — two
+different max-ages from one origin is not belt-and-braces, since the browser
+takes whichever it saw last. No `preload`: that is a one-way door.
+
+### Mail authentication, verified against an independent receiver
+
+Not asserted from the sending side, where it cannot be known:
+
+```
+dkim=pass  (1024-bit key) header.d=soundlog.app header.i=@soundlog.app
+           header.a=rsa-sha256 header.s=resend
+dmarc=pass (p=none dis=none) header.from=soundlog.app
+Received-SPF: pass  envelope-from=@send.soundlog.app
+```
+
+Spam score 10/10; the Gmail copy landed in **INBOX**. SPF aligns under *relaxed*
+(envelope on `send.soundlog.app`, `From:` on the apex) and DKIM aligns strictly —
+both legs pass, which is what makes tightening DMARC later safe.
+
+### Verification now cleans up after itself
+
+`verify-prod-stack.sh` registers accounts and writes a rating and a review. On a
+live site those are not neutral debris — they are members, visible in search.
+Cleanup runs from an **EXIT trap**, so it happens on failure and on Ctrl-C too,
+the same discipline `globalTeardown` exists for.
+
+Detection was **not** reimplemented: `scripts/lib/fixtures.ts` gained user
+detection keyed on an **RFC 2606 reserved email TLD** (`.test`/`.invalid`/
+`.example`), which can never belong to a real person. Deliberately *not* a
+username pattern — `prod_check_<ts>` is what the script happens to use today, but
+a real member could pick that name, and **no username is ever proof of
+anything**. Deleting a user cascades to their reviews, ratings, logs and lists.
+
+That detection deletes user rows, so it is tested in both directions, including
+that it does not match the dev seed accounts on `@demo.local`, the integration
+suites' own `@*.local` accounts, or near-miss real domains like `test.com`,
+`testing.io` and `latest.dev`.
+
+### The cellular proof
+
+Run by Blake on a real phone, on cellular:
+
+| Step | Outcome |
+|---|---|
+| Register | Account created, reminder banner shown |
+| Verify | Email received, link clicked, **banner cleared without a reload** |
+| Sign out / sign in | Real login path exercised, not just the registration session |
+| Seed *Untrue* | Materialised from MusicBrainz in ~1–2s |
+| Rate 4.5 | **Four gold stars and one half — correct on device** |
+| Review | Posted as the platform's first entry |
+| Feed | Rating and review both present |
+
+Two open Phase 5.5 items closed for free along the way: **no iOS focus-zoom** on
+any input (the 16px field sizing works), and the **three-row 380px nav feels good
+under a thumb** — so the disclosure-menu rework stays a Phase 7 nicety, not a
+defect.
 
 ## Post-launch checklist
 
@@ -710,34 +868,36 @@ service that does not exist yet, or a dashboard visit. None blocks the site.
 5. **Enable the Hetzner backup toggle** (server → Backups) and **conclude the
    DPA** in the Hetzner dashboard.
 
-## Next session — Phase 6b: deploy to the live server
+**Already done, not outstanding:** uptime monitoring is **live** — UptimeRobot
+against `https://soundlog.app/api/health`, 5-minute interval, alerting to
+Blake's personal email. Health traverses the whole chain (host nginx → container
+nginx → Varnish → backend → all three stores), which is why it is the target
+rather than `/`: the SPA shell is static files and would keep returning 200 with
+Postgres on fire. Worth adding SSL-expiry notification on the same monitor —
+renewal is automatic and proven, but if it ever silently stopped, an https check
+fails only *after* expiry.
+## Next session — Phase 7
 
-Opens in a **fresh session**; the 6b prompt is written and ready to paste. The
-server exists and is reachable (`ssh soundlog-prod`); nothing is deployed to it.
-Order matters — each step is a precondition for the next, and the last one is
-the only proof that counts.
+Phase 6b is done and the site is live. What Phase 7 carries, in the order the
+work naturally falls:
 
-1. **Harden the box** — non-root user with sudo, `ufw` as a second layer behind
-   the Hetzner Cloud Firewall (defence in depth: the cloud firewall can be
-   changed in a dashboard, the host firewall travels with the machine),
-   `fail2ban`, `unattended-upgrades`.
-2. **Deploy the 6a stack, built on the server** — validated by `uname`: the host
-   is x86_64 while the build Mac is arm64, so building there avoids both
-   cross-building and standing up a registry.
-3. **Cloudflare DNS** — point `soundlog.app` at `95.216.158.204`.
-4. **Let's Encrypt TLS** — the reason port 80 is open at all (challenge +
-   redirect). This is also what flips `cookieSecure` on for real: `CLIENT_URL`
-   becomes `https://soundlog.app`, and the 6a policy takes effect by itself.
-5. **OAuth console swaps** — Spotify and Google redirect URIs to the real
-   origin, in both the provider consoles and the server's `.env.production`.
-   Changing one without the other is a redirect-URI mismatch (README table).
-6. **Resend wiring + SPF / DKIM / DMARC** — API key entered on the server, never
-   committed. Records at Cloudflare, or transactional mail lands in spam.
-7. **Hygiene** — monitoring, **backups** (deferred here deliberately: this is
-   where the Hetzner toggle gets enabled as one coherent strategy), and a
-   written rollback procedure.
-8. **Seed-content decision** — what the catalog holds on day one.
-9. **The proof: the full journey from a phone on cellular at
-   https://soundlog.app.** Cellular specifically — it defeats every "works on
-   my LAN" illusion, and it is the same class of check that caught the
-   half-star fill bug in 5.5. Not done until this passes.
+1. **The mobile app's missing surface** — auth, release detail, and the write
+   actions. Mobile currently ships a feed tab and a placeholder profile, which
+   is why two 5.5 items are *blocked* rather than pending: no screen fires a
+   haptic intent, and there is no release detail screen to host a native star
+   input. Both are unblocked the moment those screens exist.
+2. **Real icon design.** The current set is geometrically faithful and correct
+   as files, but it is a placeholder — small-size optical refinement, iOS
+   squircle fitting, the full platform size ladder and a monochrome cut. A
+   drop-in file swap; see `apps/web/public/icons/README.md`.
+3. **Navigation component.** The 380px nav wraps to three rows (~146px, ~18% of
+   the viewport). Blake ruled it **good under a thumb** during the launch
+   journey, so this is a nicety, not a defect — a disclosure menu or tab bar is
+   a new component, not polish.
+4. **Desktop half-star hit targets** — still 8×24, pre-existing and tight even
+   for a mouse. Touch was fixed in 5.5; desktop was out of that brief.
+5. **The post-launch checklist above**, which is dated rather than blocked.
+
+Before starting, read the **Production operations** section of the README —
+anything Phase 7 ships now has to be deployed to a live site with real data on
+it, which was not true of any previous phase.
