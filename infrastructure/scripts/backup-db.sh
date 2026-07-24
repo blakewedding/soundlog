@@ -54,9 +54,29 @@ fi
 # A dump that cannot be listed is not a backup. pg_restore -l parses the archive
 # header and table of contents, so this catches truncation and corruption that a
 # zero-exit pg_dump can still leave behind on a full disk.
-if ! "${COMPOSE[@]}" exec -T postgres pg_restore -l /dev/stdin < "$TMP" > /dev/null 2>&1; then
+#
+# It must read a REAL FILE, on the host. The first version of this piped the dump
+# into `pg_restore -l /dev/stdin` inside the container and failed every time with
+# "did not find magic string in file header" — a custom-format archive has to be
+# SEEKABLE, and a pipe is not. The dump was perfectly valid; the check was wrong,
+# and because the check deletes on failure it would have thrown away a good
+# backup every night. A verification step that reports a working thing as broken
+# is worse than no verification at all.
+verify_archive() {
+  if command -v pg_restore > /dev/null 2>&1; then
+    pg_restore -l "$1" > /dev/null 2>&1
+    return $?
+  fi
+  # Fallback when postgresql-client is not installed: check the custom-format
+  # magic string and a plausible size. Weaker than parsing the table of
+  # contents, so say so rather than implying a full verification happened.
+  log "note: pg_restore not on PATH — falling back to a header check only"
+  [ "$(head -c 5 "$1")" = "PGDMP" ] && [ "$(stat -c%s "$1")" -gt 1024 ]
+}
+
+if ! verify_archive "$TMP"; then
   rm -f "$TMP"
-  log "FAILED: dump did not verify with pg_restore -l — no file kept"
+  log "FAILED: dump did not verify as a readable pg_dump archive — no file kept"
   exit 1
 fi
 
