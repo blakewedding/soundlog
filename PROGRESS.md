@@ -5,7 +5,7 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-24
 
 ## Status
 
@@ -13,11 +13,16 @@ we, what's live, what's next" for a session starting cold.
 drawing as whole stars on device — was diagnosed and fixed on 2026-07-23; the
 section below is kept for what it taught, not as work outstanding.
 
-**Phases 0 through 5.8 are done, and Phase 6a (production stack, locally proven)
-is done** — see its section below. Suites green: **backend 182 + web 138 +
-mobile 38 = 358 tests**, all three packages typecheck clean, `expo-doctor` 18/18.
+**Phases 0 through 5.8 are done, Phase 6a (production stack, locally proven) is
+done, and the production server is live** — a Hetzner CX33 at
+`95.216.158.204`, firewalled and reachable over key-only SSH, with nothing
+deployed to it yet. Suites green: **backend 182 + web 138 + mobile 38 = 358
+tests**, all three packages typecheck clean, `expo-doctor` 18/18.
 
-**Next: Phase 6 proper — K8s manifests, CI/CD pipeline, GKE Autopilot.**
+**Next: Phase 6b — put the 6a stack on that server and serve
+https://soundlog.app.** Sequence at the end of this file. Hosting moved from
+GKE Autopilot to a Hetzner VPS on cost; the K8s manifests remain the documented
+funded-migration path, not dead work.
 
 ### What 5.5 delivered
 
@@ -383,8 +388,13 @@ an oversight, and each is cheap to reverse:
 ### 2. Phase 6 — production deployment
 
 **Phase 6a is DONE** (below): the production stack boots and is proven
-end-to-end locally. What remains for Phase 6 proper: the K8s manifests, a
-GitHub Actions pipeline (test → build → push → deploy), and GKE Autopilot.
+end-to-end locally. **The server is live** (its own section below). What remains
+is **Phase 6b — the deploy**, sequenced at the end of this file.
+
+*Superseded:* this previously read "K8s manifests, GitHub Actions, GKE
+Autopilot". Hosting moved to a Hetzner VPS running the 6a compose artifact after
+US-region managed pricing came back at $73/mo against a $9.59/mo VPS. The
+manifests stay in `infrastructure/k8s` as the funded-migration path.
 
 ## Phase 6a — production stack, locally proven (DONE 2026-07-23)
 
@@ -431,6 +441,60 @@ Unit-tested in `backend/tests/unit/appOrigin.test.ts`.
 Boot: `docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build`
 — both flags load-bearing (interpolation reads `./.env` without `--env-file`;
 `-f` suppresses the dev override). Full procedure in the README.
+
+## Production server — live and verified (2026-07-24)
+
+The 6a artifact now has somewhere to run. Provisioned and reached by hand; no
+application is deployed to it yet, which is Phase 6b.
+
+**`soundlog-prod` at Hetzner** — CX33 (4 vCPU / 8 GB / 80 GB, **x86_64**),
+Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
+
+| | |
+|---|---|
+| IPv4 | `95.216.158.204` |
+| IPv6 | `2a01:4f9:c015:2f9f::/64` |
+| SSH alias | `soundlog-prod` (`~/.ssh/config`, `600`) |
+
+- **Firewall applied BEFORE first boot**, not after: Hetzner Cloud Firewall,
+  **default-deny inbound**, only TCP **22 / 80 / 443** open, each rule
+  documented in the dashboard (SSH / HTTP for the Let's Encrypt challenge and
+  the redirect / HTTPS). Ordering matters — a box is exposed from the moment it
+  has an address, not from the moment you get around to securing it.
+- **Key-only SSH**: `id_soundlog_prod` (ed25519, `-a 100`, passphrased, held in
+  the macOS keychain agent). The passphrase was set by Blake and has never been
+  in a shell history, a command line, or this repo.
+- **Handshake verified by hand**, not assumed: host fingerprint checked and
+  accepted (TOFU, now pinned in `known_hosts`), root prompt reached, clean exit.
+  `uname` confirms **x86_64**, which is what **validates the build-on-server
+  plan** — the images are built on an arm64 Mac, so an arm-only host would have
+  meant either cross-building or a registry. **7.6 Gi RAM free**, comfortably
+  above what the six-container stack needs.
+
+### Accounts and identity layer — complete
+
+- **Resend** account created (`hello.soundlog@gmail.com`); API key minted and
+  held **in the password manager only**. It goes into `.env.production` **on the
+  server**, per CLAUDE.md §7 — never committed, never `scp`'d from a machine
+  where it could land in shell history. It is deliberately not written here:
+  this repo is public.
+- **Identity inventory**: `soundlog.app` (Cloudflare, auto-renew) ·
+  `hello.soundlog@gmail.com` (2FA'd, the recovery root for everything else) ·
+  **@soundlogapp** on TikTok, Instagram, X, YouTube and Bluesky, bios written.
+- **DPA** to conclude in the Hetzner dashboard when convenient.
+
+### Decisions recorded
+
+- **Hosting: a Hetzner VPS running the 6a-proven compose artifact.** US-region
+  pricing was ruled out at **$73/mo** — that is the dashboard's real number, not
+  the estimate the plan had assumed, and the gap is the whole reason for the
+  change. Helsinki latency is accepted, mitigated by Cloudflare's US edge. **The
+  K8s manifests are not abandoned** — they remain the documented migration path
+  for when the project is funded.
+- **Backups deliberately deferred to 6b step 6.** The server currently holds
+  nothing, so a backup now would preserve an empty box; the Hetzner backup
+  toggle gets enabled as part of one coherent strategy rather than as a reflex.
+- **Ubuntu 24.04 LTS over 26.04** — production runs LTS.
 
 ## Open items
 - **401 → refresh → replay against a genuinely aged token** — unit-tested, never
@@ -594,3 +658,37 @@ artist discographies cached in Redis (7d TTL). Useful demo anchors:
 **Demo accounts.** `demo_blake@demo.local`, `sasha@demo.local` (plus `big_sigh`).
 Passwords are local-seed only and deliberately not written here — this repo is
 public. Ask the user, or reset via the register endpoint.
+
+---
+
+## Next session — Phase 6b: deploy to the live server
+
+Opens in a **fresh session**; the 6b prompt is written and ready to paste. The
+server exists and is reachable (`ssh soundlog-prod`); nothing is deployed to it.
+Order matters — each step is a precondition for the next, and the last one is
+the only proof that counts.
+
+1. **Harden the box** — non-root user with sudo, `ufw` as a second layer behind
+   the Hetzner Cloud Firewall (defence in depth: the cloud firewall can be
+   changed in a dashboard, the host firewall travels with the machine),
+   `fail2ban`, `unattended-upgrades`.
+2. **Deploy the 6a stack, built on the server** — validated by `uname`: the host
+   is x86_64 while the build Mac is arm64, so building there avoids both
+   cross-building and standing up a registry.
+3. **Cloudflare DNS** — point `soundlog.app` at `95.216.158.204`.
+4. **Let's Encrypt TLS** — the reason port 80 is open at all (challenge +
+   redirect). This is also what flips `cookieSecure` on for real: `CLIENT_URL`
+   becomes `https://soundlog.app`, and the 6a policy takes effect by itself.
+5. **OAuth console swaps** — Spotify and Google redirect URIs to the real
+   origin, in both the provider consoles and the server's `.env.production`.
+   Changing one without the other is a redirect-URI mismatch (README table).
+6. **Resend wiring + SPF / DKIM / DMARC** — API key entered on the server, never
+   committed. Records at Cloudflare, or transactional mail lands in spam.
+7. **Hygiene** — monitoring, **backups** (deferred here deliberately: this is
+   where the Hetzner toggle gets enabled as one coherent strategy), and a
+   written rollback procedure.
+8. **Seed-content decision** — what the catalog holds on day one.
+9. **The proof: the full journey from a phone on cellular at
+   https://soundlog.app.** Cellular specifically — it defeats every "works on
+   my LAN" illusion, and it is the same class of check that caught the
+   half-star fill bug in 5.5. Not done until this passes.
