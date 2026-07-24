@@ -51,6 +51,17 @@ const schema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().default("http://127.0.0.1:4000/api/auth/google/callback"),
+  // ---------- Resend (transactional email) ----------
+  // Optional on purpose, exactly like Last.fm and Discogs: with no key the app
+  // boots and simply does not send. Verification and password-reset degrade to
+  // a logged no-op rather than a failed registration — which is what lets the
+  // stack be deployed and proven before the sending domain has finished
+  // verifying its DNS.
+  RESEND_API_KEY: z.string().optional(),
+  // The From: address. Must be on a domain verified in Resend, or every send is
+  // rejected with a definitive 403 — which is a configuration error, not an
+  // outage, and is reported as such.
+  EMAIL_FROM: z.string().default("Soundlog <hello@soundlog.app>"),
   LASTFM_API_KEY: z.string().optional(),
   // Discogs personal access token, sent as `Authorization: Discogs token=<value>`.
   DISCOGS_TOKEN: z.string().optional(),

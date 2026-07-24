@@ -7,6 +7,17 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (username: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /**
+   * Adopt a session the server just issued outside login/register — currently
+   * only the password-reset flow, which signs the user in as it completes.
+   */
+  adoptSession: (user: SessionUser, accessToken: string) => void;
+  /**
+   * Re-read the current user. Verifying an email changes `emailVerified` on the
+   * server; without this the reminder banner would keep nagging a verified user
+   * until they reloaded the page.
+   */
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -68,8 +79,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }
 
+  function adoptSession(next: SessionUser, accessToken: string) {
+    setAccessToken(accessToken);
+    setUser(next);
+  }
+
+  async function refreshUser() {
+    // Swallowed on purpose: this only ever refines already-displayed state, so
+    // a blip must not tear down a working session or surface an error on a
+    // screen the user has already succeeded on.
+    try {
+      const { user: fresh } = await api.me();
+      setUser(fresh);
+    } catch {
+      /* keep the session we have */
+    }
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, register, logout, adoptSession, refreshUser }}
+    >
       {children}
     </AuthContext.Provider>
   );

@@ -14,6 +14,10 @@ import Lists from "./pages/Lists";
 import ListDetail from "./pages/ListDetail";
 import Diary from "./pages/Diary";
 import Profile from "./pages/Profile";
+import VerifyEmail from "./pages/VerifyEmail";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
+import VerifyReminder from "./components/ui/VerifyReminder";
 
 export default function App() {
   const location = useLocation();
@@ -29,6 +33,7 @@ export default function App() {
         className="container page-enter"
         style={{ paddingTop: 40, paddingBottom: 64 }}
       >
+        <VerifyReminder />
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/search" element={<Search />} />
@@ -42,6 +47,12 @@ export default function App() {
           <Route path="/lists" element={<Lists />} />
           <Route path="/list/:id" element={<ListDetail />} />
           <Route path="/diary" element={<Diary />} />
+          {/* Email flows. These MUST sit above /:username — that route matches
+              any single segment, so a verify link would otherwise render a
+              profile page for a member called "verify-email". */}
+          <Route path="/verify-email" element={<VerifyEmail />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           {/* Public member profile — kept last so static routes win the match. */}
           <Route path="/:username" element={<Profile />} />
         </Routes>

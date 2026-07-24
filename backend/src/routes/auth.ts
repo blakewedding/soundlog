@@ -20,13 +20,26 @@ import { HttpError } from "../middleware/errorHandler.js";
 import { prisma } from "../config/database.js";
 import { env, cookieSecure } from "../config/env.js";
 import { passport, oauthProviders, type OAuthProvider } from "../config/passport.js";
-import { registerUser, verifyCredentials, toPublicUser } from "../services/authService.js";
+import {
+  registerUser,
+  verifyCredentials,
+  toPublicUser,
+  sendVerificationEmail,
+  resetUserPassword,
+} from "../services/authService.js";
 import {
   signAccessToken,
   issueRefreshToken,
   rotateRefreshToken,
   revokeRefreshToken,
+  revokeAllRefreshTokens,
 } from "../services/tokenService.js";
+import {
+  issueVerificationToken,
+  consumeVerificationToken,
+  verificationLink,
+} from "../services/verificationService.js";
+import { sendEmail, passwordResetEmail, emailConfigured } from "../services/emailService.js";
 import {
   createOAuthState,
   consumeOAuthState,
@@ -66,6 +79,21 @@ const loginSchema = z.object({
 
 const exchangeSchema = z.object({
   code: z.string().min(1),
+});
+
+const tokenSchema = z.object({
+  token: z.string().min(1),
+});
+
+const forgotSchema = z.object({
+  email: z.string().email(),
+});
+
+// Same minimum as registration. A reset path that accepts a weaker password
+// than the front door is a way around the front door.
+const resetSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(10),
 });
 
 /** Deliver a freshly issued refresh token by the mechanism the client expects. */
@@ -140,6 +168,100 @@ authRouter.get("/me", requireAuth, async (req: AuthedRequest, res, next) => {
     const user = await prisma.user.findUnique({ where: { id: req.userId } });
     if (!user) throw new HttpError(404, "User not found");
     res.json({ user: toPublicUser(user) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Email verification & password reset
+//
+// Launch policy (Phase 6b): an unverified account is a FULL account. It can log
+// in and use the site; the UI shows a reminder. Hard-blocking sign-in on
+// verification would mean that any wobble in mail delivery locks out every new
+// user, including the first one, with no way back in — the failure mode is
+// total and self-inflicted. Verification gates nothing yet; when it does, it
+// will gate specific actions, not the door.
+// ---------------------------------------------------------------------------
+
+authRouter.post("/verify-email", validate(tokenSchema), async (req, res, next) => {
+  try {
+    const userId = await consumeVerificationToken(req.body.token, "EMAIL_VERIFICATION");
+    // Idempotent in effect: a second, different valid token simply rewrites the
+    // same timestamp. (The token itself is still strictly single-use.)
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { emailVerifiedAt: new Date() },
+    });
+    res.json({ user: toPublicUser(user) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post("/resend-verification", requireAuth, async (req: AuthedRequest, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user) throw new HttpError(404, "User not found");
+    // Already verified: succeed without sending. Telling the caller "you didn't
+    // need that" is friendlier than an error, and sending anyway trains people
+    // to click stale links.
+    if (!user.emailVerifiedAt) await sendVerificationEmail(user);
+    res.json({ sent: !user.emailVerifiedAt, emailConfigured: emailConfigured() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post("/forgot-password", validate(forgotSchema), async (req, res, next) => {
+  try {
+    const email = req.body.email.toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    // An OAuth-only account has no password to reset; sending a reset link
+    // would let anyone with mailbox access CREATE one, converting a
+    // Google-only account into a password account. Skip silently — the
+    // response is identical either way.
+    if (user?.password) {
+      try {
+        const token = await issueVerificationToken(user.id, "PASSWORD_RESET");
+        const link = verificationLink("/reset-password", token);
+        await sendEmail({ to: user.email, ...passwordResetEmail(link) });
+      } catch (err) {
+        // Fault-isolated: the response must not vary with mail success either,
+        // or timing and status codes become the enumeration oracle that the
+        // constant response exists to close.
+        console.warn(`[auth] reset email failed: ${(err as Error).message}`);
+      }
+    }
+
+    // ALWAYS the same answer, whether or not that address has an account. This
+    // endpoint is unauthenticated, so any difference in status, body or shape
+    // turns it into a "does this person use Soundlog" lookup for anyone.
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post("/reset-password", validate(resetSchema), async (req, res, next) => {
+  try {
+    const userId = await consumeVerificationToken(req.body.token, "PASSWORD_RESET");
+    // Hashing lives in authService so the bcrypt cost factor has exactly one
+    // definition. A reset that hashed at a different cost than registration is
+    // invisible until someone audits the table.
+    const user = await resetUserPassword(userId, req.body.password);
+
+    // Every other session dies. Someone resetting a password is often doing it
+    // because another party has access, and a live 30-day refresh token would
+    // hand the account straight back on its next rotation.
+    await revokeAllRefreshTokens(user.id);
+
+    // Sign them in on this device, so the flow ends at a usable app rather than
+    // at a login form they must immediately fill in again.
+    const refreshToken = await issueRefreshToken(user.id);
+    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+    res.json({ user: toPublicUser(user), accessToken: signAccessToken(user.id) });
   } catch (err) {
     next(err);
   }

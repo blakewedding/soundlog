@@ -15,6 +15,10 @@ export const API_ROUTES = {
     refresh: "/api/auth/refresh",
     spotify: "/api/auth/spotify",
     google: "/api/auth/google",
+    verifyEmail: "/api/auth/verify-email",
+    resendVerification: "/api/auth/resend-verification",
+    forgotPassword: "/api/auth/forgot-password",
+    resetPassword: "/api/auth/reset-password",
   },
 } as const;
 

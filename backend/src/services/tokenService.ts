@@ -74,3 +74,18 @@ export async function revokeRefreshToken(raw: string): Promise<void> {
     data: { revokedAt: new Date() },
   });
 }
+
+/**
+ * Revoke every active refresh token a user holds. Idempotent.
+ *
+ * This is what makes a password reset mean something. Someone resetting their
+ * password is very often doing it BECAUSE another party has access; leaving
+ * that party's 30-day refresh token alive would hand them the account back on
+ * their next rotation, and the user would have no way to tell.
+ */
+export async function revokeAllRefreshTokens(userId: string): Promise<void> {
+  await prisma.refreshToken.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+}

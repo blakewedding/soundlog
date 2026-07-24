@@ -100,6 +100,11 @@ export interface SessionUser {
   username: string;
   displayName?: string | null;
   avatarUrl?: string | null;
+  // Present on the session endpoints (register / login / me / verify), absent
+  // on the trimmed SessionUser embedded in reviews and lists — which is why it
+  // is optional rather than a required boolean. Only the banner reads it, and
+  // it treats "absent" the same as "verified": never nag on partial data.
+  emailVerified?: boolean;
 }
 
 export interface ReviewDTO {
@@ -166,6 +171,24 @@ export const api = {
   refresh: () => request<{ accessToken: string }>(API_ROUTES.auth.refresh, { method: "POST" }),
   me: () => request<{ user: SessionUser }>("/api/auth/me"),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+
+  // ---- email verification & password reset (Phase 6b) ----
+  verifyEmail: (token: string) =>
+    request<{ user: SessionUser }>(API_ROUTES.auth.verifyEmail, json({ token })),
+  resendVerification: () =>
+    request<{ sent: boolean; emailConfigured: boolean }>(API_ROUTES.auth.resendVerification, {
+      method: "POST",
+    }),
+  // Always resolves for any syntactically valid address — the server answers
+  // identically whether or not an account exists, and the UI must not invent a
+  // distinction the API deliberately refuses to make.
+  forgotPassword: (email: string) =>
+    request<{ ok: true }>(API_ROUTES.auth.forgotPassword, json({ email })),
+  resetPassword: (token: string, password: string) =>
+    request<{ user: SessionUser; accessToken: string }>(
+      API_ROUTES.auth.resetPassword,
+      json({ token, password })
+    ),
 
   // ---- catalog ----
   // Tabbed search across releases, artists, members, lists, labels.

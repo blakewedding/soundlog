@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { ApiError } from "../services/api";
 
@@ -58,6 +58,11 @@ export default function Login() {
           <p className="meta" style={{ color: "var(--danger)" }}>
             {error}
           </p>
+        )}
+        {mode === "login" && (
+          <Link to="/forgot-password" className="meta" style={{ textAlign: "center" }}>
+            Forgot your password?
+          </Link>
         )}
       </form>
       <button
