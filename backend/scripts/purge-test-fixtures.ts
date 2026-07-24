@@ -5,9 +5,15 @@
 // Two distinct kinds of debris, with two different definitions:
 //
 //  1. Fixture rows in Postgres — releases/artists/labels with synthetic
-//     identifiers, created by integration tests. A crashed or interrupted run
-//     leaves them behind, and they then surface in Explore's "recently added":
-//     user-visible test debris.
+//     identifiers, created by integration tests, plus throwaway USER accounts
+//     on an RFC 2606 reserved email TLD (.test/.invalid/.example), which is
+//     what verify-prod-stack.sh registers. A crashed or interrupted run leaves
+//     them behind, and they then surface in Explore's "recently added" or in
+//     the member search: user-visible test debris.
+//
+//     Deleting a user cascades to their reviews, ratings, logs and lists, so
+//     this is also how a verification run's CONTENT is removed, not just its
+//     login.
 //
 //  2. Orphaned Elasticsearch documents — a doc whose Postgres row no longer
 //     exists. This is the larger problem in practice: deletes that bypassed

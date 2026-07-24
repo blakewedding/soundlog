@@ -82,8 +82,24 @@ services:
       context: .
       dockerfile: infrastructure/docker/Dockerfile.backend
       target: migrate
+    # This target is `FROM build`, so unlike the slim runtime image it carries
+    # the whole repo and its dev dependencies — including backend/scripts and
+    # tsx. That makes it the stack's MAINTENANCE image as well as its migration
+    # job, which is how `purge-test-fixtures.ts` gets run in production:
+    #
+    #   docker compose --env-file .env.production -f docker-compose.prod.yml \
+    #     run --rm --entrypoint sh migrate -c "npx tsx scripts/purge-test-fixtures.ts"
+    #
+    # env_file is what makes that work: the script boots the real config module,
+    # which requires JWT_SECRET and needs REDIS_URL/ELASTICSEARCH_NODE to reach
+    # both stores. Passing those on a command line instead would put a secret in
+    # `ps` output for every user on the box (§7). `environment:` below still
+    # wins over the file, so DATABASE_URL remains the in-cluster one.
+    env_file: [.env.production]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-soundlog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soundlog}
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"

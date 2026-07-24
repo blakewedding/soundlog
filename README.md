@@ -526,6 +526,206 @@ buy hit width (this is exactly why the mobile fix widens the box instead).
 
 ---
 
+## Production operations
+
+Everything here assumes `ssh soundlog-prod`, which lands you as the
+unprivileged `deploy` user. Root SSH is disabled; `deploy` holds passwordless
+sudo because the account has no password and a prompting sudo would be
+unusable for automation.
+
+The stack lives at **`/srv/soundlog`**. Every compose command needs both flags —
+`--env-file` (interpolation otherwise reads `./.env`) and `-f` (otherwise
+`docker-compose.override.yml` is merged in and Varnish fronts a dev server that
+isn't there):
+
+```bash
+cd /srv/soundlog
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+```
+
+That prefix is long enough to get skipped, so define it once per session:
+
+```bash
+alias dc='docker compose --env-file /srv/soundlog/.env.production -f /srv/soundlog/docker-compose.prod.yml'
+```
+
+### Topology on the box
+
+```
+internet :80/:443
+  → host nginx            TLS termination, HTTP→HTTPS, ACME challenge
+    → 127.0.0.1:8090      the compose stack's own nginx (LOOPBACK ONLY)
+      → varnish           cache policy
+        → backend         the API
+          → postgres · redis · elasticsearch
+```
+
+**The container edge binds to `127.0.0.1`, never `0.0.0.0`.** Docker publishes
+ports by writing iptables rules in the `DOCKER` chain, which are evaluated
+*before* ufw's — so a normal publish is reachable from the internet even though
+`ufw status` shows the port denied. `WEB_PORT=127.0.0.1:8090` in
+`.env.production` is what closes that, and it is why `verify-prod-stack.sh`
+needs an explicit `BASE` (its default composes `http://localhost:$WEB_PORT`,
+which a bind address does not fit into).
+
+### Logs
+
+Docker's `json-file` driver ships with **no rotation at all** — the default is
+unbounded, and a long-running chatty container will fill the disk. Capped in
+`/etc/docker/daemon.json` at 10 MB × 5 files per container (~300 MB ceiling for
+the six-container stack):
+
+```bash
+dc logs -f backend              # follow one service
+dc logs --since 1h backend      # last hour
+dc logs --tail 200 varnish
+journalctl -u nginx -n 100      # the HOST edge, not the container
+journalctl -u fail2ban -n 50
+sudo tail -f /var/log/nginx/access.log
+```
+
+Log options apply at container CREATION, so after changing them you must
+`up -d --force-recreate`, not merely restart.
+
+### Backups
+
+`infrastructure/scripts/backup-db.sh` runs nightly from cron at 03:17 UTC and
+writes to `/var/backups/soundlog`, retaining 14 days.
+
+It uses `pg_dump -Fc` (custom format — compressed, and `pg_restore` can then do
+selective/parallel restores), writes to a `.partial` name and only moves it into
+place after `pg_restore -l` parses it. A backup directory must never contain a
+truncated file that looks like a backup; the point is that its contents are
+trustworthy without inspection.
+
+```bash
+sudo /srv/soundlog/infrastructure/scripts/backup-db.sh   # run one now
+ls -lh /var/backups/soundlog
+sudo crontab -l                                          # confirm the schedule
+grep backup-db /var/log/soundlog-backup.log | tail       # last runs
+```
+
+**Restore** (destructive — it drops and recreates the schema):
+
+```bash
+cd /srv/soundlog
+dc stop backend                     # stop writes first
+dc exec -T postgres pg_restore -U soundlog -d soundlog --clean --if-exists \
+  < /var/backups/soundlog/soundlog-YYYYmmdd-HHMMSSZ.dump
+dc start backend
+```
+
+Elasticsearch is **not** backed up on purpose: Postgres is truth and the index
+is rebuildable (§5). After a restore, rebuild it rather than restoring it:
+
+```bash
+dc run --rm --entrypoint sh migrate -c "npx tsx scripts/backfill-search.ts"
+```
+
+Also enable the **Hetzner backup toggle** in the Cloud console (server →
+Backups). That covers the whole disk — including `/var/backups`, the env file
+and the Docker volumes — and it is the only layer that survives losing the box
+itself. The `pg_dump` retention is the fast, granular path; the Hetzner
+snapshots are the disaster path. Neither replaces the other.
+
+### Deploy a new version
+
+```bash
+cd /srv/soundlog
+git pull --ff-only origin main
+dc up -d --build                     # migrations gate the API automatically
+dc ps                                # all six healthy?
+BASE=https://soundlog.app ./infrastructure/scripts/verify-prod-stack.sh
+```
+
+The `migrate` service runs `prisma migrate deploy` and the API will not start
+until it completes successfully (`service_completed_successfully`), so a failed
+migration stops the deploy rather than starting an API against a schema it does
+not match.
+
+### Rollback
+
+Roll back **code** and **schema** as separate decisions — they fail
+independently, and conflating them is how a rollback makes things worse.
+
+**Code only** (the common case — the schema is unchanged or the change was
+additive):
+
+```bash
+cd /srv/soundlog
+git log --oneline -10                        # find the last good commit
+git checkout <sha>
+dc up -d --build
+BASE=https://soundlog.app ./infrastructure/scripts/verify-prod-stack.sh
+```
+
+Additive migrations — a new nullable column, a new table — are safe to leave in
+place under older code, which simply ignores them. Every migration in this repo
+so far is of that shape, including `add_email_verification_and_reset`. Prefer
+leaving the schema alone.
+
+**If the schema must also go back**, restore from the dump taken before the
+deploy. Prisma has no down-migrations, and hand-writing reverse DDL against a
+live database under pressure is how data gets lost:
+
+```bash
+dc stop backend
+dc exec -T postgres pg_restore -U soundlog -d soundlog --clean --if-exists < <pre-deploy dump>
+git checkout <sha> && dc up -d --build
+dc run --rm --entrypoint sh migrate -c "npx tsx scripts/backfill-search.ts"
+```
+
+**Take a dump immediately before any deploy carrying a migration.** The nightly
+one can be up to 24 hours old, and the window you need is the last few minutes:
+
+```bash
+sudo /srv/soundlog/infrastructure/scripts/backup-db.sh
+```
+
+**Fastest mitigation of all:** if the site is broken and the cause is unclear,
+`dc stop` serves nothing rather than something wrong, and buys time to read logs
+without users seeing a half-working app.
+
+### Monitoring
+
+External uptime checks against `/api/health`, which reports Postgres, Redis and
+Elasticsearch individually — so a 200 means the whole dependency chain answered,
+not just that a process is listening.
+
+```bash
+curl -s https://soundlog.app/api/health | python3 -m json.tool
+```
+
+An external monitor is genuinely external: a check running on the box cannot
+report that the box is down. See the setup notes in `PROGRESS.md` for the
+UptimeRobot configuration.
+
+### Throwaway accounts from verification
+
+`verify-prod-stack.sh` registers two accounts and writes a rating and a review.
+On a live site those are not neutral — they are members, visible in search.
+
+The script now removes them from an **EXIT trap**, so cleanup runs on failure
+and on Ctrl-C, not only on success. Detection is not reimplemented there: the
+accounts use `@local.test`, an RFC 2606 reserved TLD that can never belong to a
+real person, which `backend/scripts/lib/fixtures.ts` already recognises — shared
+with the suite teardown so the two cannot drift. Deleting the user cascades to
+their rating and review.
+
+Run it by hand any time, or when the script was driven from a laptop and could
+not clean up:
+
+```bash
+cd /srv/soundlog
+dc run --rm --entrypoint sh migrate -c "npx tsx scripts/purge-test-fixtures.ts --dry-run"
+dc run --rm --entrypoint sh migrate -c "npx tsx scripts/purge-test-fixtures.ts"
+```
+
+The `migrate` target is `FROM build`, so it carries the whole repo and its dev
+dependencies — it is the stack's maintenance image as well as its migration job.
+
+---
+
 ## Backlog — v1.1
 
 Deferred past v1 deliberately: each needs schema or policy decisions that would

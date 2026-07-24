@@ -30,6 +30,26 @@ export const FIXTURE_ARTIST = /^Prolific [a-z0-9]{6,}$/;
 /** Hostnames that only ever appear in tests. */
 export const FIXTURE_HOST = /\.example(\.|\/|$)/;
 
+/**
+ * Throwaway accounts, identified by a RESERVED email TLD.
+ *
+ * `.test`, `.invalid` and `.example` are reserved by RFC 2606 and can never be
+ * registered, so an address in one is provably not a real person's — which is
+ * the only kind of discriminator safe enough to delete a user row on. This is
+ * deliberately NOT a username pattern: `prod_check_1784908856` is the shape
+ * verify-prod-stack.sh happens to use today, but a real member could in
+ * principle pick a name like that, and no username is ever proof of anything.
+ *
+ * Note what is absent: `@demo.local`. The development seed accounts
+ * (demo_blake@demo.local) live there and are real data in the dev database,
+ * which this same script runs against.
+ */
+export const FIXTURE_EMAIL = /@[a-z0-9-]+(\.[a-z0-9-]+)*\.(test|invalid|example)$/i;
+
+export function isFixtureUser(u: { email: string }): boolean {
+  return FIXTURE_EMAIL.test(u.email);
+}
+
 export interface ReleaseShape {
   title: string;
   artistName: string;
@@ -52,16 +72,18 @@ export interface FixtureReport {
   releases: { id: string; label: string }[];
   artists: { id: string; label: string }[];
   labels: { id: string; label: string }[];
+  users: { id: string; label: string }[];
 }
 
 /** Everything in Postgres that looks synthetic. Read-only. */
 export async function findFixtureRows(): Promise<FixtureReport> {
-  const [releases, artists, labels] = await Promise.all([
+  const [releases, artists, labels, users] = await Promise.all([
     prisma.release.findMany({
       select: { id: true, title: true, artistName: true, musicbrainzId: true, coverUrl: true },
     }),
     prisma.artist.findMany({ select: { id: true, name: true, musicbrainzId: true } }),
     prisma.label.findMany({ select: { id: true, name: true, musicbrainzId: true } }),
+    prisma.user.findMany({ select: { id: true, username: true, email: true } }),
   ]);
 
   return {
@@ -74,6 +96,7 @@ export async function findFixtureRows(): Promise<FixtureReport> {
     labels: labels
       .filter((l) => l.musicbrainzId != null && !UUID.test(l.musicbrainzId))
       .map((l) => ({ id: l.id, label: `${l.name} [${l.musicbrainzId}]` })),
+    users: users.filter(isFixtureUser).map((u) => ({ id: u.id, label: `${u.username} <${u.email}>` })),
   };
 }
 
@@ -92,8 +115,19 @@ export async function purgeFixtureRows(): Promise<number> {
     await prisma.label.delete({ where: { id: l.id } }).catch(() => {});
     await es.delete({ index: LABEL_INDEX, id: l.id }).catch(() => {});
   }
+  for (const u of found.users) {
+    // Every User relation is onDelete: Cascade, so this also takes the account's
+    // reviews, ratings, logs, lists, comments, likes, follows and activity —
+    // which is exactly what "leave no trace" has to mean for a throwaway account
+    // that rated and reviewed something. Any ES documents those cascades orphan
+    // (a deleted user's lists) are reconciled by purgeOrphanDocs.
+    await prisma.user.delete({ where: { id: u.id } }).catch(() => {});
+    await es.delete({ index: USER_INDEX, id: u.id }).catch(() => {});
+  }
 
-  return found.releases.length + found.artists.length + found.labels.length;
+  return (
+    found.releases.length + found.artists.length + found.labels.length + found.users.length
+  );
 }
 
 /** Every document id currently in an index. */

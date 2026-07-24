@@ -26,6 +26,53 @@ pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# ---------------------------------------------------------------------------
+# Self-cleanup.
+#
+# This script REGISTERS ACCOUNTS in the production database. Once the site is
+# live those accounts are not neutral test debris — they are members, they show
+# up in search and in "recently added", and they own a rating and a review.
+# Re-running the verification must not cost the platform two fake users each
+# time.
+#
+# So cleanup runs from an EXIT trap: pass, fail, or Ctrl-C, exactly the
+# discipline tests/support/globalTeardown.ts exists for. The sanctioned path
+# runs on failure too, not just on the happy path.
+#
+# Detection is NOT reimplemented here. The accounts use @local.test — an RFC
+# 2606 reserved TLD — which is what scripts/lib/fixtures.ts already recognises,
+# shared with the suite teardown so the two cannot drift. Cleanup deletes the
+# user, and every User relation cascades, so the rating and review go with it.
+# ---------------------------------------------------------------------------
+STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+SKIP_CLEANUP="${SKIP_CLEANUP:-0}"
+
+cleanup() {
+  local rc=$?
+  [ "$SKIP_CLEANUP" = "1" ] && return $rc
+
+  step "Cleanup · removing this run's throwaway accounts"
+  if [ ! -f "$STACK_DIR/docker-compose.prod.yml" ] || ! command -v docker >/dev/null 2>&1; then
+    # Running from a laptop against a remote host: there is no local stack to
+    # exec into. Say so loudly rather than exiting as though it were done.
+    printf '  \033[33mSKIPPED\033[0m no local stack — run this ON the server:\n'
+    printf '    cd /srv/soundlog && docker compose --env-file .env.production \\\n'
+    printf '      -f docker-compose.prod.yml run --rm --entrypoint sh migrate \\\n'
+    printf '      -c "npx tsx scripts/purge-test-fixtures.ts"\n'
+    return $rc
+  fi
+
+  if (cd "$STACK_DIR" && docker compose --env-file .env.production -f docker-compose.prod.yml \
+        run --rm --entrypoint sh migrate -c "npx tsx scripts/purge-test-fixtures.ts" 2>&1 |
+        sed 's/^/    /'); then
+    pass "throwaway accounts and their content removed"
+  else
+    printf '  \033[31mFAIL\033[0m cleanup did not complete — purge by hand before launch\n' >&2
+  fi
+  return $rc
+}
+trap cleanup EXIT
+
 jqp() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 
 step "1 · Health, through nginx → Varnish → backend"

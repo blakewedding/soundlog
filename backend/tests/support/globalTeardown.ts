@@ -20,7 +20,7 @@ export async function setup() {
   // in, so a pre-existing mess is never silently attributed to this run.
   const before = await findFixtureRows().catch(() => null);
   const count = before
-    ? before.releases.length + before.artists.length + before.labels.length
+    ? before.releases.length + before.artists.length + before.labels.length + before.users.length
     : 0;
   if (count > 0) {
     console.warn(
@@ -54,9 +54,17 @@ export async function teardown() {
     // than a warning, because silent debris is exactly what this replaces.
     const remaining = await findFixtureRows();
     const stillThere =
-      remaining.releases.length + remaining.artists.length + remaining.labels.length;
+      remaining.releases.length +
+      remaining.artists.length +
+      remaining.labels.length +
+      remaining.users.length;
     if (stillThere > 0) {
-      const lines = [...remaining.releases, ...remaining.artists, ...remaining.labels]
+      const lines = [
+        ...remaining.releases,
+        ...remaining.artists,
+        ...remaining.labels,
+        ...remaining.users,
+      ]
         .map((r) => `  - ${r.label}`)
         .join("\n");
       throw new Error(
