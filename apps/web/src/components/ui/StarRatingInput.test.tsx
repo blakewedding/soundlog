@@ -301,14 +301,24 @@ describe("StarRatingInput — touch and pointer drag", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
-  it("still treats a press without movement as a tap", () => {
+  it("a press without movement commits ON RELEASE, not via a deferred click", () => {
+    // DELIBERATE TEST-CONTRACT CHANGE. This test used to assert the opposite —
+    // that a no-movement press committed nothing and the zone's click handler
+    // would do it. That contract was the production bug: the pointer capture
+    // taken on pointerdown makes current browsers dispatch the follow-up click
+    // to the ROW, so the deferred zone click never arrives and a plain click
+    // committed nothing, invisibly. The tap now commits on pointerup like the
+    // drag does, and the follow-up click — wherever the browser targets it —
+    // is swallowed as part of the same gesture.
     const { onChange, slider } = setup();
     fireEvent.pointerDown(slider, { clientX: xFor(2), pointerId: 1, pointerType: "touch" });
     fireEvent.pointerUp(slider, { clientX: xFor(2), pointerId: 1, pointerType: "touch" });
-    // No drag happened, so the zone's click is what commits — as before.
-    expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTestId("rate-2"));
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenLastCalledWith(2);
+
+    // The same gesture's trailing click must not write a second time.
+    fireEvent.click(screen.getByTestId("rate-2"));
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   it("releasing on the current rating clears it, matching click behaviour", () => {
@@ -345,5 +355,103 @@ describe("StarRatingInput — touch and pointer drag", () => {
     expect(slider).toHaveAttribute("aria-valuemin", "0.5");
     expect(slider).toHaveAttribute("aria-valuemax", "5");
     expect(slider).toHaveAttribute("tabindex", "0");
+  });
+});
+
+// The production bug this block exists for: onPointerDown takes pointer capture
+// (the drag path needs it), and per the Pointer Events spec the follow-up
+// `click` is then dispatched to the CAPTURING element — the row — not the zone
+// under the cursor. Current Chromium and Safari implement that, so the zones'
+// onClick never fired for any click that began with a pointerdown, and a plain
+// click committed NOTHING: no request, no error, no code run at all. Hover kept
+// working (it never involved the zones), which made a dead handler look like a
+// silent network failure. jsdom does not model capture retargeting, so these
+// tests dispatch the click sequences of BOTH browser generations explicitly.
+describe("StarRatingInput — click retargeting under pointer capture", () => {
+  function setup(props: Partial<Parameters<typeof StarRatingInput>[0]> = {}) {
+    const onChange = vi.fn();
+    const onClear = vi.fn();
+    render(<StarRatingInput value={null} onChange={onChange} onClear={onClear} {...props} />);
+    return { onChange, onClear, slider: screen.getByRole("slider") };
+  }
+
+  /** A clean mouse click as a CAPTURE-RETARGETING browser delivers it: pointer
+   *  events at the pressed coordinate, then `click` targeted at the ROW. */
+  function retargetedClick(slider: HTMLElement, x: number) {
+    fireEvent.pointerDown(slider, { clientX: x, pointerId: 1, pointerType: "mouse", button: 0 });
+    fireEvent.pointerUp(slider, { clientX: x, pointerId: 1, pointerType: "mouse", button: 0 });
+    fireEvent.click(slider, { clientX: x });
+  }
+
+  it("commits exactly once when the browser retargets the click to the row", () => {
+    const { onChange, slider } = setup();
+    retargetedClick(slider, xFor(4));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(4);
+  });
+
+  it("commits exactly once when a legacy browser still targets the zone", () => {
+    const { onChange, slider } = setup();
+    fireEvent.pointerDown(slider, { clientX: xFor(3.5), pointerId: 1, pointerType: "mouse", button: 0 });
+    fireEvent.pointerUp(slider, { clientX: xFor(3.5), pointerId: 1, pointerType: "mouse", button: 0 });
+    fireEvent.click(screen.getByTestId("rate-3.5"), { clientX: xFor(3.5) });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(3.5);
+  });
+
+  it("clicking the current value on release clears it — under retargeting too", () => {
+    const { onChange, onClear, slider } = setup({ value: 4 });
+    retargetedClick(slider, xFor(4));
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("still commits a bare zone click with no pointerdown — the AT path", () => {
+    // Assistive tech activates via a synthetic click with no pointer gesture.
+    // That click is not retargeted (nothing captured), lands on the zone, and
+    // must keep working.
+    const { onChange } = setup();
+    fireEvent.click(screen.getByTestId("rate-2.5"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(2.5);
+  });
+
+  it("does not let the swallow flag outlive its gesture and eat a later AT click", () => {
+    const { onChange, slider } = setup();
+    retargetedClick(slider, xFor(4)); // commits 4; row click retires the flag
+    fireEvent.click(screen.getByTestId("rate-2")); // a later bare activation
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenLastCalledWith(2);
+  });
+
+  it("a press that resolves outside the star boxes commits nothing and arms nothing", () => {
+    const { onChange, slider } = setup();
+    // Left of the first box: a tap gets no left-edge clamp (that pin belongs to
+    // drags), so nothing commits...
+    fireEvent.pointerDown(slider, { clientX: ROW_LEFT - 10, pointerId: 1, pointerType: "mouse", button: 0 });
+    fireEvent.pointerUp(slider, { clientX: ROW_LEFT - 10, pointerId: 1, pointerType: "mouse", button: 0 });
+    expect(onChange).not.toHaveBeenCalled();
+    // ...and the un-armed swallow flag must not eat the next real activation.
+    fireEvent.click(screen.getByTestId("rate-1"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it("a drag off the left edge still pins at 0.5 — the clamp belongs to drags", () => {
+    const { onChange, slider } = setup();
+    fireEvent.pointerDown(slider, { clientX: xFor(3), pointerId: 1, pointerType: "touch" });
+    fireEvent.pointerMove(slider, { clientX: ROW_LEFT - 40, pointerId: 1, pointerType: "touch" });
+    fireEvent.pointerUp(slider, { clientX: ROW_LEFT - 40, pointerId: 1, pointerType: "touch" });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(0.5);
+  });
+
+  it("a secondary-button press commits nothing", () => {
+    // The commit lives on pointerup now, so an unguarded right-click would rate.
+    const { onChange, onClear, slider } = setup();
+    fireEvent.pointerDown(slider, { clientX: xFor(4), pointerId: 1, pointerType: "mouse", button: 2 });
+    fireEvent.pointerUp(slider, { clientX: xFor(4), pointerId: 1, pointerType: "mouse", button: 2 });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onClear).not.toHaveBeenCalled();
   });
 });

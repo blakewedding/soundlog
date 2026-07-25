@@ -81,16 +81,29 @@ export function StarRatingInput({
    * actually rendered. See lib/starGeometry — deriving it from the row width
    * instead drifted by half a star once the boxes started flexing.
    */
-  function stepFromClientX(clientX: number): number | null {
-    return stepFromX(boxesFromElements(cellRefs.current), clientX);
+  function stepFromClientX(clientX: number, opts?: { clampLeft?: boolean }): number | null {
+    return stepFromX(boxesFromElements(cellRefs.current), clientX, opts);
   }
 
   function onPointerDown(e: React.PointerEvent) {
     if (disabled) return;
+    // Primary button/contact only — with the commit now living on pointerup
+    // (below), an unguarded right-click would rate. Touch and pen report 0.
+    if (e.button !== 0) return;
     pressX.current = e.clientX;
     isDragging.current = false;
     // Capture so the drag keeps tracking after the finger leaves the row, and
     // so pointerup lands here rather than on whatever is underneath.
+    //
+    // Capture has a second effect, and it is the reason the TAP commit lives in
+    // endPress rather than in the hit zones: per the Pointer Events spec the
+    // subsequent `click` is dispatched to the CAPTURING element, not the
+    // element under the cursor, and current Chromium and Safari implement
+    // that. The zones' onClick therefore never fires for a click that began
+    // with this pointerdown — which shipped as "hover previews, click commits
+    // nothing" in production, silently, because no code ran at all. The zones
+    // remain for activations that arrive WITHOUT a pointerdown: assistive
+    // tech's synthetic clicks, and jsdom's.
     e.currentTarget.setPointerCapture?.(e.pointerId);
   }
 
@@ -123,17 +136,34 @@ export function StarRatingInput({
     pressX.current = null;
     isDragging.current = false;
 
-    if (commitIt && wasDragging) {
-      const step = stepFromClientX(e.clientX) ?? hover;
-      swallowNextClick.current = true;
+    if (!commitIt) {
       setHover(null);
-      if (step !== null) commit(step);
       return;
     }
-    // A tap: leave it to the hit zone's click handler, which is also what a
-    // mouse click and a keyboard-driven click go through.
-    if (!wasDragging) return;
-    setHover(null);
+
+    // BOTH gestures commit here, resolved through the same rendered-box
+    // geometry. The tap used to be left to the hit zone's click handler — but
+    // the pointer capture taken in onPointerDown retargets that click to the
+    // row (see the comment there), so in current browsers the zone handler
+    // never ran and a plain click committed nothing. The pointerup is the one
+    // event this element is guaranteed to receive for every gesture that
+    // began on it, so it is where every pointer-driven commit belongs.
+    // Drags keep the left-edge clamp (sliding off the edge pins at 0.5); a tap
+    // that resolved outside the boxes resolved nothing.
+    const step = wasDragging
+      ? (stepFromClientX(e.clientX) ?? hover)
+      : stepFromClientX(e.clientX, { clampLeft: false });
+    if (wasDragging) setHover(null);
+    if (step !== null) {
+      // Whatever the browser targets the follow-up click at — the row under
+      // capture retargeting, the zone without — it is the same gesture, and it
+      // must not commit twice. Armed ONLY when this pointerup committed: a
+      // pointerup that resolved nothing (released off the stars, or an
+      // environment whose zones report no geometry) must leave a following
+      // zone click free to commit on its own.
+      swallowNextClick.current = true;
+      commit(step);
+    }
   }
 
   function onPointerUp(e: React.PointerEvent) {
@@ -151,7 +181,18 @@ export function StarRatingInput({
       swallowNextClick.current = false;
       return;
     }
+    // Reached only by a click with no preceding pointerdown on the row — the
+    // assistive-tech path (and jsdom's). Real pointers committed on pointerup.
     commit(step);
+  }
+
+  function onRowClick() {
+    // The click a capture-retargeting browser aims at the row instead of the
+    // zone. The gesture already committed on pointerup; this only retires the
+    // swallow flag so it cannot linger and eat a FUTURE zone click. Runs in the
+    // bubble phase, so when the click did reach a zone, the zone consumed the
+    // flag first and this is a no-op.
+    swallowNextClick.current = false;
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -183,6 +224,7 @@ export function StarRatingInput({
       aria-valuetext={value ? `${value} out of 5` : "Not rated"}
       tabIndex={disabled ? -1 : 0}
       onKeyDown={onKeyDown}
+      onClick={onRowClick}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

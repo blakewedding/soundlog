@@ -216,13 +216,29 @@ export default function Release() {
           )}
 
           {user && (
-            <div className="card rating-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: 12 }}>
+            <div className="card rating-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, flexWrap: "wrap" }}>
               <span className="meta">Your rating</span>
               <StarRatingInput
                 value={release.myRating ?? null}
                 onChange={rate}
                 onClear={unrate}
               />
+              {/* §6: the rollback alone is invisible — the stars quietly return
+                  to their old value, which reads as "my click did nothing".
+                  That exact ambiguity is what made a dead click handler
+                  indistinguishable from a failing network for half a day in
+                  production. A failed write says so, out loud, with a retry. */}
+              {ratingMutation.isError && (
+                <span className="meta" role="alert" style={{ color: "var(--danger)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  Rating didn't save.
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => ratingMutation.mutate(ratingMutation.variables ?? null)}
+                  >
+                    Retry
+                  </button>
+                </span>
+              )}
             </div>
           )}
 

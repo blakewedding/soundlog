@@ -43,13 +43,19 @@ export interface StarBox {
  * because those zones ARE the left and right halves of these same boxes — so a
  * tap and a drag release on the same pixel can never disagree.
  */
-export function stepFromX(boxes: StarBox[], x: number): number | null {
+export function stepFromX(
+  boxes: StarBox[],
+  x: number,
+  { clampLeft = true }: { clampLeft?: boolean } = {}
+): number | null {
   if (boxes.length !== 5) return null;
   if (boxes.some((b) => b.width <= 0)) return null;
 
-  // Before the first star — clamp to the lowest rating rather than nothing, so
-  // dragging off the left edge pins at 0.5 instead of going dead.
-  if (x < boxes[0].left) return 0.5;
+  // Before the first star — for a DRAG, clamp to the lowest rating rather than
+  // nothing, so sliding off the left edge pins at 0.5 instead of going dead.
+  // A TAP passes clampLeft: false: a discrete press that landed outside the
+  // boxes resolved nothing and must say so, not quietly rate half a star.
+  if (x < boxes[0].left) return clampLeft ? 0.5 : null;
 
   for (let i = 0; i < boxes.length; i++) {
     const box = boxes[i];
