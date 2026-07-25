@@ -819,6 +819,67 @@ any input (the 16px field sizing works), and the **three-row 380px nav feels goo
 under a thumb** — so the disclosure-menu rework stays a Phase 7 nicety, not a
 defect.
 
+## RESOLVED — day-one production bug: rating clicks committed nothing
+
+**Reported by Blake on launch morning (2026-07-25), fixed and deployed the same
+session (`6b9812d`).** The first bug a real user hit, and it was the founding
+feature.
+
+**Symptom:** hover previewed correctly, a clean click committed nothing — no
+request, no error, no console output. Any release, desktop, logged in.
+Logout/login did not help.
+
+**What the evidence ruled out, in order.** The nginx access log showed the
+"failing" morning PUTs actually **arrived and returned 200**, and the database
+had the rows — server, Varnish, TLS and Cloudflare all exonerated in two
+commands. The user's request trail then showed the real shape: after a certain
+point, clicks produced **no request at all**. A fresh account in a real browser
+reproduced it instantly, and a capture-phase click listener produced the
+verdict in one line: the click's target was the **row**, and the hit zone under
+the cursor was not even in `composedPath()`.
+
+**Root cause:** `onPointerDown` takes pointer capture (the drag path needs it),
+and per the Pointer Events spec the follow-up `click` is dispatched to the
+**capturing element**, not the element under the cursor. Current Chromium and
+Safari implement that. The entire tap path lived in the zones' `onClick`, so a
+plain click ran no code at all. It ever looked healthy only because touch drags
+and press-drag mouse gestures commit on the row's own `pointerup` — the
+founding journey rode that path, as did the morning ratings that "failed"
+visibly but were in fact micro-drags that landed.
+
+**Fix:** every pointer gesture — tap and drag — now commits in `endPress` on
+`pointerup`, resolved through the same rendered-box geometry, so a tap and a
+drag release on the same pixel cannot disagree. Zone `onClick` remains solely
+for activations that arrive without a pointerdown (assistive tech). The
+trailing click of a committed gesture is swallowed wherever the browser targets
+it; the swallow flag arms only on an actual commit so it can never eat a later
+activation. Taps do not inherit the drag's left-edge 0.5 clamp; secondary
+buttons are ignored. Alongside, the §6 gap: the rating mutation rolled back on
+error but showed nothing — it now shows "Rating didn't save" with a Retry.
+
+**Flagged test-contract change:** the test "still treats a press without
+movement as a tap" asserted the press committed nothing and deferred to the
+zone click — *the broken contract itself*. Inverted, plus eight new tests that
+dispatch the click sequences of both browser generations explicitly, since
+jsdom models neither capture nor retargeting.
+
+**The laws this leaves behind:**
+- **A hit target that only a `click` event serves is dead under pointer
+  capture.** If a control takes capture for drags, its taps must commit from
+  `pointerup` too.
+- **"No error anywhere" is itself a symptom class** — it distinguishes a dead
+  handler from a failing one. A dead handler produces no network, no console,
+  no rollback; only the server logs' *silence* shows it.
+- **A green suite said nothing here.** jsdom fires `onClick` on children
+  directly; it cannot see what browsers do to that event. Browser-contract
+  behaviour must be encoded as explicit event sequences.
+
+Verified live on production: a hover-confirmed clean click committed, the PUT
+crossed Cloudflare → nginx → Varnish → backend as 200, the row persisted, and
+a second click on the same star cleared it. Throwaway accounts purged from both
+stores after; the users table holds exactly the real members. The full
+workflow is documented in the README under **Debugging a production incident**.
+
 ## Post-launch checklist
 
 Dated items that cannot be done at launch because they need elapsed time, a

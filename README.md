@@ -718,6 +718,50 @@ What it will NOT catch, and what to reach for instead:
 - **A full disk**, which usually shows up as failing writes long before health
   fails. `df -h` is in the runbook above for a reason.
 
+### Debugging a production incident
+
+The workflow that cracked the first one (the dead rating click, 2026-07-25),
+written down because the ORDER is what made it fast. Each step either exonerates
+a whole layer or hands the next step a sharper question.
+
+1. **Server logs before theories.** The first question is never "what could
+   cause this" — it is "did the request arrive, and what did it return".
+   `sudo grep "PUT /api/ratings" /var/log/nginx/access.log` answered in one
+   line what hours of proxy-layer speculation could not: the "failing" writes
+   were arriving and returning 200. That inverted the whole investigation
+   before it started.
+2. **Check persistence next.** A 200 in the log and a row in the database
+   together exonerate the entire server side. `dc exec -T postgres psql` and
+   look. At that point the bug lives in the client, full stop.
+3. **Read the user's request trail.** Filter the access log by their UA around
+   the failure window. Absence is evidence: for us the trail showed *zero*
+   rating requests after a certain point — the click was producing no request
+   at all, which is a dead handler, not a failed one.
+4. **Reproduce with a fresh account in a real browser** — never only jsdom,
+   and never only your own long-lived session. A fresh account separates
+   "account state" from "code". Register a throwaway on an RFC 2606 email
+   (`@local.test`) so the fixture purge can reclaim it.
+5. **Instrument the page, then perform the gesture.** A capture-phase listener
+   that records `event.target` and `composedPath()` told us in one click that
+   the browser was dispatching the click to the pointer-capturing row, not the
+   hit zone under the cursor. Read state off the DOM (`data-fill`,
+   `aria-valuenow`) rather than eyeballing pixels.
+6. **Trust the raw artifact over any instrument.** Twice now the "broken thing"
+   was the reading: a backup verifier that piped a seekable-only archive, and a
+   mail connector that mis-decoded quoted-printable. When a value looks
+   corrupt, fetch the rawest form of it before acting.
+7. **Fix the class, then encode the browser behaviour in a test.** jsdom does
+   not model pointer-capture click retargeting, so the regression tests
+   dispatch the event sequences of both browser generations explicitly. A test
+   that only fires `onClick` on a child is a test of React's plumbing, not of
+   the browser contract.
+
+Two standing cautions from the same incident: a green suite is not evidence a
+gesture works (jsdom has no capture semantics, no layout, no real clicks), and
+a *silent* failure in a mutation is a §6 violation even when the code path that
+failed is one no error handler could see — the fix must add a visible failure
+state, not just repair the handler.
+
 ### Throwaway accounts from verification
 
 `verify-prod-stack.sh` registers two accounts and writes a rating and a review.
