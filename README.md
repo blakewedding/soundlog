@@ -762,6 +762,56 @@ a *silent* failure in a mutation is a §6 violation even when the code path that
 failed is one no error handler could see — the fix must add a visible failure
 state, not just repair the handler.
 
+### Web analytics
+
+Cloudflare Web Analytics, served **from our own markup** (`apps/web/index.html`)
+rather than injected at the edge. Auto-injection is disabled: it made the edge
+rewrite every HTML response, and the one script we shipped was invisible to
+anyone reading the source.
+
+The `data-cf-beacon` token is a **public site identifier, not a credential** —
+Cloudflare puts it in the markup of every page it serves. §7 governs secrets;
+this is not one.
+
+Three details that are easy to get wrong and fail *silently*:
+
+- **The attribute is single-quoted.** Its value is a JSON document. Double-quote
+  it and the inner quotes need escaping; get that wrong and the beacon loads,
+  reads an empty token, and reports nothing while View Source looks fine. This
+  bit once, via Vite's `transformIndexHtml` `attrs` map, which serializes values
+  with `JSON.stringify` and so double-encoded the JSON.
+- **`defer`, and a classic script — not `type="module"`.** `beacon.min.js` is
+  not an ES module; module loading would impose CORS-mode fetching and module
+  scope on it.
+- **The `src` is unversioned.** Edge injection pins a `/v<hash>` build and
+  rotates that hash. A pinned copy here would quietly serve a stale beacon.
+
+**CSP.** No CSP governs the SPA document today: `helmet()` is mounted on the
+Express app, which serves only `/api/*`, and CSP is enforced **per-document** —
+a CSP header on a JSON response governs nothing about the page that fetched it.
+The SPA is served by nginx with no CSP. So nothing needed changing for the
+beacon.
+
+If a document CSP is ever added (worth doing), the beacon needs **two different
+hostnames**, which is the trap:
+
+```
+script-src  https://static.cloudflareinsights.com   # where the script is fetched
+connect-src https://cloudflareinsights.com          # where it REPORTS (no "static.")
+```
+
+Verified empirically, not from memory: the loaded beacon issues its reporting
+request to `https://cloudflareinsights.com/cdn-cgi/rum`. Allowing only the
+`static.` host would load the script and then silently drop every measurement.
+
+To confirm the snippet is the one serving (and that the edge is not also
+injecting its own), compare the origin against what a visitor gets — ours is
+unversioned, the injected one carries `/v<hash>`:
+
+```bash
+ssh soundlog-prod 'curl -sS http://127.0.0.1:8090/ | grep -o "beacon.min.js[^\"]*"'
+```
+
 ### Throwaway accounts from verification
 
 `verify-prod-stack.sh` registers two accounts and writes a rating and a review.
