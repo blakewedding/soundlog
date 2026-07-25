@@ -1,8 +1,57 @@
 /// <reference types="vitest/config" />
 import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
-import type { ProxyOptions } from "vite";
+import type { Plugin, ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
+
+/**
+ * Cloudflare Web Analytics, in our own markup instead of injected at the edge.
+ *
+ * Cloudflare can add this script itself, but that means the edge parses and
+ * rewrites every HTML response, and the one script we serve that isn't in the
+ * repo is invisible to anyone reading the source. In source it is reviewable,
+ * versioned, and survives a change of CDN.
+ *
+ * THE TOKEN IS NOT A SECRET. It is a public site identifier — Cloudflare ships
+ * it in the markup of every page it serves, so it is readable by anyone with
+ * View Source. §7 governs credentials; this is not one, and putting it in .env
+ * would imply a confidentiality it does not have.
+ *
+ * `apply: "build"` is load-bearing: a dev server that loaded the beacon would
+ * report localhost page views into the production analytics and add a
+ * third-party request to every hot reload.
+ *
+ * The src is deliberately UNVERSIONED. Edge injection points at a pinned
+ * `/v<hash>` build and rotates that hash; a pinned copy in our HTML would
+ * quietly serve a stale beacon that nobody remembers to bump.
+ */
+function cloudflareAnalytics(): Plugin {
+  const token = "3fcb36cb89124455b95b7900e9d9cafd";
+
+  // Raw markup, NOT transformIndexHtml's `attrs` map. Vite serializes those
+  // values with JSON.stringify, and `data-cf-beacon` is itself a JSON document,
+  // so passing it there double-encodes it:
+  //
+  //     data-cf-beacon="{\"token\":\"3fcb…\"}"
+  //
+  // An HTML parser ends that attribute at the first inner quote, so the beacon
+  // loads, finds no token, and reports nothing — while View Source looks
+  // roughly right. Single-quoting the attribute (Cloudflare's own documented
+  // form) keeps the JSON's double quotes intact with no escaping at all.
+  const snippet =
+    `<script defer src="https://static.cloudflareinsights.com/beacon.min.js" ` +
+    `data-cf-beacon='{"token": "${token}"}'></script>`;
+
+  return {
+    name: "soundlog-cloudflare-analytics",
+    apply: "build",
+    transformIndexHtml(html) {
+      // Last thing before </body> and deferred, so analytics can never delay
+      // first paint or the app bundle.
+      return html.replace("</body>", `    ${snippet}\n  </body>`);
+    },
+  };
+}
 
 /**
  * The commit the running bundle was built from, stamped in at config load.
@@ -43,7 +92,7 @@ const apiProxy: ProxyOptions = {
 };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), cloudflareAnalytics()],
   define: {
     // Read at config load, so restarting the dev server re-stamps it.
     __BUILD_STAMP__: JSON.stringify(buildStamp()),
