@@ -205,7 +205,11 @@ function RatingCard({ rating }: { rating: ProfileRating }) {
   return (
     <div>
       <Link to={`/release/${rating.release.id}`} className="card-link">
-        <CoverImage src={rating.release.coverUrl} alt={`${rating.release.title} cover`} />
+        <CoverImage
+          src={rating.release.coverUrl}
+          color={rating.release.coverColor}
+          alt={`${rating.release.title} cover`}
+        />
         <strong style={{ fontSize: 14, display: "block", marginTop: 8 }}>{rating.release.title}</strong>
       </Link>
       <div className="meta">{rating.release.artistName}</div>
@@ -256,7 +260,12 @@ function DiaryTab({ username }: { username: string }) {
             {new Date(l.listenedAt).toLocaleDateString()}
           </span>
           <div style={{ width: 40, flexShrink: 0 }}>
-            <CoverImage src={l.release.coverUrl} alt={`${l.release.title} cover`} />
+            <CoverImage
+              src={l.release.coverUrl}
+              color={l.release.coverColor}
+              size="row"
+              alt={`${l.release.title} cover`}
+            />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <Link to={`/release/${l.release.id}`} className="card-link">

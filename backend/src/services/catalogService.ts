@@ -10,6 +10,13 @@ import type { SourceCandidate, ReleaseDetail, SourceName } from "./sources/types
 import { dedupeMerge, candidateKey, normalizeText, stripArtistDisambiguation } from "./catalog/merge.js";
 import { toSecureCovers, toSecureUrl } from "./coverUrl.js";
 import {
+  COVER_LARGE_WIDTH,
+  COVER_THUMB_WIDTH,
+  toProxiedCovers,
+  toProxiedUrl,
+} from "./coverProxy.js";
+import { sampleCoverTint } from "./coverTint.js";
+import {
   esSearchReleases,
   esSearchArtists,
   esSearchUsers,
@@ -47,6 +54,7 @@ export interface CatalogSearchResult {
   year?: string;
   type: ReleaseType;
   coverUrl?: string;
+  coverColor?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +72,7 @@ export async function searchCatalog(q: string, type?: string): Promise<CatalogSe
     year: h.year,
     type: h.type,
     coverUrl: h.coverUrl,
+    coverColor: h.coverColor,
   }));
 
   if (seeded.length >= THIN_RESULTS) return seededResults;
@@ -348,15 +357,26 @@ async function enrichNewRelease(
         if (!release.spotifyId && match.spotifyId) data.spotifyId = match.spotifyId;
         if (match.coverUrl && preferSpotifyCover(covers.thumb, match.coverWidth)) {
           // Spotify overrides the resolved cover after resolveCovers has already
-          // normalized, so it needs securing on the way in too.
-          const secure = toSecureUrl(match.coverUrl);
-          covers.thumb = secure;
-          covers.large ??= secure;
+          // normalized, so it needs securing AND proxying on the way in too.
+          const stored = toProxiedUrl(toSecureUrl(match.coverUrl), COVER_THUMB_WIDTH);
+          covers.thumb = stored;
+          covers.large ??= toProxiedUrl(stored, COVER_LARGE_WIDTH);
         }
       }
     }
     if (covers.thumb) data.coverUrl = covers.thumb;
     if (covers.large) data.coverUrlLarge = covers.large;
+  });
+
+  // Its own stage, not a tail of "covers": a tint that can't be sampled must
+  // never cost us the URLs the stage above just resolved. Sampling also warms
+  // the w400 rendition on disk, so the visitor whose click seeded this release
+  // gets a cache hit for the cover they are about to load.
+  await attempt("cover-tint", async () => {
+    const cover = (data.coverUrl as string | undefined) ?? release.coverUrl;
+    if (!cover) return;
+    const color = await sampleCoverTint(cover);
+    if (color) data.coverColor = color;
   });
 
   await attempt("artist", async () => {
@@ -591,12 +611,32 @@ async function enrichExisting(
     } else if (!existing.coverUrlLarge) {
       const effectiveMbid = mbid ?? existing.musicbrainzId;
       const caa = effectiveMbid ? await getCoverArtUrls(effectiveMbid) : null;
-      // `existing.coverUrl` may predate normalization, so secure it here too.
-      const large = toSecureUrl(caa?.large ?? detail.coverUrl ?? existing.coverUrl);
+      // `existing.coverUrl` may predate normalization, so secure it here too —
+      // and it may already be proxied at the thumb width, which toProxiedUrl
+      // re-emits at the large width rather than wrapping twice.
+      const large = toProxiedUrl(
+        toSecureUrl(caa?.large ?? detail.coverUrl ?? existing.coverUrl),
+        COVER_LARGE_WIDTH
+      );
       if (large) data.coverUrlLarge = large;
     }
   } catch (err) {
     console.warn(`[catalog] cover-art heal skipped for ${existing.id}:`, (err as Error).message);
+  }
+
+  // Backfill the tint for rows seeded before it existed. Additive and
+  // fault-isolated: on any failure the column stays null and the client falls
+  // back to browser-side extraction, exactly as it did before 6.1.
+  if (!existing.coverColor) {
+    try {
+      const cover = (data.coverUrl as string | undefined) ?? existing.coverUrl;
+      if (cover) {
+        const color = await sampleCoverTint(cover);
+        if (color) data.coverColor = color;
+      }
+    } catch (err) {
+      console.warn(`[catalog] cover tint skipped for ${existing.id}:`, (err as Error).message);
+    }
   }
 
   if (Object.keys(data).length === 0) return existing;
@@ -607,16 +647,19 @@ async function enrichExisting(
 }
 
 /**
- * Every cover source funnels through here, and every return is normalized to
- * HTTPS at this single exit — so a source added later cannot reintroduce a
- * cleartext URL by forgetting to call the helper. See coverUrl.ts for why
- * this is a rewrite and never a reachability check.
+ * Every cover source funnels through here, and every return is normalized at
+ * this single exit — HTTPS first, then rewritten to its proxied `/covers/…`
+ * form — so a source added later cannot reintroduce a cleartext URL, or a
+ * browser-direct third-party one, by forgetting to call a helper.
+ *
+ * See coverUrl.ts for why the scheme step is a rewrite and never a reachability
+ * check, and coverProxy.ts for why the proxied form encodes its upstream URL.
  */
 async function resolveCovers(
   detail: ReleaseDetail,
   mbid: string | null
 ): Promise<{ thumb: string | null; large: string | null }> {
-  return toSecureCovers(await resolveCoversFromSources(detail, mbid));
+  return toProxiedCovers(toSecureCovers(await resolveCoversFromSources(detail, mbid)));
 }
 
 async function resolveCoversFromSources(
@@ -1005,6 +1048,7 @@ export async function getRecentReleases(limit = 12) {
     year: r.releaseDate?.toISOString().slice(0, 4) ?? null,
     genres: r.genres,
     coverUrl: r.coverUrl,
+    coverColor: r.coverColor,
     type: r.type,
   }));
 }
@@ -1061,6 +1105,7 @@ export async function toReleaseDTO(release: Release, userId?: string) {
     genres: release.genres,
     coverUrl: release.coverUrl,
     coverUrlLarge: release.coverUrlLarge,
+    coverColor: release.coverColor,
     type: release.type,
     trackCount: release.trackCount,
     musicbrainzId: release.musicbrainzId,

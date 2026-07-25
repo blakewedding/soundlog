@@ -20,7 +20,7 @@ export function ReleaseCard({ release }: { release: ReleaseListItem }) {
         onMouseEnter={() => prefetch(release.id)}
         onFocus={() => prefetch(release.id)}
       >
-        <CoverImage src={release.coverUrl} alt={`${release.title} cover`} />
+        <CoverImage src={release.coverUrl} color={release.coverColor} alt={`${release.title} cover`} />
         <strong style={{ fontSize: 14, lineHeight: 1.3, display: "block", marginTop: 8 }}>
           {release.title}
         </strong>

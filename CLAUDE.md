@@ -103,9 +103,19 @@ access token silently failed every write.
 ## 7. Third-party access
 
 - All third-party calls go **through the backend**. The client never calls
-  MusicBrainz/Discogs/Last.fm/Spotify directly.
-  (Exception, by design: `<img>` straight to the Cover Art Archive — no
-  credentials, browser-native lazy loading.)
+  MusicBrainz/Discogs/Last.fm/Spotify directly — **including images**. The
+  `<img>`-straight-to-the-Cover-Art-Archive exception was closed in 6.1: artwork
+  is fetched, resized and re-encoded by `/covers/w<width>/<encoded>.webp` and
+  served from our own origin (`coverProxy.ts`, `coverCache.ts`).
+
+  What the exception cost while it stood: a 2,254,558-byte JPEG original painted
+  into a 140px grid tile, two redirects into an Internet Archive node, a
+  1.8–2.4s TTFB, and a hostname Cloudflare could not cache on our behalf.
+
+  A cover URL is stored in its proxied form and **encodes its upstream URL**, so
+  the heal and the rollback are pure string transforms with no network call —
+  the same §1 discipline as the https rewrite. The proxy accepts only
+  allowlisted artwork hosts and a fixed set of widths; anything else is a 404.
 - **MusicBrainz: one shared 1 req/s throttle**, process-wide. Retries ride the
   same gate. A descriptive `User-Agent` is mandatory.
 - Discovery calls (search, fuzzy match) get **one attempt** and degrade to
@@ -122,6 +132,8 @@ One component per concept, interactive wherever it mounts:
 - `ReviewCard` — like/comment work on every surface, not just the release page.
 - `ArtistCredit` — the only way an artist name is rendered; never dead text.
 - `CoverImage`, `StarRating` / `StarRatingInput`, `ChartList`.
+  `CoverImage` takes a `size` prop (`row` / `grid` / `hero`) that selects the
+  proxied rendition — never hand-build a cover URL at a call site.
 
 Before writing a new component, check whether an existing one should be extended
 (add a prop) instead. Two controls on one page must not share an accessible name.

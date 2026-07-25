@@ -32,6 +32,7 @@ export interface EsReleaseHit {
   type: ReleaseType;
   year?: string;
   coverUrl?: string;
+  coverColor?: string;
 }
 
 /** Index (or re-index) a Release. Never throws — a search hiccup mustn't fail a write. */
@@ -48,6 +49,7 @@ export async function indexRelease(release: Release): Promise<void> {
         genres: release.genres,
         releaseDate: release.releaseDate ?? undefined,
         coverUrl: release.coverUrl ?? undefined,
+        coverColor: release.coverColor ?? undefined,
       },
     });
   } catch (err) {
@@ -95,6 +97,7 @@ interface EsSource {
   type: ReleaseType;
   releaseDate?: string;
   coverUrl?: string;
+  coverColor?: string;
 }
 
 /** Search already-seeded releases in Elasticsearch. Returns [] if ES is down. */
@@ -120,6 +123,7 @@ export async function esSearchReleases(q: string, type?: string): Promise<EsRele
         type: src.type,
         year: src.releaseDate?.slice(0, 4) || undefined,
         coverUrl: src.coverUrl,
+        coverColor: src.coverColor,
       };
     });
   } catch (err) {

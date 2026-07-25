@@ -135,6 +135,8 @@ export default function Release() {
         <div style={{ width: 240, display: "flex", flexDirection: "column", gap: 12 }}>
           <CoverImage
             src={release.coverUrl}
+            color={release.coverColor}
+            size="hero"
             alt={`${release.title} cover`}
             zoomable={Boolean(largeCover)}
             onClick={() => largeCover && setLightboxOpen(true)}
@@ -288,6 +290,7 @@ export default function Release() {
                   title: release.title,
                   artistName: release.artistName,
                   coverUrl: release.coverUrl,
+                  coverColor: release.coverColor,
                 },
               } satisfies FeedReview
             }

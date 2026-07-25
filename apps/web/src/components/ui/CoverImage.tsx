@@ -1,9 +1,22 @@
 import { useEffect, useState } from "react";
-import { cachedCoverColor, extractCoverColor } from "../../lib/coverColor";
+import { cachedCoverColor, extractCoverColor, mutedTint } from "../../lib/coverColor";
+import { coverSources, type CoverSize } from "../../lib/coverVariant";
 
 interface Props {
   src?: string | null;
   alt: string;
+  /**
+   * Which rendered size this mount is. Picks the proxied rendition (and its 2x)
+   * rather than downloading a 400px image for a 40px thumbnail — see
+   * lib/coverVariant.ts. Defaults to the grid tile, the most common surface.
+   */
+  size?: CoverSize;
+  /**
+   * The artwork's dominant colour as `#rrggbb`, from `release.coverColor`. When
+   * present the tile is tinted on its FIRST paint, with no canvas read and no
+   * localStorage round-trip.
+   */
+  color?: string | null;
   zoomable?: boolean;
   onClick?: () => void;
 }
@@ -14,36 +27,58 @@ interface Props {
  * seed-on-first-access covers arrive late, and this makes the wait read as
  * loading rather than breakage.
  *
- * The tint falls back to the flat --ink-2 tile whenever a colour isn't known:
- * the first time a cover is seen, when the host refuses a cross-origin pixel
- * read, or when artwork 404s. Colour extraction is supplemental and is never
- * allowed to affect whether the real image loads.
+ * Two sources of that tint, in order of preference:
+ *
+ *  1. `color`, sampled server-side and delivered with the release. Available on
+ *     the first paint of a cover nobody has ever seen, which is the view that
+ *     needs it most.
+ *  2. Browser-side extraction, the 5.5 path, for rows the server has not sampled
+ *     (seeded before 6.1, or artwork it could not read).
+ *
+ * When (1) is present, (2) is not run at all: two algorithms sampling the same
+ * artwork would disagree slightly, and the tile would visibly change colour
+ * mid-load for no reason a viewer could interpret.
+ *
+ * The tint falls back to the flat --ink-2 tile whenever no colour is known.
+ * Colour is supplemental and is never allowed to affect whether the real image
+ * loads.
  *
  * Non-square artwork (cassette J-card spreads, gatefold scans) letterboxes
  * inside the tile instead of being center-cropped into an unrecognizable
  * smear by object-fit: cover.
  */
-export function CoverImage({ src, alt, zoomable, onClick }: Props) {
+export function CoverImage({ src, alt, size = "grid", color, zoomable, onClick }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [letterbox, setLetterbox] = useState(false);
   // Seeded synchronously so a known colour is present on the very first paint
   // rather than flashing --ink-2 for a frame.
-  const [tint, setTint] = useState(() => cachedCoverColor(src));
+  const [tint, setTint] = useState(() => mutedTint(color) ?? cachedCoverColor(src));
+
+  const served = coverSources(src, size);
 
   useEffect(() => {
+    const fromServer = mutedTint(color);
+    if (fromServer) {
+      setTint(fromServer);
+      return;
+    }
+
     setTint(cachedCoverColor(src));
     if (!src) return;
 
     let active = true;
-    extractCoverColor(src).then((color) => {
+    // Extraction reads the rendition the browser is already fetching, so it
+    // costs no extra request — and being same-origin now, the canvas read no
+    // longer depends on a third party sending CORS headers.
+    extractCoverColor(served.src ?? src).then((extracted) => {
       // Guard against the src changing while extraction was in flight — a
       // recycled grid tile must never wear the previous release's colour.
-      if (active && color) setTint(color);
+      if (active && extracted) setTint(extracted);
     });
     return () => {
       active = false;
     };
-  }, [src]);
+  }, [src, color, served.src]);
 
   function handleLoad(e: React.SyntheticEvent<HTMLImageElement>) {
     const img = e.currentTarget;
@@ -56,7 +91,8 @@ export function CoverImage({ src, alt, zoomable, onClick }: Props) {
 
   const image = src && (
     <img
-      src={src}
+      src={served.src}
+      srcSet={served.srcSet}
       alt={onClick ? "" : alt}
       className={loaded ? undefined : "img-loading"}
       style={letterbox ? { objectFit: "contain" } : undefined}

@@ -80,6 +80,7 @@ async function ensureReleaseIndex(): Promise<void> {
         genres: { type: "keyword" },
         releaseDate: { type: "date" },
         coverUrl: { type: "keyword", index: false },
+        coverColor: { type: "keyword", index: false },
         avgRating: { type: "float" },
         ratingCount: { type: "integer" },
       },

@@ -90,6 +90,13 @@ export default defineConfig({
       // Server-side hop to the backend; the browser never sees this host, and
       // Express listens on all interfaces, so localhost is fine here.
       "/api": apiProxy,
+      // Cover art. Served by the backend outside /api because it is image bytes
+      // with a year-long immutable lifetime rather than JSON (see
+      // backend/src/routes/covers.ts) — which means it needs its own proxy entry
+      // here and its own location in infrastructure/docker/nginx.conf. Without
+      // one, the dev server answers /covers/… with index.html and every cover is
+      // a broken image.
+      "/covers": apiProxy,
     },
   },
 });

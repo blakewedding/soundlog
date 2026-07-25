@@ -277,7 +277,7 @@ function SearchResultCard({ result }: { result: CatalogSearchResult }) {
         onMouseEnter={() => prefetch(result.ref)}
         onFocus={() => prefetch(result.ref)}
       >
-        <CoverImage src={result.coverUrl} alt={`${result.title} cover`} />
+        <CoverImage src={result.coverUrl} color={result.coverColor} alt={`${result.title} cover`} />
         <strong style={{ fontSize: 14, lineHeight: 1.3, display: "block", marginTop: 8 }}>
           {result.title}
         </strong>

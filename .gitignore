@@ -13,5 +13,8 @@ build/
 !.env.production.example
 *.log
 coverage/
+# Re-encoded cover renditions (COVER_CACHE_DIR). Regenerable from the catalog's
+# stored URLs — never committed, never backed up.
+.cache/
 .DS_Store
 backend/prisma/migrations/dev/

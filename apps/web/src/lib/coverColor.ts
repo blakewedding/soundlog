@@ -23,10 +23,19 @@
 // 3. Results are cached in localStorage, including *negative* results, so a
 //    cover that can't be sampled is attempted once rather than on every render.
 //
-// Honest limitation: the first view of a cover has nothing cached, so the
-// placeholder only pays off on repeat views and on other surfaces showing the
-// same release. That is most views — grids, charts, diary, and profile all
-// reuse the same artwork.
+// The limitation this had until 6.1: the first view of a cover had nothing
+// cached, so the placeholder paid off only on repeat views — precisely the view
+// where the wait is longest was the view with no tint. The backend now samples
+// the dominant colour when it seeds a release and serves it as
+// `release.coverColor`, so the FIRST paint is tinted too (see
+// `backend/src/services/coverTint.ts`). Everything below is still the path for
+// rows seeded before that, and for any cover the server could not sample.
+//
+// `mutedTint` is the join between the two: the server stores a RAW `#rrggbb`
+// and the muting stays here, so the palette decision has one home. That matters
+// specifically because of the mistake documented in muteIntoPalette — a server
+// that had stored *muted* colours would have frozen the twelve-identical-greys
+// version of it into the database.
 
 const STORAGE_KEY = "soundlog:cover-colors";
 const MAX_ENTRIES = 400;
@@ -108,6 +117,22 @@ function muteIntoPalette(r: number, g: number, b: number): string {
 
   const [nr, ng, nb] = hslToRgb(h, mutedS, mutedL);
   return `rgb(${nr}, ${ng}, ${nb})`;
+}
+
+/**
+ * Mute a server-sampled `#rrggbb` into the palette — the same transform the
+ * browser-side extraction applies, so a tile looks identical whether its colour
+ * arrived in the payload or was sampled from the artwork.
+ *
+ * Returns null for anything that isn't a six-digit hex colour, which keeps a bad
+ * or truncated value in the database from putting arbitrary CSS on the page.
+ */
+export function mutedTint(hex: string | null | undefined): string | null {
+  if (typeof hex !== "string") return null;
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!match) return null;
+  const n = parseInt(match[1], 16);
+  return muteIntoPalette((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
 }
 
 /** @returns [h 0–1, s 0–1, l 0–1] */

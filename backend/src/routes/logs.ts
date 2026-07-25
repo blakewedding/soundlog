@@ -61,7 +61,16 @@ logsRouter.get("/me", requireAuth, async (req: AuthedRequest, res, next) => {
       orderBy: { listenedAt: "desc" },
       take: limit,
       include: {
-        release: { select: { id: true, title: true, artistName: true, coverUrl: true, type: true } },
+        release: {
+          select: {
+            id: true,
+            title: true,
+            artistName: true,
+            coverUrl: true,
+            coverColor: true,
+            type: true,
+          },
+        },
       },
     });
 

@@ -147,8 +147,12 @@ model Release {
   labelId      String? // primary label (first credit)
   releaseDate  DateTime?
   genres       String[]
-  coverUrl     String? // list/thumbnail size (CAA 500px)
-  coverUrlLarge String? // full-size original for the lightbox
+  coverUrl     String? // tile/thumbnail rendition, proxied (/covers/w400/…)
+  coverUrlLarge String? // lightbox rendition, proxied (/covers/w1200/…)
+  // Raw dominant colour of the artwork as #rrggbb, sampled server-side so the
+  // FIRST paint of a cover is tinted rather than a flat tile. Muting into the
+  // palette stays in the web client (see services/coverTint.ts for why).
+  coverColor   String?
   type         ReleaseType
   trackCount   Int?
   durationMs   Int?

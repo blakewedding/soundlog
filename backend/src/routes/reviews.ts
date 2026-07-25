@@ -116,7 +116,7 @@ reviewsRouter.get("/recent", optionalAuth, async (req: AuthedRequest, res, next)
       take: Math.min(Number(req.query.limit) || 10, 25),
       include: {
         user: publicUser,
-        release: { select: { id: true, title: true, artistName: true, coverUrl: true } },
+        release: { select: { id: true, title: true, artistName: true, coverUrl: true, coverColor: true } },
         _count: { select: { likes: true, comments: true } },
       },
     });

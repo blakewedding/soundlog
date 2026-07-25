@@ -41,7 +41,7 @@ export type ActivityType =
 export interface FeedReview {
   id: string;
   user: User;
-  release: { id: string; title: string; artistName: string; coverUrl?: string | null };
+  release: { id: string; title: string; artistName: string; coverUrl?: string | null; coverColor?: string | null };
   content: string;
   rating?: number | null;
   containsSpoilers: boolean;
@@ -59,7 +59,14 @@ export interface FeedItem {
   type: ActivityType;
   createdAt: string;
   user: User;
-  release?: { id: string; title: string; artistName: string; coverUrl?: string | null; type: ReleaseType } | null;
+  release?: {
+    id: string;
+    title: string;
+    artistName: string;
+    coverUrl?: string | null;
+    coverColor?: string | null;
+    type: ReleaseType;
+  } | null;
   rating?: number | null; // RATING → the value
   review?: FeedReview | null; // REVIEW → rendered via ReviewCard
   list?: { id: string; title: string; itemCount?: number } | null;
@@ -101,7 +108,9 @@ export interface Release {
   releaseDate?: string | null;
   genres: string[];
   coverUrl?: string | null;
-  coverUrlLarge?: string | null; // full-size original — lightbox only
+  coverUrlLarge?: string | null; // the lightbox rendition
+  /** Raw dominant colour (#rrggbb) for the placeholder tint; muted client-side. */
+  coverColor?: string | null;
   type: ReleaseType;
   trackCount?: number | null;
   spotifyId?: string | null;
@@ -123,6 +132,7 @@ export interface ReleaseListItem {
   year?: string | null;
   type: ReleaseType;
   coverUrl?: string | null;
+  coverColor?: string | null;
   genres?: string[];
 }
 
@@ -147,6 +157,7 @@ export interface CatalogSearchResult {
   year?: string | null;
   type: ReleaseType;
   coverUrl?: string | null;
+  coverColor?: string | null;
 }
 
 // A member (user) hit in search results.
@@ -209,6 +220,7 @@ export interface DiscographyEntry {
   releaseId?: string | null;
   seeded: boolean;
   coverUrl?: string | null;
+  coverColor?: string | null;
   avgRating?: number | null;
   ratingCount: number;
   myRating?: number | null;
@@ -249,6 +261,7 @@ export interface ChartEntry {
   year?: string | null;
   type: ReleaseType;
   coverUrl?: string | null;
+  coverColor?: string | null;
   genres: string[];
   avgRating?: number | null;
   ratingCount: number;

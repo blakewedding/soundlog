@@ -25,6 +25,7 @@ labelsRouter.get("/:id", async (req, res, next) => {
         year: r.releaseDate?.toISOString().slice(0, 4) ?? null,
         type: r.type,
         coverUrl: r.coverUrl,
+        coverColor: r.coverColor,
         genres: r.genres,
       })),
     });

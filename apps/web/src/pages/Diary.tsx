@@ -114,7 +114,12 @@ function DiaryRow({ entry, onChanged }: { entry: DiaryEntry; onChanged: () => vo
     <div className="card" style={{ display: "flex", gap: 12, alignItems: "center", padding: 10 }}>
       <span className="meta" style={{ minWidth: 64 }}>{day}</span>
       <div style={{ width: 48, flexShrink: 0 }}>
-        <CoverImage src={entry.release.coverUrl} alt={`${entry.release.title} cover`} />
+        <CoverImage
+          src={entry.release.coverUrl}
+          color={entry.release.coverColor}
+          size="row"
+          alt={`${entry.release.title} cover`}
+        />
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <Link to={`/release/${entry.release.id}`} className="card-link">

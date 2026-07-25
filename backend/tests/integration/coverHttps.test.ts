@@ -8,12 +8,29 @@
 //
 // This drives the real seed path (`/api/releases/mb:<id>` → persistRelease) and
 // pins the row that comes out of it.
+//
+// CONTRACT CHANGE, Phase 6.1: the persisted value is no longer the upstream URL
+// itself but its proxied form, `/covers/w<width>/<base64url(upstream)>.webp`.
+// The guarantee these tests exist for is unchanged and is still asserted — the
+// stored URL must resolve to the same artwork over https — it is just asserted
+// through the decode now. Nothing here was relaxed to make the suite pass; the
+// third case (no cleartext image URL in the payload) is untouched and still
+// passes as written.
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { deleteReleaseEverywhere } from "../../src/services/catalogService.js";
+import {
+  COVER_LARGE_WIDTH,
+  COVER_THUMB_WIDTH,
+  decodeProxiedCoverPath,
+} from "../../src/services/coverProxy.js";
+
+/** The upstream URL a stored (proxied) cover URL points at. */
+const decoded = (stored: string | null) =>
+  (stored && decodeProxiedCoverPath(stored)?.upstreamUrl) ?? stored;
 
 const app = createApp();
 const RUN = Date.now().toString(36);
@@ -112,15 +129,25 @@ describe("cover URLs are persisted https-only", () => {
     expect(res.status).toBe(200);
 
     const row = await waitForCover();
-    expect(row.coverUrl).toBe(`https://coverartarchive.org/release/${MBID}/500.jpg`);
-    expect(row.coverUrlLarge).toBe(`https://coverartarchive.org/release/${MBID}/1200.jpg`);
+    // Since 6.1 the persisted value is the PROXIED form, so the https guarantee
+    // is asserted where the upstream URL now lives: inside it. Decoding is a
+    // pure string transform (coverProxy.ts), which is exactly why the heal and
+    // the rollback need no network call either.
+    expect(decoded(row.coverUrl)).toBe(`https://coverartarchive.org/release/${MBID}/500.jpg`);
+    expect(decoded(row.coverUrlLarge)).toBe(`https://coverartarchive.org/release/${MBID}/1200.jpg`);
   });
 
   it("keeps the same artwork — a scheme rewrite, not a different image", async () => {
     const row = await waitForCover();
     // Host, path and filename are untouched; only the scheme moved.
-    expect(row.coverUrl).toContain(`coverartarchive.org/release/${MBID}/500.jpg`);
-    expect(row.coverUrlLarge).toContain(`coverartarchive.org/release/${MBID}/1200.jpg`);
+    expect(decoded(row.coverUrl)).toContain(`coverartarchive.org/release/${MBID}/500.jpg`);
+    expect(decoded(row.coverUrlLarge)).toContain(`coverartarchive.org/release/${MBID}/1200.jpg`);
+  });
+
+  it("persists the proxied form, at the width each surface uses", async () => {
+    const row = await waitForCover();
+    expect(row.coverUrl?.startsWith(`/covers/w${COVER_THUMB_WIDTH}/`)).toBe(true);
+    expect(row.coverUrlLarge?.startsWith(`/covers/w${COVER_LARGE_WIDTH}/`)).toBe(true);
   });
 
   it("serves no cleartext image URL in the API payload", async () => {

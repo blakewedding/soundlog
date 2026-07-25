@@ -615,6 +615,22 @@ dc exec -T postgres pg_restore -U soundlog -d soundlog --clean --if-exists \
 dc start backend
 ```
 
+The **cover cache is not backed up either**, for the same reason and by the same
+rule. `prod_covercache` (mounted at `/var/cache/soundlog/covers`) holds WebP
+renditions re-encoded from artwork whose URLs live in `Release.coverUrl` — which
+`pg_dump` already captures. Every byte in it is regenerable by asking for the
+cover again, so putting images in the dumps would inflate them for nothing.
+
+It is bounded by `COVER_CACHE_MAX_BYTES` (default 1 GiB) and swept
+least-recently-used once it passes that, so it cannot grow into the disk
+Postgres is on. Deleting it is always safe; the only cost is that the next
+request for each cover re-fetches from the Internet Archive:
+
+```bash
+dc exec backend du -sh /var/cache/soundlog/covers    # current footprint
+docker volume rm soundlog-prod_prod_covercache       # nuke it (stack stopped)
+```
+
 Elasticsearch is **not** backed up on purpose: Postgres is truth and the index
 is rebuildable (§5). After a restore, rebuild it rather than restoring it:
 
@@ -761,6 +777,48 @@ gesture works (jsdom has no capture semantics, no layout, no real clicks), and
 a *silent* failure in a mutation is a §6 violation even when the code path that
 failed is one no error handler could see — the fix must add a visible failure
 state, not just repair the handler.
+
+### Cover art delivery
+
+Covers are served by the app itself at `/covers/w<width>/<encoded>.webp`, not by
+coverartarchive.org or i.discogs.com. The path encodes the upstream URL, so it is
+self-describing and reversible; the backend fetches once, resizes with sharp,
+re-encodes to WebP and keeps the rendition on disk, then serves it with
+`public, max-age=31536000, immutable` so Cloudflare's US edge answers repeat
+loads for a Helsinki origin.
+
+Widths are a fixed set (96 · 200 · 400 · 640 · 1200) and hosts are allowlisted:
+anything else is a 404, which is what keeps the route from being an open image
+CDN or an SSRF hop. Varnish deliberately **passes** `/covers/` — its store is
+memory, and image renditions would evict the JSON it exists to cache.
+
+```bash
+# Is a given cover warm on the box?
+curl -sI https://soundlog.app<coverUrl> | grep -iE 'x-cover-cache|cf-cache-status|cache-control'
+dc exec backend du -sh /var/cache/soundlog/covers
+dc logs --since 1h backend | grep '\[covers\]'      # upstream failures, sweeps
+```
+
+Three failure modes worth recognising:
+
+- **`X-Cover-Cache: MISS` on every request** — the disk cache is not writable.
+  Check the volume's ownership (`dc exec backend ls -ld /var/cache/soundlog/covers`
+  must be `app app`); a volume created before the Dockerfile's `mkdir`/`chown`
+  arrives owned by root and every write fails silently.
+- **503 with `Retry-After`** — the Cover Art Archive is having one of its
+  documented bad minutes. This is correct behaviour, not a bug: it is retryable,
+  it is `no-store`, and nothing was written to disk. It clears itself.
+- **A cover that 404s forever** — the upstream URL is gone. Re-seed the release
+  rather than editing the row; `Release.coverUrl` is what the path encodes.
+
+Rolling the whole thing back is a code decision and a URL decision, separately:
+
+```bash
+dc run --rm --entrypoint sh migrate -c "npx tsx scripts/heal-cover-proxy.ts --revert"
+```
+
+That rewrites every stored cover back to the upstream URL it came from, with no
+network call — the reason the URL is encoded rather than hashed.
 
 ### Web analytics
 

@@ -17,7 +17,7 @@ export const publicUserSelect = {
 
 const feedReviewInclude = {
   user: { select: publicUserSelect },
-  release: { select: { id: true, title: true, artistName: true, coverUrl: true } },
+  release: { select: { id: true, title: true, artistName: true, coverUrl: true, coverColor: true } },
   _count: { select: { likes: true, comments: true } },
 } as const;
 
@@ -80,7 +80,14 @@ export async function getPopularReviews(viewerId: string | undefined, limit = 20
   return top.map((rv) => toFeedReview(rv, liked.has(rv.id)));
 }
 
-const releaseSelect = { id: true, title: true, artistName: true, coverUrl: true, type: true } as const;
+const releaseSelect = {
+  id: true,
+  title: true,
+  artistName: true,
+  coverUrl: true,
+  coverColor: true,
+  type: true,
+} as const;
 
 export async function hydrateActivities(activities: Activity[], viewerId?: string) {
   const releaseIds = new Set<string>();

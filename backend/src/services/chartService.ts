@@ -21,6 +21,7 @@ export interface ChartEntry {
   year: string | null;
   type: ReleaseType;
   coverUrl: string | null;
+  coverColor: string | null;
   genres: string[];
   avgRating: number | null;
   ratingCount: number;
@@ -94,6 +95,7 @@ async function rankReleases(
           year: r.releaseDate ? r.releaseDate.toISOString().slice(0, 4) : null,
           type: r.type,
           coverUrl: r.coverUrl,
+          coverColor: r.coverColor,
           genres: r.genres,
           avgRating: v > 0 ? R : null,
           ratingCount: v,

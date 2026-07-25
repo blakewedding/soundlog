@@ -15,10 +15,17 @@ export const usersRouter = Router();
 
 const feedReviewInclude = {
   user: { select: publicUserSelect },
-  release: { select: { id: true, title: true, artistName: true, coverUrl: true } },
+  release: { select: { id: true, title: true, artistName: true, coverUrl: true, coverColor: true } },
   _count: { select: { likes: true, comments: true } },
 } as const;
-const profileReleaseSelect = { id: true, title: true, artistName: true, coverUrl: true, type: true } as const;
+const profileReleaseSelect = {
+  id: true,
+  title: true,
+  artistName: true,
+  coverUrl: true,
+  coverColor: true,
+  type: true,
+} as const;
 
 async function userByUsername(username: string) {
   const user = await prisma.user.findUnique({ where: { username } });

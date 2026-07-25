@@ -4,15 +4,25 @@ import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import { CoverImage } from "../ui/CoverImage";
 import { StarRating } from "../ui/StarRating";
 import { usePrefetchRelease } from "../../hooks/usePrefetchRelease";
+import { COVER_SIZES, proxiedUpstream } from "../../lib/coverVariant";
 
 /**
  * Cover art for a release-group we haven't seeded. The Cover Art Archive serves
- * a redirect straight off the release-group MBID, so the browser can fetch it
- * lazily (CoverImage sets loading="lazy") with no backend call and no bulk
- * seeding. A group with no art 404s and simply keeps the placeholder tile.
+ * a redirect straight off the release-group MBID, so no backend metadata call and
+ * no bulk seeding is needed — the browser fetches it lazily (CoverImage sets
+ * loading="lazy"), and a group with no art 404s and keeps the placeholder tile.
+ *
+ * The BYTES now come through our proxy rather than from coverartarchive.org
+ * directly. This was the last browser-direct third-party image request in the
+ * app (§7's deliberate exception), and it paid the full CAA cost — two redirects
+ * into an Internet Archive node — on an uncacheable hostname, for a grid of
+ * thumbnails. `front-500` because the 2x rendition needs pixels to work with.
  */
 const caaThumb = (mbid: string) =>
-  `https://coverartarchive.org/release-group/${encodeURIComponent(mbid)}/front-250`;
+  proxiedUpstream(
+    `https://coverartarchive.org/release-group/${encodeURIComponent(mbid)}/front-500`,
+    COVER_SIZES.grid[0]
+  );
 
 /**
  * One discography entry. Seeded releases link to their real page and show the
@@ -38,6 +48,7 @@ function EntryCard({ entry }: { entry: DiscographyEntry }) {
       >
         <CoverImage
           src={entry.seeded ? entry.coverUrl : caaThumb(entry.mbid)}
+          color={entry.coverColor}
           alt={`${entry.title} cover`}
         />
         <strong style={{ fontSize: 14, lineHeight: 1.3, display: "block", marginTop: 8 }}>

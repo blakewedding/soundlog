@@ -4,6 +4,7 @@ import helmet from "helmet";
 import compression from "compression";
 import cookieParser from "cookie-parser";
 import { apiRouter } from "./routes/index.js";
+import { coversRouter } from "./routes/covers.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { passport } from "./config/passport.js";
 
@@ -17,6 +18,8 @@ export function createApp() {
   app.use(passport.initialize());
 
   app.use("/api", apiRouter);
+  // Image bytes, not JSON — hence its own prefix outside /api. See routes/covers.ts.
+  app.use("/covers", coversRouter);
   app.use(errorHandler);
   return app;
 }

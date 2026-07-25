@@ -5,7 +5,7 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-24 — **LAUNCH DAY**
+**Last updated:** 2026-07-25 — Phase 6.1 (cover delivery) shipped
 
 ## Status
 
@@ -15,7 +15,7 @@ we, what's live, what's next" for a session starting cold.
 served over TLS from a Hetzner VPS in Helsinki, with real users able to
 register, verify an email address, and log music.
 
-Suites green: **backend 231 + web 158 + mobile 38 = 427 tests**, all three
+Suites green: **backend 259 + web 174 + mobile 38 = 471 tests**, all three
 packages typecheck clean, `expo-doctor` 18/18.
 
 **Day two (2026-07-25):** the first user-reported bug — rating clicks committed
@@ -35,7 +35,8 @@ half, read off the glass.
 every throwaway account from verification was purged first, from both
 Postgres and Elasticsearch, so the first durable account is a real one.
 
-**Next: Phase 6.1 — cover delivery** (tomorrow's session), then Phase 7. Phase 7
+**Next: Phase 7.** Phase 6.1 (cover delivery) is done — covers are proxied,
+resized and served from our own origin; see its section below. Phase 7
 still carries the mobile app's missing surface (auth, release detail, write
 actions), real icon design, and the navigation component the 380px three-row nav
 is standing in for. Both are sequenced at the end of this file.
@@ -1003,42 +1004,96 @@ rather than `/`: the SPA shell is static files and would keep returning 200 with
 Postgres on fire. Worth adding SSL-expiry notification on the same monitor —
 renewal is automatic and proven, but if it ever silently stopped, an https check
 fails only *after* expiry.
-## Next session — Phase 6.1: cover delivery
+## Phase 6.1 — cover delivery (DONE 2026-07-25)
 
-**Queued for 2026-07-26.** Scope is Blake's to set at the top of that session;
-what follows is the standing context it will build on, so a cold session does
-not rediscover it.
+Covers loaded with a visible stutter, and Cloudflare Web Analytics had flagged
+release pages yellow on LCP — where the cover is the largest element. The cause
+turned out to be worse than "the Cover Art Archive is slow", and the measurement
+is the whole story:
 
-**How covers reach a browser today.** Straight from the **Cover Art Archive** via
-`<img>` — the one deliberate exception to §7's "all third-party calls go through
-the backend" (no credentials, browser-native lazy loading). We store the URL; we
-never proxy the bytes.
+| the stored `coverUrl` for *Lost in the Dream* | 2,254,558 bytes · 2.35s TTFB · 2 redirects |
+|---|---|
+| painted into | a 140px grid tile |
 
-**The facts that make this a phase rather than a tweak:**
+We were shipping **multi-megabyte originals into thumbnails**, from a hostname
+Cloudflare cannot cache for us, behind two redirects into an Internet Archive
+node (`dn7109xx.ca.archive.org`).
 
-- **CAA is a documented flaky third party.** Measured in 5.5: intermittent 500s
-  on *both* schemes, one URL returning 500 four times in a row and 200 on the
-  fifth. Any change here inherits §1 — a retryable failure must never become a
-  permanent one, and a "verify then blank" script would destroy good artwork on a
-  transient error.
-- **URLs are normalized to `https` at persist** (`src/services/coverUrl.ts`,
-  applied at the single `resolveCovers` exit so a new source cannot bypass it).
-  The catalog was healed: 0 of 285 cleartext. The heal makes **no network calls**,
-  for the reason directly above.
-- **Perceived performance already leans on placeholders** — dominant-colour tints
-  extracted client-side into `localStorage`, muted in HSL into a narrow dark band.
-  Do not "simplify" by normalising chroma: that was v1 and produced twelve
-  identical greys, because it discards lightness.
-- **Mobile renders no images at all** — `FeedRow` is text-only and there is no
-  `<Image>` anywhere in `apps/mobile`. Any cover work that claims a mobile benefit
-  is claiming it for screens that do not exist yet (Phase 7).
-- **iOS ATS blocks cleartext in release builds** while Expo Go permits it, which
-  is why the https normalization mattered before mobile renders anything.
+### What shipped
 
-**Live observation worth starting from:** on production the *In Rainbows* cover
-paints its dominant-colour placeholder first and the artwork arrives visibly
-later — the tint system working as designed, and also a direct measure of what
-CAA latency costs a first-time visitor.
+**A cover proxy at `/covers/w<width>/<base64url(upstream)>.webp`.** The backend
+fetches the upstream once, resizes with sharp, re-encodes to WebP, keeps the
+rendition on disk and serves it `public, max-age=31536000, immutable`. §7's
+browser-direct `<img>` exception is **closed** — including the discography's
+un-seeded thumbnails, which were the last direct third-party image request.
+
+**The URL encodes its upstream URL rather than hashing it.** That is what makes
+the heal — and the rollback — a pure string transform with no network call, the
+same discipline `coverUrl.ts` established: a script that verified each URL
+against a flaky upstream would delete good artwork on a transient error. It also
+means no mapping store exists to be lost.
+
+**Three outcomes, never two.** 200 with the rendition (immutable, a year); 404
+for a definitive absence (cacheable a *day*, because art gets uploaded later);
+503 + `Retry-After` + `no-store` when we could not tell, with **nothing written
+to disk**. An edge-cached 503 would turn one bad minute at the archive into a
+day of blank tiles — §1 with a CDN behind it.
+
+**Server-sampled tints, closing the 5.5 limitation.** The dominant colour is
+sampled at seed time into `Release.coverColor`, so the FIRST paint of a cover
+nobody has seen is already tinted — previously the tint only paid off on repeat
+views, i.e. never on the view where the wait is longest. The colour is stored
+RAW and muted client-side, so the palette decision keeps one home. **154 of 154
+covers sampled, 154 distinct raw colours, 152 distinct after muting, luminance
+spread 26.6 → 75.7** — the twelve-identical-greys failure is measurably absent.
+
+**Disk discipline.** The cache is a named volume outside the backup strategy
+(regenerable from `Release.coverUrl`, which `pg_dump` holds — same rule as
+Elasticsearch under §5), bounded by `COVER_CACHE_MAX_BYTES` and swept
+least-recently-used. Documented in the README's Backups section.
+
+### Measured
+
+Per rendition, against the same *In Rainbows* cover whose upstream JPEG is
+70.8 KB / 500×500 (and whose stored large original was 1.8 MB):
+
+| rendition | bytes | vs upstream |
+|---|---|---|
+| w96 (diary/chart row) | 2,188 | **33× smaller** |
+| w200 (grid tile) | 8,118 | 8.9× |
+| w400 (release hero) | 23,736 | 3.0× |
+
+Through the full production edge locally (nginx → Varnish → backend):
+**cold 2.03s, warm 6ms** (`X-Cover-Cache: HIT`). Origin-direct warm hits are
+**2.2ms**. Varnish deliberately passes `/covers/` — its store is memory, and
+renditions would evict the JSON it exists to cache.
+
+### Two traps this phase walked into on purpose
+
+- **nginx's SPA fallback.** Without its own `location /covers/`, `try_files`
+  answers every cover with `index.html` — a **200 carrying HTML**, which renders
+  as a broken image and reports as success. Verified: an unknown cover path
+  through the real edge returns 404, not the shell.
+- **Volume ownership.** Docker seeds a fresh named volume from the image's
+  directory *including its ownership*, so the mount point is created and
+  chowned in the Dockerfile before the volume attaches. Otherwise the non-root
+  process gets a silent EACCES per cover on a stack that looks healthy.
+
+### Deliberate test-contract change (§9)
+
+`tests/integration/coverHttps.test.ts` asserted that the persisted cover URL
+*is* the https upstream URL. Since covers persist in proxied form, two of its
+three cases now assert the same guarantee **through the decode** — the stored
+value must still resolve to the same artwork over https. The guarantee did not
+move; where it is read did. The third case (no cleartext image URL anywhere in
+the API payload) is untouched and still passes as written.
+
+### Mobile
+
+Unchanged and unaffected: `apps/mobile` renders no images at all. Phase 7's
+screens inherit the proxied URLs for free, with one thing to remember — stored
+URLs are **relative** (`/covers/…`), so a native client must resolve them
+against its API origin.
 
 ## Then — Phase 7
 

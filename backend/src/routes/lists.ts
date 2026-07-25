@@ -29,7 +29,15 @@ async function syncListIndex(listId: string): Promise<void> {
 
 const publicUser = { select: { id: true, username: true, displayName: true, avatarUrl: true } };
 const listItemRelease = {
-  select: { id: true, title: true, artistName: true, coverUrl: true, type: true, releaseDate: true },
+  select: {
+    id: true,
+    title: true,
+    artistName: true,
+    coverUrl: true,
+    coverColor: true,
+    type: true,
+    releaseDate: true,
+  },
 };
 
 const createListSchema = z.object({

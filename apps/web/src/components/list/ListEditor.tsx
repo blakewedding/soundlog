@@ -171,7 +171,12 @@ export function ListEditor({ list, editable, onChanged }: Props) {
               </span>
             )}
             <div style={{ width: 48, flexShrink: 0 }}>
-              <CoverImage src={item.release.coverUrl} alt={`${item.release.title} cover`} />
+              <CoverImage
+                src={item.release.coverUrl}
+                color={item.release.coverColor}
+                size="row"
+                alt={`${item.release.title} cover`}
+              />
             </div>
             <div style={{ minWidth: 0, flex: 1 }}>
               <Link to={`/release/${item.releaseId}`} className="card-link">

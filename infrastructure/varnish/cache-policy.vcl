@@ -14,6 +14,17 @@ sub vcl_recv {
     if (req.http.Authorization || req.http.Cookie ~ "refresh_token") {
         return (pass);
     }
+    # Cover art PASSES, deliberately — matched FIRST so this is a real rule and
+    # not a restatement of the final pass below. Varnish's store is memory
+    # (malloc), and image renditions are orders of magnitude larger than the JSON
+    # this cache exists to serve: caching them here would evict release and
+    # search responses to hold bytes that are already cached twice over — on the
+    # origin's own disk (backend/src/services/coverCache.ts) and at Cloudflare,
+    # which is where a US visitor should be getting them from anyway.
+    if (req.url ~ "^/covers/") {
+        return (pass);
+    }
+
     # Cache only explicitly cache-safe public routes.
     if (req.url ~ "^/api/(releases|search|feed/popular|health)") {
         unset req.http.Cookie;

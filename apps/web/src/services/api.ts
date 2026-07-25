@@ -130,6 +130,7 @@ export interface DiaryEntry {
     title: string;
     artistName: string;
     coverUrl?: string | null;
+    coverColor?: string | null;
     type: string;
   };
 }
@@ -156,7 +157,15 @@ export interface ListDTO {
     releaseId: string;
     position: number;
     note?: string | null;
-    release: { id: string; title: string; artistName: string; coverUrl?: string | null; type: string; year?: string | null };
+    release: {
+      id: string;
+      title: string;
+      artistName: string;
+      coverUrl?: string | null;
+      coverColor?: string | null;
+      type: string;
+      year?: string | null;
+    };
   }>;
 }
 
@@ -337,5 +346,12 @@ export interface FollowUser extends User {
 export interface ProfileRating {
   value: number;
   updatedAt: string;
-  release: { id: string; title: string; artistName: string; coverUrl?: string | null; type: string };
+  release: {
+    id: string;
+    title: string;
+    artistName: string;
+    coverUrl?: string | null;
+    coverColor?: string | null;
+    type: string;
+  };
 }

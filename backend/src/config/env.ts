@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "node:path";
 import { z } from "zod";
 
 /**
@@ -62,6 +63,20 @@ const schema = z.object({
   // rejected with a definitive 403 — which is a configuration error, not an
   // outage, and is reported as such.
   EMAIL_FROM: z.string().default("Soundlog <hello@soundlog.app>"),
+  // ---------- Cover art proxy (see services/coverCache.ts) ----------
+  // Where re-encoded cover renditions live. Regenerable from Release.coverUrl,
+  // so it is deliberately NOT part of the backup strategy — same reasoning as
+  // Elasticsearch under §5. The production stack mounts a named volume here;
+  // the dev default is a gitignored directory under the backend package.
+  // Resolved to an absolute path so a log line or an error message names a
+  // directory the reader can actually go and look at.
+  COVER_CACHE_DIR: z
+    .string()
+    .default(".cache/covers")
+    .transform((v) => path.resolve(v)),
+  // Hard ceiling, swept LRU-style. 1 GiB holds thousands of covers at five
+  // widths; the point is that a crawler cannot fill the disk Postgres is on.
+  COVER_CACHE_MAX_BYTES: z.coerce.number().int().positive().default(1024 * 1024 * 1024),
   LASTFM_API_KEY: z.string().optional(),
   // Discogs personal access token, sent as `Authorization: Discogs token=<value>`.
   DISCOGS_TOKEN: z.string().optional(),

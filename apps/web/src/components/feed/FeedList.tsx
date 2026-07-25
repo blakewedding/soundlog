@@ -58,7 +58,12 @@ function FeedRow({ item }: { item: FeedItem }) {
     return (
       <ActivityCard item={item}>
         <div style={{ width: 44, flexShrink: 0 }}>
-          <CoverImage src={item.release.coverUrl} alt={`${item.release.title} cover`} />
+          <CoverImage
+            src={item.release.coverUrl}
+            color={item.release.coverColor}
+            size="row"
+            alt={`${item.release.title} cover`}
+          />
         </div>
         <div style={{ minWidth: 0 }}>
           <div>

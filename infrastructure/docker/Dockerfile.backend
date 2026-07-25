@@ -74,6 +74,12 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /prod /app
 RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
+# The cover cache's mount point, created and chowned BEFORE the volume attaches.
+# Docker seeds a fresh named volume from the image's directory — including its
+# ownership — so without this the volume arrives owned by root and the non-root
+# process cannot write a single rendition. The failure mode is a silent EACCES
+# per cover on a stack that otherwise looks perfectly healthy.
+RUN mkdir -p /var/cache/soundlog/covers && chown -R app:app /var/cache/soundlog
 USER app
 EXPOSE 4000
 CMD ["node", "dist/server.js"]

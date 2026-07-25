@@ -124,6 +124,17 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-soundlog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soundlog}
       REDIS_URL: redis://redis:6379
       ELASTICSEARCH_NODE: http://elasticsearch:9200
+      # Re-encoded cover renditions. A named volume, so they survive a
+      # `up -d --build` — a deploy would otherwise re-fetch every cover from the
+      # Internet Archive on first access, which is the slow path this cache
+      # exists to remove.
+      #
+      # DELIBERATELY OUTSIDE THE BACKUP STRATEGY. Every byte is regenerable from
+      # Release.coverUrl, which pg_dump already captures; putting images in the
+      # dumps would bloat them to no purpose. Same reasoning as Elasticsearch
+      # under §5. Safe to delete at any time — see the README's Backups section.
+      COVER_CACHE_DIR: /var/cache/soundlog/covers
+    volumes: [prod_covercache:/var/cache/soundlog/covers]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -195,3 +206,5 @@ volumes:
   prod_pgdata:
   prod_redisdata:
   prod_esdata:
+  # Regenerable cover renditions, not data. Bounded by COVER_CACHE_MAX_BYTES.
+  prod_covercache:

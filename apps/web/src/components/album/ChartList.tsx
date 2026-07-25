@@ -15,7 +15,7 @@ export function ChartList({ entries }: { entries: ChartEntry[] }) {
         <li key={e.id} className="chart-row" onMouseEnter={() => prefetch(e.id)}>
           <span className="chart-rank">{i + 1}</span>
           <Link to={`/release/${encodeURIComponent(e.id)}`} className="chart-cover" tabIndex={-1}>
-            <CoverImage src={e.coverUrl} alt={`${e.title} cover`} />
+            <CoverImage src={e.coverUrl} color={e.coverColor} size="row" alt={`${e.title} cover`} />
           </Link>
           <div className="chart-meta">
             <Link
