@@ -25,34 +25,6 @@ import react from "@vitejs/plugin-react";
  * `/v<hash>` build and rotates that hash; a pinned copy in our HTML would
  * quietly serve a stale beacon that nobody remembers to bump.
  */
-function cloudflareAnalytics(): Plugin {
-  const token = "3fcb36cb89124455b95b7900e9d9cafd";
-
-  // Raw markup, NOT transformIndexHtml's `attrs` map. Vite serializes those
-  // values with JSON.stringify, and `data-cf-beacon` is itself a JSON document,
-  // so passing it there double-encodes it:
-  //
-  //     data-cf-beacon="{\"token\":\"3fcb…\"}"
-  //
-  // An HTML parser ends that attribute at the first inner quote, so the beacon
-  // loads, finds no token, and reports nothing — while View Source looks
-  // roughly right. Single-quoting the attribute (Cloudflare's own documented
-  // form) keeps the JSON's double quotes intact with no escaping at all.
-  const snippet =
-    `<script defer src="https://static.cloudflareinsights.com/beacon.min.js" ` +
-    `data-cf-beacon='{"token": "${token}"}'></script>`;
-
-  return {
-    name: "soundlog-cloudflare-analytics",
-    apply: "build",
-    transformIndexHtml(html) {
-      // Last thing before </body> and deferred, so analytics can never delay
-      // first paint or the app bundle.
-      return html.replace("</body>", `    ${snippet}\n  </body>`);
-    },
-  };
-}
-
 /**
  * The commit the running bundle was built from, stamped in at config load.
  *
@@ -92,7 +64,7 @@ const apiProxy: ProxyOptions = {
 };
 
 export default defineConfig({
-  plugins: [react(), cloudflareAnalytics()],
+  plugins: [react()],
   define: {
     // Read at config load, so restarting the dev server re-stamps it.
     __BUILD_STAMP__: JSON.stringify(buildStamp()),

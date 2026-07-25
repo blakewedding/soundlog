@@ -22,5 +22,30 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- Cloudflare Web Analytics — served from source, not injected at the edge,
+         so the one script we ship is visible to anyone reading this file.
+
+         The token is a PUBLIC site identifier, not a credential: Cloudflare puts
+         it in the markup of every page it serves. §7 governs secrets; this is
+         not one, and hiding it in .env would imply a confidentiality it lacks.
+
+         `defer`, per Cloudflare's own snippet — analytics must never block the
+         parser, first paint, or the app bundle. NOT type="module": beacon.min.js
+         is a classic script, and module loading would impose CORS-mode fetching
+         and module scope on it.
+
+         The src is deliberately UNVERSIONED. Edge injection pins a /v<hash>
+         build and rotates that hash; a pinned copy here would quietly go stale.
+
+         The attribute is SINGLE-quoted because its value is a JSON document.
+         Double-quoting it requires escaping the inner quotes, and a mis-escaped
+         version parses as an empty token — the beacon then loads and silently
+         reports nothing while View Source looks right. -->
+    <script
+      defer
+      src="https://static.cloudflareinsights.com/beacon.min.js"
+      data-cf-beacon='{"token": "3fcb36cb89124455b95b7900e9d9cafd"}'
+    ></script>
+    <!-- End Cloudflare Web Analytics -->
   </body>
 </html>
