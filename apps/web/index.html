@@ -29,10 +29,15 @@
          it in the markup of every page it serves. §7 governs secrets; this is
          not one, and hiding it in .env would imply a confidentiality it lacks.
 
-         `defer`, per Cloudflare's own snippet — analytics must never block the
-         parser, first paint, or the app bundle. NOT type="module": beacon.min.js
-         is a classic script, and module loading would impose CORS-mode fetching
-         and module scope on it.
+         `defer`, per Cloudflare's DOCUMENTED snippet — analytics must never
+         block the parser, first paint, or the app bundle.
+
+         Deliberately NOT type="module", and this WILL look like a mistake to
+         anyone comparing against the dashboard: Cloudflare's dashboard hands
+         you a `type='module'` variant, while their documentation specifies
+         `defer`. They disagree. beacon.min.js is a classic script, so module
+         loading would impose CORS-mode fetching and module scope on it for no
+         benefit. If you re-copy from the dashboard, keep `defer`.
 
          The src is deliberately UNVERSIONED. Edge injection pins a /v<hash>
          build and rotates that hash; a pinned copy here would quietly go stale.

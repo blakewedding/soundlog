@@ -780,9 +780,11 @@ Three details that are easy to get wrong and fail *silently*:
   reads an empty token, and reports nothing while View Source looks fine. This
   bit once, via Vite's `transformIndexHtml` `attrs` map, which serializes values
   with `JSON.stringify` and so double-encoded the JSON.
-- **`defer`, and a classic script — not `type="module"`.** `beacon.min.js` is
-  not an ES module; module loading would impose CORS-mode fetching and module
-  scope on it.
+- **`defer`, and a classic script — not `type="module"`.** Cloudflare's
+  **dashboard** hands you a `type='module'` variant while their **documentation**
+  specifies `defer`; the two genuinely disagree. `beacon.min.js` is not an ES
+  module, so module loading would impose CORS-mode fetching and module scope on
+  it for no benefit. Keep `defer` if you ever re-copy from the dashboard.
 - **The `src` is unversioned.** Edge injection pins a `/v<hash>` build and
   rotates that hash. A pinned copy here would quietly serve a stale beacon.
 

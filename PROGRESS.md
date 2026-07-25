@@ -15,8 +15,13 @@ we, what's live, what's next" for a session starting cold.
 served over TLS from a Hetzner VPS in Helsinki, with real users able to
 register, verify an email address, and log music.
 
-Suites green: **backend 231 + web 150 + mobile 38 = 419 tests**, all three
+Suites green: **backend 231 + web 158 + mobile 38 = 427 tests**, all three
 packages typecheck clean, `expo-doctor` 18/18.
+
+**Day two (2026-07-25):** the first user-reported bug — rating clicks committed
+nothing — was diagnosed, fixed, deployed and verified on production the same
+session (its own section below). Web analytics moved from edge auto-injection
+to a snippet in our own markup, verified serving and reporting.
 
 **The launch was proven the only way that counts** — a full journey from a
 phone on **cellular**, not LAN: registered, received and clicked a real
@@ -30,9 +35,10 @@ half, read off the glass.
 every throwaway account from verification was purged first, from both
 Postgres and Elasticsearch, so the first durable account is a real one.
 
-**Next: Phase 7** — the mobile app's missing surface (auth, release detail,
-write actions), real icon design, and the navigation component the 380px
-three-row nav is standing in for. See the README.
+**Next: Phase 6.1 — cover delivery** (tomorrow's session), then Phase 7. Phase 7
+still carries the mobile app's missing surface (auth, release detail, write
+actions), real icon design, and the navigation component the 380px three-row nav
+is standing in for. Both are sequenced at the end of this file.
 
 Hosting moved from GKE Autopilot to a Hetzner VPS on cost; the K8s manifests
 remain the documented funded-migration path, not dead work.
@@ -880,6 +886,66 @@ a second click on the same star cleared it. Throwaway accounts purged from both
 stores after; the users table holds exactly the real members. The full
 workflow is documented in the README under **Debugging a production incident**.
 
+## Web analytics — moved to a manual snippet (2026-07-25)
+
+Cloudflare Web Analytics now ships in **our own markup** (`apps/web/index.html`);
+edge auto-injection is **off** (radio set to Manual). Auto-injection made the
+edge parse and rewrite every HTML response, and the one script we served was
+invisible to anyone reading the repo.
+
+**Verified through the edge with auto-injection disabled**, by parsing the HTML
+a real visitor receives rather than eyeballing a grep: **exactly one** beacon
+`<script>`, unversioned (i.e. ours, not injected), `defer`, classic script,
+token parsing cleanly. In a live browser it is `renderBlockingStatus:
+"non-blocking"` and it **fires its reporting request** to
+`https://cloudflareinsights.com/cdn-cgi/rum` — which is the functional proof;
+markup presence alone would not distinguish a working beacon from one that
+loaded and silently reported nothing.
+
+**The token is not a secret.** It is a public site identifier that Cloudflare
+puts in the markup of every page it serves. §7 governs credentials; this is not
+one.
+
+Three ways this fails *silently*, all now commented at the call site:
+
+- **The `data-cf-beacon` attribute must be single-quoted.** Its value is a JSON
+  document. The first attempt routed it through Vite's `transformIndexHtml`
+  `attrs` map, which serializes values with `JSON.stringify` — double-encoding
+  it to `data-cf-beacon="{\"token\":\"…\"}"`. An HTML parser ends that attribute
+  at the first inner quote, so the beacon loads, finds no token, and reports
+  nothing while View Source looks roughly right. Caught by parsing the built
+  shell with a real HTML parser and `json.loads`-ing the token.
+- **`defer`, not `type="module"`.** Cloudflare's **dashboard** hands out a
+  `type='module'` variant while their **documentation** specifies `defer` — they
+  genuinely disagree, and the dashboard form is what you will see if you re-copy.
+  `beacon.min.js` is a classic script; module loading would impose CORS-mode
+  fetching and module scope on it for no benefit.
+- **The `src` must stay unversioned.** Edge injection pins a `/v<hash>` build and
+  rotates that hash; a pinned copy here would quietly serve a stale beacon.
+
+**CSP: nothing needed changing, and there is no helmet entry to add.** `helmet()`
+is mounted on the Express app, which serves only `/api/*`, and CSP is enforced
+**per-document** — a CSP header on a JSON response governs nothing about the page
+that fetched it. The SPA document is nginx-served with no CSP.
+
+If a document CSP is ever added (worth doing), the beacon needs **two different
+hostnames**, which is the trap: `script-src https://static.cloudflareinsights.com`
+to fetch, and `connect-src https://cloudflareinsights.com` — no `static.` — to
+report. Verified empirically from the browser, not from memory. Allowing only the
+`static.` host would load the script and silently drop every measurement.
+
+*Trade-off accepted:* the snippet lives in `index.html` rather than a build-only
+Vite plugin, so the **dev server loads it too** and localhost page views reach
+production analytics. The plugin form avoided that and is a one-line revert.
+
+*Not measured:* LCP/CLS could not be measured from the automation browser — the
+tab reports `visibility: "hidden"` with zero paint entries, and Chrome suppresses
+LCP and paint timing for never-visible pages (which also makes a `CLS: 0` reading
+trivially true rather than evidence). Structurally a `defer` classic script at the
+end of `<body>` cannot block the parser or first paint, and a `<script>` generates
+no box so it cannot shift layout. Real numbers will arrive on their own: the
+beacon collects Core Web Vitals **field data from actual visitors**.
+
 ## Post-launch checklist
 
 Dated items that cannot be done at launch because they need elapsed time, a
@@ -937,10 +1003,46 @@ rather than `/`: the SPA shell is static files and would keep returning 200 with
 Postgres on fire. Worth adding SSL-expiry notification on the same monitor —
 renewal is automatic and proven, but if it ever silently stopped, an https check
 fails only *after* expiry.
-## Next session — Phase 7
+## Next session — Phase 6.1: cover delivery
 
-Phase 6b is done and the site is live. What Phase 7 carries, in the order the
-work naturally falls:
+**Queued for 2026-07-26.** Scope is Blake's to set at the top of that session;
+what follows is the standing context it will build on, so a cold session does
+not rediscover it.
+
+**How covers reach a browser today.** Straight from the **Cover Art Archive** via
+`<img>` — the one deliberate exception to §7's "all third-party calls go through
+the backend" (no credentials, browser-native lazy loading). We store the URL; we
+never proxy the bytes.
+
+**The facts that make this a phase rather than a tweak:**
+
+- **CAA is a documented flaky third party.** Measured in 5.5: intermittent 500s
+  on *both* schemes, one URL returning 500 four times in a row and 200 on the
+  fifth. Any change here inherits §1 — a retryable failure must never become a
+  permanent one, and a "verify then blank" script would destroy good artwork on a
+  transient error.
+- **URLs are normalized to `https` at persist** (`src/services/coverUrl.ts`,
+  applied at the single `resolveCovers` exit so a new source cannot bypass it).
+  The catalog was healed: 0 of 285 cleartext. The heal makes **no network calls**,
+  for the reason directly above.
+- **Perceived performance already leans on placeholders** — dominant-colour tints
+  extracted client-side into `localStorage`, muted in HSL into a narrow dark band.
+  Do not "simplify" by normalising chroma: that was v1 and produced twelve
+  identical greys, because it discards lightness.
+- **Mobile renders no images at all** — `FeedRow` is text-only and there is no
+  `<Image>` anywhere in `apps/mobile`. Any cover work that claims a mobile benefit
+  is claiming it for screens that do not exist yet (Phase 7).
+- **iOS ATS blocks cleartext in release builds** while Expo Go permits it, which
+  is why the https normalization mattered before mobile renders anything.
+
+**Live observation worth starting from:** on production the *In Rainbows* cover
+paints its dominant-colour placeholder first and the artwork arrives visibly
+later — the tint system working as designed, and also a direct measure of what
+CAA latency costs a first-time visitor.
+
+## Then — Phase 7
+
+What Phase 7 carries, in the order the work naturally falls:
 
 1. **The mobile app's missing surface** — auth, release detail, and the write
    actions. Mobile currently ships a feed tab and a placeholder profile, which
@@ -959,6 +1061,8 @@ work naturally falls:
    for a mouse. Touch was fixed in 5.5; desktop was out of that brief.
 5. **The post-launch checklist above**, which is dated rather than blocked.
 
-Before starting, read the **Production operations** section of the README —
-anything Phase 7 ships now has to be deployed to a live site with real data on
-it, which was not true of any previous phase.
+Before starting **either phase**, read the **Production operations** section of
+the README — everything from here on ships to a live site with real users' data
+on it, which was not true of any previous phase. It also carries **Debugging a
+production incident**, the log-first workflow that resolved the day-one rating
+bug in one session.
