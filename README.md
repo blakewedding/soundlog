@@ -799,6 +799,21 @@ dc exec backend du -sh /var/cache/soundlog/covers
 dc logs --since 1h backend | grep '\[covers\]'      # upstream failures, sweeps
 ```
 
+**Sampling a tint warms the cache — but not when run from `migrate`.** The
+maintenance image is a one-shot `run --rm` and does **not** mount
+`prod_covercache`, so renditions written by `backfill-cover-tints.ts` land in a
+container that is then thrown away. The tints themselves persist (they are in
+Postgres); only the warm-up is lost. To actually warm the origin, request the
+covers over HTTP so the work happens in the `backend` container:
+
+```bash
+curl -s "https://soundlog.app/api/releases?limit=100" \
+  | python3 -c "import json,sys;[print(r['coverUrl']) for r in json.load(sys.stdin)['releases'] if r.get('coverUrl')]" \
+  | while read -r p; do for w in 200 400 640; do
+      curl -s -o /dev/null "https://soundlog.app$(echo "$p" | sed "s|/w400/|/w$w/|")"
+    done; done
+```
+
 Three failure modes worth recognising:
 
 - **`X-Cover-Cache: MISS` on every request** — the disk cache is not writable.

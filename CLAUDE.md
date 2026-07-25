@@ -155,6 +155,10 @@ never quietly relax an assertion to make a suite pass.
 Investigate before fixing: reproduce first, then fix the cause. Report failures
 faithfully; a passing suite is not evidence a feature works.
 
+An approval-adjacent user message that arrives mid-command is a gate until
+proven otherwise — pause at the next natural boundary and confirm before
+chaining into the next state-changing step.
+
 ---
 
 ## Commands
