@@ -5,7 +5,7 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-26 — Phase 6.1 + 6.1.1 shipped and verified live
+**Last updated:** 2026-07-26 — Phase 6.1 closed out (6.1 · 6.1.1 · 6.1.2 · 6.1.3 · 6.1.3b)
 
 ## Status
 
@@ -15,7 +15,7 @@ we, what's live, what's next" for a session starting cold.
 served over TLS from a Hetzner VPS in Helsinki, with real users able to
 register, verify an email address, and log music.
 
-Suites green: **backend 265 + web 184 + mobile 38 = 487 tests**, all three
+Suites green: **backend 274 + web 185 + mobile 38 = 497 tests**, all three
 packages typecheck clean, `expo-doctor` 18/18.
 
 **Day two (2026-07-25):** the first user-reported bug — rating clicks committed
@@ -35,10 +35,14 @@ half, read off the glass.
 every throwaway account from verification was purged first, from both
 Postgres and Elasticsearch, so the first durable account is a real one.
 
-**Next: Phase 7.** Phase 6.1 (cover delivery) is done — covers are proxied,
-resized and served from our own origin — and **6.1.1** closed the defect it
-surfaced: a half-seeded release page that rendered its gaps as though they were
-the finished record. Both sections below. Phase 7
+**Phase 6.1 is closed**, across five parts: the cover proxy itself, the
+half-seeded release page it surfaced (6.1.1), the discovery retry cap (6.1.2), a
+retry button that only looked like one (6.1.3), and the edge caching that hid
+the fix from signed-out visitors (6.1.3b). Sections for each below.
+
+**Next: 6.1.4** — cold-seed and discography latency under browse load, first
+session tomorrow. **Then 6.2** — Settings & Profiles, before the Kickstarter
+launch. Phase 7
 still carries the mobile app's missing surface (auth, release detail, write
 actions), real icon design, and the navigation component the 380px three-row nav
 is standing in for. Both are sequenced at the end of this file.
@@ -1200,7 +1204,188 @@ Both are consequences of intended behaviour changes; neither is a relaxation.
 paler than an empty tile — the property the fix bought, so a future narrowing
 cannot silently undo it.
 
+## Phase 6.1.2 — discovery retry cap (DONE 2026-07-26)
+
+§7 already said discovery gets one attempt and lookups retry. That rule was
+written for metadata, and 6.1 routed image **bytes** through the same kind of
+call without carrying it across.
+
+The cost arrived unplanned, mid-verification: a burst of seeds earned us
+**HTTP 429 from the Cover Art Archive**, and every 429 was then retried three
+times. A discography grid builds `release-group/<mbid>/front-500` speculatively
+for dozens of un-seeded entries at once, so the retry policy turned one bad
+minute at the archive into a hundred requests that made it worse.
+
+`isDiscoveryCoverUrl` splits the shapes: the release-group `front-*` redirect
+(speculative, for something nobody has seeded) gets **one attempt**; a stored
+`coverUrl` for a release we hold is a lookup and still retries three times.
+
+The outcome is deliberately unchanged — still `UpstreamUnavailableError`, still
+503 + `Retry-After` + `no-store`, **never a 404**. One attempt is a statement
+about how hard we try, not a claim the artwork is absent; a 404 there would be
+the §1 bug cached for a day.
+
+## Phase 6.1.3 — "Try again" that actually retries (DONE 2026-07-26)
+
+Reported from the phone check: **Movement (New Order) sat in `failed` and Try
+again never recovered it.** Diagnosed by counting rather than reading:
+
+| | |
+|---|---|
+| Requests for Movement in nginx's access log | **39** |
+| Backend log lines for Movement | **2** — the seed, and one `stage covers failed` |
+
+Every tap arrived. Exactly one enrichment run ever happened. `GET
+/api/releases/<internal id>` is `prisma.release.findUnique` and nothing more, so
+no amount of tapping could re-execute anything. **The retry button was
+decoration.**
+
+Not a data-shape problem — the early-New-Order reissue tangle was the obvious
+suspect and was wrong. Movement's other stages all succeeded (Factory, five
+genres, New Order, 1981‑11‑13). One stage hit a Cover Art Archive timeout.
+
+**6.1.1 sharpened the gap it did not create.** Before canonicalization, arriving
+through an `mb:` ref re-ran the heal as a side effect of seeding; canonicalizing
+to the internal id removed that accident and left the missing trigger bare.
+
+Fixes, all class-level:
+
+- **`POST /api/releases/:id/refresh`** re-runs enrichment for a row we hold,
+  through the same `seedFromSource` path an `mb:` ref takes. Rate-limited 60s per
+  caller per release — a person is looking at this button, and the cost is a
+  handful of calls, not a 250-group browse. A run already in flight reports
+  `pending` without burning the slot.
+- **`failed` is sticky.** It used to lapse to `ready` after five minutes on the
+  theory that the next access would re-run the heal — wrong twice over: nothing
+  re-ran it, and lapsing meant a release with a dead stage began reporting
+  `ready` while its data was still missing. Movement was in exactly that state
+  when it was reported.
+- The client's retry is a **mutation**, and a refused retry (429) is shown.
+
+### The lesson, recorded because it is the expensive one
+
+**The test that covered this passed while the product was broken.** It drove the
+retry through the `mb:` ref — a path that re-runs enrichment as a *side effect of
+seeding*, and a path **no user takes once the URL is canonical**. It asserted
+recovery against a code path the product had stopped using, and reported green
+for a button that moved nothing.
+
+A test has to exercise the route the client actually takes. Both the backend and
+web cases now drive the retry by **internal id**, and a new case pins that a GET
+by internal id makes **zero** upstream calls — the Movement bug, in one
+assertion.
+
+## Phase 6.1.3b — an in-progress release is not cacheable (DONE 2026-07-26)
+
+Found by nearly reporting the 6.1.3 fix as broken. Six polls over thirty seconds
+all showed a coverless Movement; Postgres had healed it the whole time. **Varnish
+was serving a 60-second-old response.**
+
+The release DTO began carrying a progress field in 6.1.1 — something that changes
+every few seconds — while `cache-policy.vcl` sets `beresp.ttl = 60s` on
+`^/api/(releases|search)` unconditionally. The page polls at 800ms–6s against a
+minute-old snapshot, and its self-healing is disabled.
+
+**Not for everyone, which is why the phone check missed it.** An authenticated
+request carries `Authorization`, which Varnish passes; the affected class was
+every **signed-out** visitor — the anonymous majority on a public site.
+
+The backend now sends `Cache-Control: no-store` whenever `enrichment !== "ready"`,
+and the VCL honours it with a hit-for-pass branch placed **before** the URL rules
+that would otherwise override it. Ten seconds of hit-for-pass rather than the
+customary two minutes: enrichment settles in seconds and normal caching should
+resume as soon as it does.
+
+**Verified signed-out, through the real edge**, on Talk Talk's *Laughing Stock*
+(never seeded, no `Authorization` header anywhere in the test):
+
+| | status | label | cover | `x-cache` | `age` | `cache-control` |
+|---|---|---|---|---|---|---|
+| t+0 | `pending` | — | no | MISS | 0 | **no-store** |
+| t+3 | `pending` | — | no | MISS | 0 | **no-store** |
+| **t+6** | **`ready`** | **Polydor** | **YES** | MISS | 0 | none |
+| t+9 | ready | Polydor | YES | **HIT** | 3 | none |
+| t+30 | ready | Polydor | YES | HIT | 27 | none |
+
+Every anonymous poll fresh while pending; **self-completed in six seconds** with
+no interaction and no session; caching resumed the instant it settled.
+
+Movement passes on the phone, signed in and signed out.
+
+### Two test-fixture bugs of my own, fixed in passing
+
+Every non-primary mbid in the enrichment suite shared a title, so dedupe's
+title+artist fallback merged the variants onto one row and later lookups by
+musicbrainzId returned null — **the suite tripping over §3's own warning about
+name-based identity**. And the stage being made artificially slow was the artist
+lookup, which is cached after the first seed, so a later release enriched too
+fast to ever observe `pending`; the label browse runs per release and is the
+honest choke point.
+
+## Next — Phase 6.1.4: cold-seed and discography latency (first session tomorrow)
+
+Filed from the phone check. **Treat this as a database-wide behaviour under
+browse load, not as per-release defects** — the releases below are reproduction
+cases, not the bug.
+
+**Observed live on Miles Davis' discography:** *On the Corner* and *Get Up With
+It* were slow and incomplete on cover detail while browsing the artist page.
+
+The shape of it: MusicBrainz is a **process-wide 1 req/s gate**, and a
+discography browse fans out speculative work across it at the same moment a
+person is waiting on an interactive seed. The person loses, because nothing
+distinguishes the two.
+
+Two directions to take:
+
+1. **Priority tiers at the MusicBrainz gate** — an interactive, user-facing seed
+   (someone is looking at a spinner) preempts speculative discography work.
+   Today the throttle is strictly FIFO and a click can queue behind forty
+   thumbnails nobody asked for.
+2. **Background pre-warming of the popular catalog**, so the common path is warm
+   before anyone waits on it.
+
+Note the interaction with 6.1.2: capping discovery retries reduced the *volume*
+of speculative work but not its *priority*. Ordering is the remaining half.
+
+## Then — Phase 6.2: Settings & Profiles (before the Kickstarter launch)
+
+Positioned before Kickstarter because several items are launch prerequisites
+rather than polish, and because **Phase 7's mobile app consumes this same API** —
+anything missing here is missing on iOS.
+
+**Profile customization** — display name, bio, links.
+
+**Avatar uploads, reusing the covers pipeline.** The 6.1 work already built
+exactly this machinery: validation, resize via sharp, a size-bounded disk cache,
+and edge-cached delivery from our own origin. Avatars are the same problem with
+user-supplied bytes, so they need the same treatment **plus** upload-side limits
+— size and dimension caps enforced before sharp is handed anything.
+
+**Security list for v1:**
+
+- password change
+- email change **with re-verification**
+- profile visibility
+- **full in-app account deletion to App Store Review 5.1.1(v) standard** —
+  complete removal across Postgres *and* Elasticsearch. §5's
+  `deleteReleaseEverywhere` is the precedent: a delete that leaves an orphaned
+  search document is not a delete. This is a hard App Store requirement, not a
+  nicety, and Phase 7 ships the client that will be reviewed against it.
+
+**Plan groundwork, no billing code:** a `plan` field defaulting to `free`, and a
+**"Soundlog Pro — coming soon"** row. Groundwork only — no payment integration in
+this phase.
+
+**Kickstarter / App Store prerequisites, gated on email routing:** a privacy
+policy page and a support contact. Both are blocked behind inbound email routing
+for `hello@soundlog.app` (see the Cloudflare Email Routing item in the
+post-launch checklist).
+
 ## Then — Phase 7
+
+Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
+and account deletion in particular is what App Store review will be looking for.
 
 What Phase 7 carries, in the order the work naturally falls:
 
