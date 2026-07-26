@@ -120,7 +120,14 @@ access token silently failed every write.
   same gate. A descriptive `User-Agent` is mandatory.
 - Discovery calls (search, fuzzy match) get **one attempt** and degrade to
   empty; lookups retry. Retrying discovery burns the very throttle slots whose
-  exhaustion causes first-access failures.
+  exhaustion causes first-access failures. **This governs image bytes too**: a
+  speculative `release-group/<mbid>/front-*` thumbnail for an un-seeded
+  discography entry is discovery and gets one attempt (`isDiscoveryCoverUrl`),
+  while a stored `coverUrl` for a release we hold is a lookup and retries. A
+  discography grid asks for dozens at once — retrying each three times is how a
+  Cover Art Archive 429 became a hundred requests that made the 429 worse. One
+  attempt is a policy about how hard we try, never a claim the artwork is
+  absent: the answer is still 503, never 404.
 - **Secrets live in `.env` only** — never committed, never in a K8s ConfigMap,
   never in a URL parameter (tokens go in headers). `.env.example` holds
   placeholders only.

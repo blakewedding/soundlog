@@ -18,7 +18,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { createApp } from "../../src/app.js";
 import { __resetCoverCacheState, coverCacheDir, ensureVariant, sweepCache } from "../../src/services/coverCache.js";
-import { toProxiedUrl } from "../../src/services/coverProxy.js";
+import { isDiscoveryCoverUrl, toProxiedUrl } from "../../src/services/coverProxy.js";
 import { UpstreamUnavailableError } from "../../src/services/musicbrainzService.js";
 
 const app = createApp();
@@ -28,6 +28,8 @@ const OK_URL = "https://coverartarchive.org/release/ok/1234.jpg";
 const MISSING_URL = "https://coverartarchive.org/release/missing/1234.jpg";
 const FLAKY_URL = "https://coverartarchive.org/release/flaky/1234.jpg";
 const GARBAGE_URL = "https://coverartarchive.org/release/garbage/1234.jpg";
+/** A speculative un-seeded discography thumbnail — DISCOVERY, not a lookup. */
+const DISCOVERY_URL = "https://coverartarchive.org/release-group/dc152fec-8ecc/front-500";
 
 /** A recognisable stand-in for a cover: 900px, so a 400px render is a downscale. */
 async function fakeCover(size = 900): Promise<Buffer> {
@@ -40,6 +42,7 @@ async function fakeCover(size = 900): Promise<Buffer> {
 
 let cacheDir: string;
 let flakyAttempts = 0;
+let discoveryAttempts = 0;
 let upstreamFetches = 0;
 
 beforeAll(async () => {
@@ -57,6 +60,10 @@ beforeAll(async () => {
     if (url === FLAKY_URL) {
       flakyAttempts += 1;
       return new Response("", { status: 503 });
+    }
+    if (url === DISCOVERY_URL) {
+      discoveryAttempts += 1;
+      return new Response("", { status: 429 });
     }
     if (url === GARBAGE_URL) {
       return new Response(Buffer.from("this is not an image"), { status: 200 });
@@ -212,5 +219,58 @@ describe("sweepCache", () => {
 
     await rm(dir, { recursive: true, force: true });
     __resetCoverCacheState(cacheDir);
+  });
+});
+
+// 6.1.2 — §7's discovery principle, applied to image bytes.
+//
+// The web client builds `release-group/<mbid>/front-500` URLs speculatively for
+// un-seeded discography entries: a grid of dozens of tiles for releases nobody
+// has seeded. Retrying each of those three times is what turned an HTTP 429 from
+// the Cover Art Archive — observed live during 6.1.1 verification — into a
+// hundred requests that made the rate limiting worse.
+describe("discovery vs lookup", () => {
+  it("gives a speculative release-group thumbnail exactly one attempt", async () => {
+    discoveryAttempts = 0;
+    const res = await request(app).get(toProxiedUrl(DISCOVERY_URL, 200));
+
+    expect(res.status).toBe(503);
+    expect(discoveryAttempts).toBe(1);
+  });
+
+  it("still retries a real cover for a release we hold", async () => {
+    // The contrast that makes the rule a rule rather than a blanket reduction:
+    // a stored coverUrl is a lookup, and lookups retry.
+    flakyAttempts = 0;
+    __resetCoverCacheState(cacheDir);
+    const res = await request(app).get(toProxiedUrl(FLAKY_URL, 200));
+
+    expect(res.status).toBe(503);
+    expect(flakyAttempts).toBe(3);
+  });
+
+  it("degrades without claiming the artwork is absent", async () => {
+    // One attempt is a policy about how hard we try, never a claim that there
+    // is no cover — a 404 here would be the §1 bug, cached for a day.
+    discoveryAttempts = 0;
+    const res = await request(app).get(toProxiedUrl(DISCOVERY_URL, 400));
+
+    expect(res.status).toBe(503);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers["retry-after"]).toBe("2");
+  });
+});
+
+describe("isDiscoveryCoverUrl", () => {
+  it("classifies the two shapes apart", () => {
+    expect(isDiscoveryCoverUrl(DISCOVERY_URL)).toBe(true);
+    expect(isDiscoveryCoverUrl("https://coverartarchive.org/release-group/abc/front")).toBe(true);
+    // A stored cover for a release we hold — a lookup.
+    expect(isDiscoveryCoverUrl(OK_URL)).toBe(false);
+    expect(isDiscoveryCoverUrl("https://i.discogs.com/x/R-1.jpeg")).toBe(false);
+    // Not the redirect endpoint: a specific image under a release group.
+    expect(isDiscoveryCoverUrl("https://coverartarchive.org/release-group/abc/123-500.jpg")).toBe(
+      false
+    );
   });
 });

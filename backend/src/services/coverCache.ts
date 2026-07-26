@@ -33,11 +33,23 @@ import path from "node:path";
 import sharp from "sharp";
 import { env } from "../config/env.js";
 import { UpstreamUnavailableError } from "./musicbrainzService.js";
+import { isDiscoveryCoverUrl } from "./coverProxy.js";
 import type { CoverWidth } from "./coverProxy.js";
 
 /** Same set as `mbFetch`: conditions where the resource may well be fine. */
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+/** Attempts for a LOOKUP — a specific cover for a release we hold. */
 const MAX_ATTEMPTS = 3;
+/**
+ * Attempts for DISCOVERY — a speculative `release-group/.../front-*` thumbnail
+ * for something un-seeded. One, per §7, and then degrade.
+ *
+ * A discography grid asks for dozens of these at once. Retrying each of them
+ * three times turns one bad minute at the archive into a hundred requests that
+ * make the bad minute worse, and it is the request class we care least about:
+ * the tile keeps its placeholder and the next visit tries again.
+ */
+const DISCOVERY_ATTEMPTS = 1;
 const backoffMs = (attempt: number) => Math.min(300 * 2 ** (attempt - 1), 2000);
 /**
  * Generous next to MusicBrainz's timeout, because this transfers megabytes over
@@ -164,8 +176,9 @@ function etagFor(key: string, width: CoverWidth, bytes: number): string {
  */
 async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
   let lastProblem = "unknown";
+  const maxAttempts = isDiscoveryCoverUrl(url) ? DISCOVERY_ATTEMPTS : MAX_ATTEMPTS;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res: Response;
     try {
       res = await fetch(url, {
@@ -178,7 +191,7 @@ async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
       // exists. This is the failure that used to 500 an already-seeded release
       // when an unguarded fetch threw `TypeError: fetch failed`.
       lastProblem = `network error: ${(err as Error).message}`;
-      if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
+      if (attempt < maxAttempts) await sleep(backoffMs(attempt));
       continue;
     }
 
@@ -205,13 +218,19 @@ async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
     if (!RETRYABLE_STATUS.has(res.status)) return null; // 404 and friends: no art here
 
     lastProblem = `HTTP ${res.status}`;
-    console.warn(`[covers] ${lastProblem} on ${url} (attempt ${attempt}/${MAX_ATTEMPTS}) — retrying`);
-    if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
+    console.warn(
+      `[covers] ${lastProblem} on ${url} (attempt ${attempt}/${maxAttempts})` +
+        (attempt < maxAttempts ? " — retrying" : " — giving up")
+    );
+    if (attempt < maxAttempts) await sleep(backoffMs(attempt));
   }
 
+  // Still an UpstreamUnavailableError, not a 404: one attempt is a policy about
+  // how hard we try, never a claim that the artwork is absent. The route answers
+  // 503 + no-store, the tile keeps its placeholder, and a later visit retries.
   throw new UpstreamUnavailableError(
     "coverart",
-    `Cover art upstream unavailable after ${MAX_ATTEMPTS} attempts (${lastProblem}): ${url}`
+    `Cover art upstream unavailable after ${maxAttempts} attempt(s) (${lastProblem}): ${url}`
   );
 }
 

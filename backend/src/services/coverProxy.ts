@@ -76,6 +76,35 @@ export function isProxyableCoverHost(url: string): boolean {
   }
 }
 
+/**
+ * Is this cover request DISCOVERY rather than a lookup?
+ *
+ * The Cover Art Archive's `release-group/<mbid>/front-<size>` endpoint is a
+ * redirect that answers "whatever the front cover for this group is, if there is
+ * one". The web client builds those speculatively for **un-seeded discography
+ * entries** — a grid of forty tiles for releases nobody has seeded, most of
+ * which we will never hold. A stored `coverUrl` is the opposite: a specific
+ * image for a release we already have.
+ *
+ * §7 draws exactly this line for metadata and it applies unchanged to bytes:
+ * discovery gets one attempt and degrades, lookups retry. Retrying discovery
+ * burns the very upstream budget whose exhaustion causes first-access failures —
+ * which stopped being theoretical in 6.1.1, when a verification burst earned us
+ * `HTTP 429` from the archive and each 429 was then retried three times, forty
+ * tiles at a time.
+ */
+export function isDiscoveryCoverUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname.toLowerCase() === "coverartarchive.org" &&
+      /^\/release-group\/[^/]+\/front(-\d+)?$/.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** A `/covers/...` path produced by this module. */
 export function isProxiedCoverUrl(url: string | null | undefined): boolean {
   return typeof url === "string" && url.startsWith(PREFIX);
