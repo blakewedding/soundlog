@@ -119,6 +119,22 @@ export default function Release() {
   // The diary shows my rating per entry, so a rating change must refresh it too.
   const refreshDiary = () => queryClient.invalidateQueries({ queryKey: ["diary"] });
 
+  // "Try again" on a failed enrichment. A MUTATION, not a refetch: the server
+  // has to actually re-run the stages that failed, which a GET by internal id
+  // never does. Movement (New Order) sat failed through 39 requests because this
+  // was a refetch — the button moved nothing on the server at all.
+  const retryMutation = useMutation({
+    mutationFn: () => api.refreshRelease(releaseId ?? id),
+    onSuccess: async () => {
+      // Re-arm the poll budget: the server is working again, so the page should
+      // follow it to completion rather than staying on the failure it just left.
+      pollStartedRef.current = null;
+      pollAttemptsRef.current = 0;
+      setGaveUp(false);
+      await refetch();
+    },
+  });
+
   // Optimistic rating (Phase 5.7), same conventions as the 4.1 like button: the
   // stars move the instant you click, every cached surface is patched together,
   // the server value is reconciled on success, and a failure rolls back.
@@ -281,13 +297,9 @@ export default function Release() {
           <EnrichmentNotice
             status={release.enrichment}
             gaveUp={gaveUp}
-            onRetry={() => {
-              pollStartedRef.current = null;
-              pollAttemptsRef.current = 0;
-              setGaveUp(false);
-              void refetch();
-            }}
-            retrying={isFetching}
+            onRetry={() => retryMutation.mutate()}
+            retrying={retryMutation.isPending || isFetching}
+            error={retryMutation.error instanceof ApiError ? retryMutation.error.message : null}
           />
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>

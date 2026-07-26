@@ -27,7 +27,8 @@
  *                no label, and no cover art exists for them anywhere).
  *  - `failed`  — enrichment finished with at least one stage broken, or died
  *                outright. The data is partial and we know it. The client stops
- *                polling and shows a visible, retryable failure.
+ *                polling and shows a visible, retryable failure. This state is
+ *                STICKY: it clears only when a run succeeds, never on a timer.
  *
  * Without `failed`, a release whose Last.fm call died would poll forever and
  * present as eternal loading — trading one silent failure for a quieter one.
@@ -42,9 +43,6 @@
  */
 
 export type EnrichmentStatus = "pending" | "ready" | "failed";
-
-/** How long a failure keeps being reported before it lapses back to `ready`. */
-const FAILURE_TTL_MS = 5 * 60_000;
 
 /**
  * A hung enrichment is marked failed rather than left pending forever. Upstream
@@ -121,14 +119,13 @@ export function trackEnrichment<T>(
 export function enrichmentStatus(releaseId: string): EnrichmentStatus {
   if (inFlight.has(releaseId)) return "pending";
 
-  const failed = failedAt.get(releaseId);
-  if (failed === undefined) return "ready";
-  if (Date.now() - failed < FAILURE_TTL_MS) return "failed";
-
-  // Lapsed. The next access re-runs the heal, so claiming failure indefinitely
-  // would be staler than the truth.
-  failedAt.delete(releaseId);
-  return "ready";
+  // A failure sticks until an enrichment run actually SUCCEEDS. It used to lapse
+  // after five minutes, on the theory that the next access would re-run the
+  // heal — which was wrong twice over: no path re-ran it for an existing row
+  // (see reenrichRelease), and lapsing meant a release with a dead stage started
+  // reporting `ready` while its data was still missing. That is the same
+  // silent failure this module exists to prevent, on a timer.
+  return failedAt.has(releaseId) ? "failed" : "ready";
 }
 
 /**

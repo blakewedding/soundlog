@@ -30,9 +30,15 @@ interface Props {
   onRetry: () => void;
   /** True while that retry is in flight, so the button can't be double-fired. */
   retrying: boolean;
+  /**
+   * Why the retry itself failed, if it did — a rate-limit refusal, say. A retry
+   * that silently does nothing is the very shape this component exists to stop,
+   * so its own failure has to be visible too.
+   */
+  error?: string | null;
 }
 
-export function EnrichmentNotice({ status, gaveUp, onRetry, retrying }: Props) {
+export function EnrichmentNotice({ status, gaveUp, onRetry, retrying, error }: Props) {
   if (status !== "pending" && status !== "failed") return null;
 
   const stalled = status === "failed" || gaveUp;
@@ -63,6 +69,11 @@ export function EnrichmentNotice({ status, gaveUp, onRetry, retrying }: Props) {
       >
         {retrying ? "Retrying…" : "Try again"}
       </button>
+      {error && (
+        <span className="meta" style={{ color: "var(--danger)" }}>
+          {error}
+        </span>
+      )}
     </div>
   );
 }

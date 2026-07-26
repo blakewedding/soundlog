@@ -692,6 +692,39 @@ async function healExisting(
 }
 
 /**
+ * Re-run enrichment for a release we already hold.
+ *
+ * This exists because there was no way to ask for one, and that turned every
+ * stage failure into a permanent one. Movement (New Order) lost its `covers`
+ * stage to a Cover Art Archive timeout; the page showed a retry; the retry
+ * refetched the DTO and nothing re-executed. Production logs are unambiguous:
+ * **39 requests for that release, 2 backend log lines** — the seed and the one
+ * failure. A GET by internal id is `prisma.release.findUnique` and nothing more,
+ * so no amount of tapping could ever have repaired it.
+ *
+ * (6.1.1's URL canonicalization sharpened this: before it, arriving through an
+ * `mb:` ref re-ran the heal on every visit, which accidentally covered for the
+ * missing trigger. Canonicalizing to the internal id removed the accident and
+ * left the gap bare.)
+ *
+ * Routed through `seedFromSource` on purpose rather than calling the heal
+ * directly: that is the same path a `mb:` ref takes, it is what the suite
+ * already exercises, and it re-fetches the source detail the heal needs.
+ *
+ * Returns null when the row has no source id to re-fetch from — nothing to
+ * re-run, and saying so beats pretending a refresh happened.
+ */
+export async function reenrichRelease(releaseId: string): Promise<Release | null> {
+  const row = await prisma.release.findUnique({ where: { id: releaseId } });
+  if (!row) return null;
+
+  if (row.musicbrainzId) return seedFromSource("musicbrainz", row.musicbrainzId);
+  if (row.discogsId) return seedFromSource("discogs", row.discogsId);
+  if (row.spotifyId) return seedFromSource("spotify", row.spotifyId);
+  return null;
+}
+
+/**
  * Every cover source funnels through here, and every return is normalized at
  * this single exit — HTTPS first, then rewritten to its proxied `/covers/…`
  * form — so a source added later cannot reintroduce a cleartext URL, or a

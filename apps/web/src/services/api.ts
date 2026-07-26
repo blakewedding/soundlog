@@ -208,6 +208,18 @@ export const api = {
     ),
   getRelease: (ref: string) =>
     request<{ release: Release }>(`${API_ROUTES.releases}/${encodeURIComponent(ref)}`),
+  /**
+   * Ask the server to RE-RUN enrichment for a release it already holds.
+   *
+   * The release page's "Try again" calls this before refetching. Refetching
+   * alone was the bug: a GET by internal id is a database read, so nothing
+   * re-executed the stage that failed and the button was decoration.
+   */
+  refreshRelease: (id: string) =>
+    request<{ status: "pending" | "ready" | "failed"; release?: Release }>(
+      `${API_ROUTES.releases}/${encodeURIComponent(id)}/refresh`,
+      { method: "POST" }
+    ),
   recentReleases: (limit = 12) =>
     request<{ releases: ReleaseListItem[] }>(`${API_ROUTES.releases}?limit=${limit}`),
   getArtist: (id: string) =>

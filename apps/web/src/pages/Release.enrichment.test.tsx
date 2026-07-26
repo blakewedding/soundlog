@@ -19,7 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Release from "./Release";
-import { api } from "../services/api";
+import { api, ApiError } from "../services/api";
 
 vi.mock("../services/api", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../services/api")>();
@@ -33,6 +33,7 @@ vi.mock("../services/api", async (importOriginal) => {
       rate: vi.fn(),
       unrate: vi.fn(),
       logListen: vi.fn(),
+      refreshRelease: vi.fn(),
     },
   };
 });
@@ -146,15 +147,38 @@ describe("a release whose enrichment broke", () => {
     expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
   });
 
-  it("refetches when the retry is used", async () => {
+  it("asks the SERVER to re-run enrichment — not merely refetch", async () => {
+    // CONTRACT CHANGE (6.1.3): this case previously asserted that retry
+    // refetched, and it passed while the product was broken. Refetching is
+    // exactly what Movement (New Order) did 39 times without recovering: a GET
+    // by internal id is a database read, so nothing re-executes the failed
+    // stage. The retry has to be a mutation against the server.
     vi.mocked(api.getRelease)
       .mockResolvedValueOnce({ release: { ...SKELETON, enrichment: "failed" as const } } as never)
       .mockResolvedValue({ release: ENRICHED } as never);
+    vi.mocked(api.refreshRelease).mockResolvedValue({ status: "pending" } as never);
 
     renderRelease();
     await userEvent.click(await screen.findByRole("button", { name: /try again/i }));
 
+    expect(api.refreshRelease).toHaveBeenCalledWith("r1");
     expect(await screen.findByText("Nonesuch")).toBeInTheDocument();
+  });
+
+  it("surfaces a refused retry instead of appearing to do nothing", async () => {
+    // A rate-limited retry that silently no-ops would be the same class of bug
+    // one layer up.
+    vi.mocked(api.getRelease).mockResolvedValue({
+      release: { ...SKELETON, enrichment: "failed" as const },
+    } as never);
+    vi.mocked(api.refreshRelease).mockRejectedValue(
+      new ApiError(429, "Just tried that — give it 42 more second(s).")
+    );
+
+    renderRelease();
+    await userEvent.click(await screen.findByRole("button", { name: /try again/i }));
+
+    expect(await screen.findByText(/give it 42 more second/i)).toBeInTheDocument();
   });
 
   it("does not poll a failed release", async () => {

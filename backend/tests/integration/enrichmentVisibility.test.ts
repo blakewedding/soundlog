@@ -43,6 +43,8 @@ let slowUpstreams = true;
  * UpstreamUnavailableError, and that is what a broken stage looks like.
  */
 let breakCoverArt = false;
+/** Upstream cover-art calls, so "did the retry re-execute?" is measured. */
+let caaCalls = 0;
 
 function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? input : input.toString();
@@ -76,6 +78,7 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
     return Promise.resolve(json({ toptags: { tag: [{ name: "alt-country" }] } }));
   }
   if (url.includes("coverartarchive.org")) {
+    caaCalls += 1;
     if (breakCoverArt) {
       return Promise.reject(
         Object.assign(new TypeError("fetch failed"), {
@@ -176,20 +179,65 @@ describe("a release whose enrichment breaks", () => {
     expect(after.body.release.coverUrl).toBeNull();
   });
 
-  it("clears the failure once a later attempt succeeds", async () => {
-    breakCoverArt = false;
-
-    const row = await prisma.release.findFirst({
+  it("stays failed — it does NOT lapse back to ready on a timer", async () => {
+    // The lapse was its own silent failure: after five minutes a release with a
+    // dead stage started reporting `ready` while its data was still missing.
+    const row = await prisma.release.findUnique({
       where: { musicbrainzId: `${MBID}-broken` },
     });
-    expect(row).toBeTruthy();
+    const res = await request(app).get(`/api/releases/${row!.id}`);
+    expect(res.body.release.enrichment).toBe("failed");
+  });
 
-    await request(app).get(`/api/releases/mb:${MBID}-broken`);
+  it("a GET by internal id does NOT re-run enrichment — the bug Movement proved", async () => {
+    // 39 requests, one enrichment run. A GET by internal id is a database read;
+    // nothing re-executes. Pinned so the retry can never quietly become a
+    // refetch again.
+    const row = await prisma.release.findUnique({
+      where: { musicbrainzId: `${MBID}-broken` },
+    });
+    caaCalls = 0;
+    for (let i = 0; i < 3; i++) await request(app).get(`/api/releases/${row!.id}`);
+    expect(caaCalls).toBe(0);
+  });
+
+  it("recovers through POST /refresh once the upstream is healthy again", async () => {
+    // The end-to-end retry path, driven by INTERNAL ID — the URL the client
+    // actually holds after 6.1.1 canonicalized it. The previous version of this
+    // test re-requested through the `mb:` ref instead, which re-runs enrichment
+    // as a side effect of seeding. That is why it passed while the product was
+    // broken: it exercised a path no user takes.
+    const row = await prisma.release.findUnique({
+      where: { musicbrainzId: `${MBID}-broken` },
+    });
+    expect((await request(app).get(`/api/releases/${row!.id}`)).body.release.enrichment).toBe(
+      "failed"
+    );
+
+    breakCoverArt = false;
+    caaCalls = 0;
+    const refresh = await request(app).post(`/api/releases/${row!.id}/refresh`);
+    expect(refresh.status).toBe(200);
+    // It actually went upstream this time.
+    expect(caaCalls).toBeGreaterThan(0);
+
     await settleEnrichments();
-
     const after = await request(app).get(`/api/releases/${row!.id}`);
-    // A failure that outlived the condition causing it would be its own kind of
-    // lie — the page would offer a retry for something already fixed.
     expect(after.body.release.enrichment).toBe("ready");
+  });
+
+  it("refuses a second refresh inside the rate-limit window", async () => {
+    const row = await prisma.release.findUnique({
+      where: { musicbrainzId: `${MBID}-broken` },
+    });
+    const res = await request(app).post(`/api/releases/${row!.id}/refresh`);
+    // Visible refusal with a reason, never a silent no-op.
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatch(/give it/i);
+  });
+
+  it("404s a refresh for a release that does not exist", async () => {
+    const res = await request(app).post(`/api/releases/does-not-exist/refresh`);
+    expect(res.status).toBe(404);
   });
 });
