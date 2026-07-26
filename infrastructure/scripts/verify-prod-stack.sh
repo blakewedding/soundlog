@@ -110,14 +110,41 @@ RID="$(echo "$rel" | jqp "d['release']['id']")"
 pass "seeded $(echo "$rel" | jqp "d['release']['title']") ($RID), matched by MBID"
 
 step "5 · Rate it 4.5, review it"
+# Read the aggregate BEFORE rating. On a live site this release may already
+# carry real members' ratings, so the post-state is only predictable relative to
+# the pre-state — see the note above `expected` below.
+pre="$(curl -fsS "$BASE/api/releases/$RID?cb=$TS-pre" )"
+n0="$(echo "$pre" | jqp "d['release']['ratingCount'] or 0")"
+a0="$(echo "$pre" | jqp "d['release']['avgRating'] or 0")"
+
 curl -fsS -X PUT "$BASE/api/ratings/$RID" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"value":4.5}' >/dev/null
 curl -fsS -X POST "$BASE/api/reviews" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"releaseId\":\"$RID\",\"content\":\"Verified against the production compose stack.\",\"rating\":4.5}" >/dev/null
 agg="$(curl -fsS "$BASE/api/releases/$RID?cb=$TS-2" -H "Authorization: Bearer $TOKEN")"
-[ "$(echo "$agg" | jqp "d['release']['avgRating']")" = "4.5" ] || fail "aggregate not 4.5: $agg"
-[ "$(echo "$agg" | jqp "d['release']['myRating']")" = "4.5" ] || fail "myRating not 4.5"
-pass "avgRating 4.5, myRating 4.5"
+
+# THE assertion: OUR rating is 4.5. This is the property that proves the write
+# landed, and it is the only one that is ours alone.
+[ "$(echo "$agg" | jqp "d['release']['myRating']")" = "4.5" ] || fail "myRating not 4.5: $agg"
+
+# The aggregate is still checked, but against what it should have BECOME rather
+# than against a constant. This asserted `avgRating == 4.5` until 2026-07-26,
+# which silently assumed the throwaway account was the release's only rater. It
+# stopped being true the moment a real member rated In Rainbows (blake, 5.0, on
+# launch day): the aggregate was a correct 4.75 and the script called it a
+# failure — then, because fail() exits, skipped steps 6, 7 and 8 entirely. A
+# verification that reports a working system as broken is worse than none, and
+# this is the second time that exact lesson has been paid for here (see the
+# backup script's pg_restore -l check in the README).
+#
+# Derived from the pre-state, this is STRICTER than the old check, not looser:
+# it pins the arithmetic for any number of pre-existing ratings.
+n1="$(echo "$agg" | jqp "d['release']['ratingCount']")"
+expected="$(python3 -c "print(round((${a0} * ${n0} + 4.5) / (${n0} + 1), 4))")"
+actual="$(echo "$agg" | jqp "round(float(d['release']['avgRating']), 4)")"
+[ "$n1" = "$((n0 + 1))" ] || fail "ratingCount went $n0 -> $n1, expected $((n0 + 1)): $agg"
+[ "$actual" = "$expected" ] || fail "aggregate $actual, expected $expected from $n0 prior rating(s) averaging $a0: $agg"
+pass "myRating 4.5; aggregate $actual over $n1 rating(s), exactly as predicted from the $n0 before"
 
 step "6 · A second member follows the first and sees it in the feed"
 curl -fsS -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
