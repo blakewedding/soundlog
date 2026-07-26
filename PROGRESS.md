@@ -5,7 +5,7 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-25 — Phase 6.1 (cover delivery) shipped
+**Last updated:** 2026-07-26 — Phase 6.1 + 6.1.1 shipped and verified live
 
 ## Status
 
@@ -15,7 +15,7 @@ we, what's live, what's next" for a session starting cold.
 served over TLS from a Hetzner VPS in Helsinki, with real users able to
 register, verify an email address, and log music.
 
-Suites green: **backend 259 + web 174 + mobile 38 = 471 tests**, all three
+Suites green: **backend 265 + web 184 + mobile 38 = 487 tests**, all three
 packages typecheck clean, `expo-doctor` 18/18.
 
 **Day two (2026-07-25):** the first user-reported bug — rating clicks committed
@@ -36,7 +36,9 @@ every throwaway account from verification was purged first, from both
 Postgres and Elasticsearch, so the first durable account is a real one.
 
 **Next: Phase 7.** Phase 6.1 (cover delivery) is done — covers are proxied,
-resized and served from our own origin; see its section below. Phase 7
+resized and served from our own origin — and **6.1.1** closed the defect it
+surfaced: a half-seeded release page that rendered its gaps as though they were
+the finished record. Both sections below. Phase 7
 still carries the mobile app's missing surface (auth, release detail, write
 actions), real icon design, and the navigation component the 380px three-row nav
 is standing in for. Both are sequenced at the end of this file.
@@ -1094,6 +1096,109 @@ Unchanged and unaffected: `apps/mobile` renders no images at all. Phase 7's
 screens inherit the proxied URLs for free, with one thing to remember — stored
 URLs are **relative** (`/covers/…`), so a native client must resolve them
 against its API origin.
+
+## Phase 6.1.1 — the half-seeded release page (DONE 2026-07-26)
+
+Reported from production on mobile Safari, hours after 6.1 shipped: a newly
+opened release rendered with **no label, no genres and a grey cover tile**, and
+stayed that way through scrolling, tapping, resizing and zooming. Rating the
+album made everything appear.
+
+### The diagnosis, which inverted the report
+
+Rating was not fixing anything. `ratingMutation` calls
+`invalidateQueries(["release", …])`, and that invalidation was **the only refetch
+trigger anywhere on the page**. Everything else was already correct and already
+arriving — the page simply never asked again.
+
+Underneath: seeding writes a canonical skeleton and races enrichment against a
+1,500ms budget (5.7). Production logs show that race is lost on **every** seed —
+twelve consecutive `servedAs: "skeleton"`, Tunes 2011 to 2019 through Deadbeat.
+The response carrying that skeleton was an ordinary 200 with nothing to
+distinguish it from the finished record, so the client cached it and drew the
+gaps as the truth. **A page rendering partial data indistinguishably from
+complete data is the §6 silent failure**, and it is the second time this project
+has shipped that shape.
+
+Two contributors were 6.1's own:
+
+- **`cover-tint` ran second and ate the budget.** Logs caught it burning
+  **1,356ms of 1,500ms** while artist, label and genres queued behind a fetch
+  and a sharp encode. It runs last now: a missing tint costs a flat tile, a
+  missing label costs the page its content.
+- **`enrichExisting` was awaited in the request path with no ceiling** — the
+  reason a *revisit* through an `mb:` ref could be slower than a first visit.
+
+### What shipped
+
+`toReleaseDTO` reports `enrichment: pending | ready | failed`, tracked per
+release id in `services/enrichmentState.ts`. **`failed` is terminal and real**:
+a stage that throws is recorded, a hung enrichment is failed by watchdog at 90s,
+and a later success clears it. Without it a broken stage would poll forever —
+the same silent failure wearing a spinner.
+
+The page polls while pending (800ms ×1.6, 6s cap, **60s budget**), then stops and
+shows a retryable failure. A missing field draws a placeholder **only while
+pending**; a field that genuinely does not exist stays absent, because those two
+looking identical was the whole defect. Ref-keyed cache entries are no longer
+retained and the URL canonicalizes to the resolved id, so a return visit cannot
+be won by a stale skeleton.
+
+### The tint, revised
+
+The 5.5 mute compressed every cover into L 0.10–0.24. *Sky Blue Sky* samples
+`#d2d2d2` — starlings on a white sky — and came out `rgb(55,55,55)` against an
+empty tile of `rgb(28,28,33)`. On a phone those are the same dark grey, which is
+why the tile read as broken. The band widens to **0.10–0.34**, saturation cap and
+hue untouched.
+
+This is the *opposite* of the twelve-identical-greys mistake, not a repeat: that
+failure normalised **chroma** and discarded lightness; this restores lightness.
+Measured over the catalog: **153/154 distinct** (was 152/154), luminance
+**33–138** (was 27–76). Sky Blue Sky now sits **69 luminance points** above the
+empty tile, and pure black does not move at all.
+
+### Verified on production
+
+| check | evidence |
+|---|---|
+| cold, never-viewed | `mb:e9f4b96a…` (Slint — *Spiderland*): `pending` at t+0, **`ready` at t+23s** with label *Touch and Go Records*, 5 genres, cover and tint `#717571` — **no interaction at all** |
+| visibly loading between | spinner + "Still fetching details for this release…", shimmering tile, skeleton bar where the label lands (mobile viewport, screenshotted) |
+| warm | 287ms TTFB, complete on the **first** response |
+| `mb:` canonicalizes | `/release/mb:e9f4b96a…` → `/release/cms17uf3f0000yxt9nncnpbj2` in a real browser |
+| pale tile | Sky Blue Sky renders `rgb(97,97,97)`, 69 points above the empty tile |
+
+**§1 proved itself under real pressure during this verification.** The burst of
+seeds got us **HTTP 429 from the Cover Art Archive**. The proxy retried three
+times, raised `UpstreamUnavailableError`, the stage reported failed, and
+*Wildflower* recovered to `ready` with its cover on a later pass — only its tint
+column stayed null, which is the additive degradation by design. Nothing cached
+a false "no art".
+
+### Also fixed: the long-standing flaky backend test
+
+Identified with measurements rather than guesses. `tabbedSearch.test.ts > the
+'all' tab returns every bucket key` searches a nonsense token, which is the
+**thin-results** condition that fans out to **live** MusicBrainz behind the
+process-wide 1 req/s gate — inside a 5s default timeout. Measured **2,997ms on a
+passing run**, file total ranging 516ms → 3,457ms, and timing out whenever the
+machine was loaded. None of its four cases is about discovery, so the fan-out is
+stubbed: **~480ms, stable**.
+
+*Self-inflicted, found and fixed in the same session:* the new
+`enrichmentVisibility` suite first cleaned up with `contains: RUN`, and every
+suite derives `RUN` from `Date.now().toString(36)` — two files loading in the
+same second share it. It deleted the discography suite's artist mid-run.
+Teardowns scope to exact ids now. Cross-suite demolition is worse than debris:
+the global teardown catches debris, and nothing catches this.
+
+### Deliberate test-contract changes (§9)
+
+Both are consequences of intended behaviour changes; neither is a relaxation.
+`coverColor`'s white-sleeve ceiling is **re-derived** from the new band (61 →
+112, still nowhere near white), and a new case pins that a pale sleeve reads
+paler than an empty tile — the property the fix bought, so a future narrowing
+cannot silently undo it.
 
 ## Then — Phase 7
 
