@@ -47,7 +47,23 @@ releasesRouter.get("/:id", optionalAuth, async (req: AuthedRequest, res, next) =
   try {
     const release = await resolveRelease(req.params.id);
     if (!release) throw new HttpError(404, "Release not found");
-    res.json({ release: await toReleaseDTO(release, req.userId) });
+    const dto = await toReleaseDTO(release, req.userId);
+
+    // A release that is still being filled in must NOT be cached. This payload
+    // now carries a progress field that changes every few seconds, while the
+    // edge caches /api/releases for 60s — so an anonymous visitor could poll
+    // every second and be handed the same minute-old `pending` snapshot the
+    // whole time, with the page's self-healing quietly disabled.
+    //
+    // That is not hypothetical: it fooled the 6.1.3 verification. Six polls over
+    // thirty seconds all reported a coverless Movement while Postgres had
+    // already healed it.
+    //
+    // Only in-progress and failed responses opt out; a settled release is still
+    // cached for the full 60s, which is where the edge earns its keep.
+    if (dto.enrichment !== "ready") res.set("Cache-Control", "no-store");
+
+    res.json({ release: dto });
   } catch (err) {
     next(err);
   }
@@ -93,7 +109,12 @@ releasesRouter.post("/:id/refresh", optionalAuth, async (req: AuthedRequest, res
       );
     }
 
-    res.json({ status: enrichmentStatus(refreshed.id), release: await toReleaseDTO(refreshed, req.userId) });
+    // Never cached: this is the response that says "I just started working".
+    res.set("Cache-Control", "no-store");
+    res.json({
+      status: enrichmentStatus(refreshed.id),
+      release: await toReleaseDTO(refreshed, req.userId),
+    });
   } catch (err) {
     next(err);
   }

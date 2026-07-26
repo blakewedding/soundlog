@@ -34,6 +34,23 @@ sub vcl_recv {
 }
 
 sub vcl_backend_response {
+    # The origin's refusal wins. The rules below set a TTL by URL, which would
+    # otherwise override a `no-store` the backend sent deliberately — and the
+    # backend sends it for a reason: a release still being enriched carries a
+    # progress field that changes every few seconds, and caching that for 60s
+    # hands an anonymous visitor a stale `pending` while the page polls against
+    # it. Measured during 6.1.3 verification: six polls over thirty seconds all
+    # reported a coverless release that Postgres had already healed.
+    #
+    # `uncacheable` + a short TTL is a hit-for-pass object: subsequent requests
+    # skip the cache instead of queueing behind an uncacheable fetch. Ten
+    # seconds, not the usual two minutes — enrichment settles in seconds, and
+    # normal 60s caching should resume as soon as it does.
+    if (beresp.http.Cache-Control ~ "no-store") {
+        set beresp.uncacheable = true;
+        set beresp.ttl = 10s;
+        return (deliver);
+    }
     if (bereq.url ~ "^/api/(releases|search)") {
         set beresp.ttl = 60s;
         set beresp.grace = 30s;

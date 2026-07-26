@@ -58,7 +58,11 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
       return Promise.resolve(
         json({
           id: asked,
-          title: asked === MBID ? TITLE : `${TITLE} (broken)`,
+          // Unique per mbid. When every variant shared a title, dedupe's
+          // title+artist fallback merged them onto ONE row and later lookups by
+          // musicbrainzId came back null — the suite tripping over §3's own
+          // warning about name-based identity.
+          title: asked === MBID ? TITLE : `${TITLE} ${asked.slice(MBID.length + 1)}`,
           "primary-type": "Album",
           "secondary-types": [],
           "first-release-date": "2007-05-11",
@@ -72,7 +76,14 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
         return json({ id: ARTIST_MBID, name: ARTIST, "sort-name": ARTIST, type: "Group" });
       })();
     }
-    if (url.includes("/release?release-group=")) return Promise.resolve(json({ releases: [] }));
+    if (url.includes("/release?release-group=")) {
+      return (async () => {
+        // The label browse: unlike the artist lookup, this runs for every new
+        // release rather than being answered from cache after the first.
+        if (slowUpstreams) await sleep(2_000); // outlast ENRICH_BUDGET_MS
+        return json({ releases: [] });
+      })();
+    }
   }
   if (url.includes("audioscrobbler.com")) {
     return Promise.resolve(json({ toptags: { tag: [{ name: "alt-country" }] } }));
@@ -108,7 +119,7 @@ afterAll(async () => {
   // suite then 404'd on an artist it had legitimately created. Cross-suite
   // demolition is worse than leftover debris: the global teardown catches
   // debris, and nothing catches this.
-  for (const mbid of [MBID, `${MBID}-broken`]) {
+  for (const mbid of [MBID, `${MBID}-broken`, `${MBID}-cacheable`]) {
     const row = await prisma.release.findUnique({ where: { musicbrainzId: mbid } });
     if (row) await deleteReleaseEverywhere(row.id).catch(() => {});
   }
@@ -141,6 +152,23 @@ describe("a release seeded on first access", () => {
     // was written, rated or invalidated to get it.
     expect(res.body.release.genres).toContain("alt-country");
     expect(res.body.release.artist?.name).toBe(ARTIST);
+  });
+
+  it("forbids caching while pending, and allows it once ready", async () => {
+    // The edge caches /api/releases for 60s. A payload whose progress field
+    // changes every few seconds cannot be part of that, or an anonymous
+    // visitor polls a frozen snapshot and the page never heals.
+    __resetEnrichmentState();
+    slowUpstreams = true;
+    const pending = await request(app).get(`/api/releases/mb:${MBID}-cacheable`);
+    expect(pending.body.release.enrichment).toBe("pending");
+    expect(pending.headers["cache-control"]).toBe("no-store");
+
+    await settleEnrichments();
+    const ready = await request(app).get(`/api/releases/${pending.body.release.id}`);
+    expect(ready.body.release.enrichment).toBe("ready");
+    // Settled releases stay cacheable — that is where the edge earns its keep.
+    expect(ready.headers["cache-control"]).toBeUndefined();
   });
 
   it("stays `ready` for a warm read", async () => {
