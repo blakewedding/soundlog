@@ -5,7 +5,9 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-26 — Phase 6.1.4 done (6.1 · 6.1.1 · 6.1.2 · 6.1.3 · 6.1.3b · 6.1.4)
+**Last updated:** 2026-07-26 — Phase 6.1.4 done, deployed and phone-checked
+(6.1 · 6.1.1 · 6.1.2 · 6.1.3 · 6.1.3b · 6.1.4). Next: **6.1.5**, the `CoverImage`
+load-event race. Pre-warming ships disabled — enable tomorrow as its own step.
 
 ## Status
 
@@ -40,10 +42,18 @@ half-seeded release page it surfaced (6.1.1), the discovery retry cap (6.1.2), a
 retry button that only looked like one (6.1.3), and the edge caching that hid
 the fix from signed-out visitors (6.1.3b). Sections for each below.
 
-**6.1.4 is done** — cold-seed and discography latency under browse load: priority
-tiers at the MusicBrainz gate, a concurrency bound on the Cover Art Archive (the
-half the brief did not name, and the one the report was actually about), and
-background pre-warming. Section below. **Next: 6.2** — Settings & Profiles,
+**6.1.4 is done, deployed and verified on production** — cold-seed and
+discography latency under browse load: priority tiers at the MusicBrainz gate, a
+concurrency bound on the Cover Art Archive (the half the brief did not name, and
+the one the report was actually about), and background pre-warming. Live at
+`ba52e2e`, phone-checked by Blake. Section below.
+
+**Two follow-ups carried out of it.** **Pre-warming ships DISABLED** and is
+enabled tomorrow as its own step (see the deployment section). And **6.1.5** —
+the `CoverImage` load-event race found during verification — is filed as the
+next piece of work, below.
+
+**Next: 6.1.5**, then **6.2** — Settings & Profiles,
 before the Kickstarter launch. Phase 7
 still carries the mobile app's missing surface (auth, release detail, write
 actions), real icon design, and the navigation component the 380px three-row nav
@@ -528,6 +538,13 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 - **Ubuntu 24.04 LTS over 26.04** — production runs LTS.
 
 ## Open items
+- **Enable catalog pre-warming in production — scheduled for 2026-07-27.** It
+  shipped with 6.1.4 but **disabled** (`PREWARM_INTERVAL_MINUTES` unset → 0), so
+  that the ordering and concurrency work could prove itself alone on a live box
+  first. Turning it on is a one-line `.env.production` edit plus
+  `up -d backend` — no rebuild, no migration. Start at 60 minutes and watch
+  `[prewarm] warmed N release(s)` before shortening it. Deliberately its own
+  step, not a second change riding a deploy.
 - **401 → refresh → replay against a genuinely aged token** — unit-tested, never
   exercised against a real >15-minute session. Low risk, but it is the one auth
   path no automated test can honestly claim.
@@ -1443,6 +1460,10 @@ opacity: "0" }`, a state only reachable by the missed event. Intermittent
 folded into this commit. It is the same silent-failure shape as 6.1.1: a failed
 or stuck image is indistinguishable from a slow one.
 
+**Now filed as Phase 6.1.5**, below — and sequenced *before* 6.2, because it
+reproduces the very cover symptom 6.1.4 set out to fix and would otherwise make
+this phase's result unfalsifiable by eye.
+
 ### Instruments kept
 
 `scratchpad` harnesses are gone, but two things stayed in the tree: `mbGateDepth()`
@@ -1451,6 +1472,117 @@ the starvation warning in `PriorityRateGate` — strict priority *can* starve
 `browse` under sustained clicks, and rather than build ageing for load this site
 does not have, the wait is measured and logged the day it stops being
 hypothetical.
+
+### Deployed to production (2026-07-26)
+
+`ba52e2e`, then `57aa514` for the verifier fix below. No Prisma migration — the
+two new env vars both default safely, so `.env.production` needed no edit.
+
+| | |
+|---|---|
+| Pre-deploy dump | `soundlog-20260726-183036Z.dump`, 72K, self-verified by `pg_restore -l` |
+| `migrate` | exited **0** |
+| Containers | all six healthy; only `backend` and `web` recreated |
+| Running image | `upstreamPriority.ts` · `prewarmService.ts` · `singleInstance.ts` present; gate constants read back out of the container as **12 / 3** |
+| Boot log | clean — including **two expected silences**: no `[prewarm]` line, no replica warning |
+
+**Pre-warming is DISABLED in production** (`PREWARM_INTERVAL_MINUTES` unset → 0).
+Deliberate: one change at a time on a live box, so the ordering and concurrency
+work prove themselves on their own first. **Enable it tomorrow as its own step**
+— a one-line `.env.production` edit plus a backend recreate, no rebuild — after a
+day of normal traffic on this build.
+
+*Phone check passed* (Blake), which is what closed the phase.
+
+### The deploy gate had been lying for two days
+
+The first verification run failed at step 5: `FAIL aggregate not 4.5`. **The
+product was correct and the check was wrong.**
+
+`verify-prod-stack.sh` rated *In Rainbows* 4.5 from a throwaway account and
+asserted `avgRating == 4.5` — which is only true when that account is the
+release's **only** rater. Blake rated it 5.0 on launch day, 2026-07-24, so the
+aggregate was a perfectly correct **4.75** and the script called it a failure.
+The write had landed exactly as intended: `myRating: 4.5`, `ratingCount: 2`,
+review created.
+
+**What made it more than cosmetic:** `fail()` calls `exit 1`, so steps **6, 7 and
+8 never ran** — the follow/feed journey, the Varnish caching policy and the SPA
+shell had been silently unverified on **every deploy since 24 July**. The bug
+was not the wrong answer; it was that a wrong answer stopped the rest of the
+chain and nobody noticed the chain had got shorter.
+
+Fixed in `57aa514` as a **deliberate test-contract change (§9)**, and made
+*stricter*, not looser. The aggregate is read before rating and the post-state
+predicted from it:
+
+```
+expected = (a0 * n0 + 4.5) / (n0 + 1)
+```
+
+which pins the aggregation arithmetic for **any** number of pre-existing ratings,
+where the old constant only worked for zero. `ratingCount` must advance by
+exactly one — which also pins that posting a review carrying a rating *upserts*
+rather than creating a second. `myRating == 4.5` is promoted to the primary
+assertion: it is the only property that is ours alone, and therefore the only one
+that actually proves the write landed. The pre-read carries its own cache-buster
+so Varnish cannot hand it a stale aggregate and poison the prediction.
+
+Re-run after the fix: **all eight steps green**, including the three that had
+stopped running.
+
+```
+5 · myRating 4.5; aggregate 4.75 over 2 rating(s), exactly as predicted from the 1 before
+6 · follows (bodyless POST survives the proxy) · feed carries both RATING and REVIEW
+7 · anonymous popular feed HIT · authenticated MISS (per-viewer, never shared)
+8 · shell no-cache, hashed assets immutable, deep links fall back
+```
+
+Cleanup left nothing behind: 2 throwaway users removed, **0 orphaned
+Elasticsearch documents**, *In Rainbows* back to Blake's 5.0 alone.
+
+**The law this leaves behind: an absolute assertion cannot survive a living
+platform.** A verification that hard-codes a value it does not solely control
+will eventually be falsified by the product working correctly — by a real member
+doing a real thing. Assert what you control (`myRating`), and for anything shared,
+**predict it from the pre-state instead of assuming you are the only actor.** The
+same shape as the 6b backup script that rejected every good dump: a check that
+reports a working system as broken is worse than no check, because it is trusted.
+And a `fail()` that exits turns one stale assumption into a silently shortened
+suite — which is how this went unnoticed for two days.
+
+## Next — Phase 6.1.5: the CoverImage load-event race
+
+**Filed from 6.1.4's verification, and reproducing the original cover symptom** —
+which is why it is next rather than queued behind 6.2. A cover that never
+appears looks exactly like the 6.1 latency bug this phase just fixed, so leaving
+it in place makes the fix unfalsifiable by eye.
+
+**The defect.** `CoverImage` fades in on load: `.img-loading` sets `opacity: 0`,
+cleared only by React's `onLoad`. An image that finishes decoding **before React
+attaches the handler** — a warm HTTP cache, a `/covers/` rendition already on
+disk, a bfcache restore — never fires an `onLoad` React can see, so the element
+stays **permanently invisible** behind its tint tile.
+
+**Caught live**, not theorised: `{ complete: true, naturalWidth: 250,
+opacity: "0" }`. A decoded, correctly-sized image rendered fully transparent —
+a state reachable *only* by the missed event.
+
+**The fix:** check `img.complete` on mount (via a ref) and clear the loading
+state immediately when the image is already there, rather than waiting for an
+event that has already happened. `onLoad` stays for the cold path.
+
+**The regression test must drive the CACHED path**, which is the whole point —
+the bug is invisible to any test whose image loads after mount, and jsdom fires
+nothing on its own. Assert the rendered opacity/class for an image that reports
+`complete: true` at mount time, the way 5.5's `data-fill` assertion pins the mark
+rather than the value.
+
+**Why it is 6.1.5 and not folded into 6.1.4:** it is a client rendering bug, not
+a latency one; it is intermittent and warm-cache dependent; and it wants its own
+before/after. It is the same silent-failure shape as 6.1.1 — **a stuck image is
+indistinguishable from a slow one** — which is the third time that shape has cost
+this project a phase.
 
 ## Then — Phase 6.2: Settings & Profiles (before the Kickstarter launch)
 
