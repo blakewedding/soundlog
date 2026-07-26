@@ -111,6 +111,18 @@ export interface Release {
   coverUrlLarge?: string | null; // the lightbox rendition
   /** Raw dominant colour (#rrggbb) for the placeholder tint; muted client-side. */
   coverColor?: string | null;
+  /**
+   * Whether the server is still filling this release in.
+   *
+   *   pending — enrichment in flight; fields may still be missing, and the page
+   *             must show that rather than presenting the gaps as final
+   *   ready   — done; what is here IS the answer, absences included
+   *   failed  — finished with a broken stage; partial and known to be partial
+   *
+   * Optional so an older client (or a response cached from before this shipped)
+   * reads undefined and behaves exactly as it did before.
+   */
+  enrichment?: "pending" | "ready" | "failed";
   type: ReleaseType;
   trackCount?: number | null;
   spotifyId?: string | null;

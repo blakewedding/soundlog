@@ -17,6 +17,12 @@ interface Props {
    * localStorage round-trip.
    */
   color?: string | null;
+  /**
+   * True when the artwork is still being fetched server-side. Draws the tile as
+   * loading rather than as a release that simply has no cover — the two were
+   * indistinguishable, which is the whole of the 6.1.1 defect in one tile.
+   */
+  pending?: boolean;
   zoomable?: boolean;
   onClick?: () => void;
 }
@@ -47,7 +53,7 @@ interface Props {
  * inside the tile instead of being center-cropped into an unrecognizable
  * smear by object-fit: cover.
  */
-export function CoverImage({ src, alt, size = "grid", color, zoomable, onClick }: Props) {
+export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, onClick }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [letterbox, setLetterbox] = useState(false);
   // Seeded synchronously so a known colour is present on the very first paint
@@ -102,6 +108,7 @@ export function CoverImage({ src, alt, size = "grid", color, zoomable, onClick }
   );
 
   const background = tint ? { background: tint } : undefined;
+  const state = pending ? " cover-pending" : "";
 
   // A clickable cover is a control, so it is rendered as a real <button>. It
   // used to be a <div onClick>, which meant the release page's zoom-to-full-size
@@ -112,7 +119,7 @@ export function CoverImage({ src, alt, size = "grid", color, zoomable, onClick }
     return (
       <button
         type="button"
-        className={`cover cover-button${zoomable ? " cover-zoom" : ""}`}
+        className={`cover cover-button${zoomable ? " cover-zoom" : ""}${state}`}
         onClick={onClick}
         style={background}
         aria-label={`${alt} — view full size`}
@@ -123,7 +130,7 @@ export function CoverImage({ src, alt, size = "grid", color, zoomable, onClick }
   }
 
   return (
-    <div className={`cover${zoomable ? " cover-zoom" : ""}`} style={background}>
+    <div className={`cover${zoomable ? " cover-zoom" : ""}${state}`} style={background}>
       {image}
     </div>
   );

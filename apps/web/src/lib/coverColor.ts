@@ -108,9 +108,27 @@ function muteIntoPalette(r: number, g: number, b: number): string {
 
   const SAT_BOOST = 1.3;
   const SAT_CAP = 0.45;
-  /** Lightness band. --ink-2 sits at ~0.12, so tiles vary gently around it. */
+  /**
+   * Lightness band, widened in 6.1.1 from 0.10–0.24 to 0.10–0.34.
+   *
+   * The old band compressed every cover into 14 points of lightness, which meant
+   * a pale sleeve could not read as pale: Wilco's *Sky Blue Sky* samples #d2d2d2
+   * — starlings against a white sky — and came out rgb(55,55,55), against an
+   * empty --ink-2 tile of rgb(28,28,33). On a phone those are the same dark
+   * grey, and the tile was reported as looking broken.
+   *
+   * Widening is the opposite of the mistake documented above, not a repeat of
+   * it: that failure came from normalising CHROMA, which threw the lightness
+   * signal away. This restores lightness while leaving the saturation cap and
+   * the hue untouched, so the restraint the palette is protecting is intact —
+   * what changes is that a white record now looks like one.
+   *
+   * Measured over the 154-cover catalog: 153/154 distinct tints (was 152/154),
+   * luminance spread 33–138 (was 27–76). Sky Blue Sky moves from 26 points above
+   * the empty tile to 68; pure black does not move at all.
+   */
   const L_FLOOR = 0.1;
-  const L_RANGE = 0.14;
+  const L_RANGE = 0.34;
 
   const mutedS = Math.min(s * SAT_BOOST, SAT_CAP);
   const mutedL = L_FLOOR + l * L_RANGE;

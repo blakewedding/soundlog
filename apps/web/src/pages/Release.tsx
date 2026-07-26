@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import type { FeedReview } from "@soundlog/shared";
@@ -13,21 +13,99 @@ import { ArtistCredit } from "../components/album/ArtistCredit";
 import { Lightbox } from "../components/ui/Lightbox";
 import { ReviewForm } from "../components/review/ReviewForm";
 import { ReviewCard } from "../components/review/ReviewCard";
+import { EnrichmentNotice } from "../components/album/EnrichmentNotice";
+
+/**
+ * Polling cadence while the server reports `enrichment: "pending"`.
+ *
+ * Bounded on purpose, in both directions: backoff so a release queued behind a
+ * saturated MusicBrainz throttle is not asked twice a second, and a hard budget
+ * so a page that never finishes enriching stops claiming to be loading and shows
+ * a retryable failure instead.
+ */
+const POLL_BASE_MS = 800;
+const POLL_FACTOR = 1.6;
+const POLL_MAX_MS = 6_000;
+const POLL_BUDGET_MS = 60_000;
 
 export default function Release() {
   const { id = "" } = useParams();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [lightboxOpen, setLightboxOpen] = useState(false);
   // Transient "Logged ✓" confirmation; the durable signal is myLogCount.
   const [justLogged, setJustLogged] = useState(false);
 
-  const { data, isLoading, isError } = useQuery({
+  // A release reached through a source ref ("mb:<mbid>") resolves to a real row
+  // with its own id. Keying the cache on the REF meant a return visit re-served
+  // the skeleton cached under that ref — the stale half-record winning over the
+  // enriched one sitting in the cache under the release's actual id. Ref-keyed
+  // entries are therefore not kept (gcTime 0), the response is written under the
+  // canonical id, and the URL is rewritten to match. One entry per release.
+  const isRef = id.includes(":");
+
+  // Polling state. Held in refs because `refetchInterval` is called to schedule
+  // the NEXT poll, which is exactly where the backoff belongs and is not a place
+  // that may set state.
+  const pollStartedRef = useRef<number | null>(null);
+  const pollAttemptsRef = useRef(0);
+  const [gaveUp, setGaveUp] = useState(false);
+
+  const { data, isLoading, isError, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ["release", id, user?.id],
     queryFn: () => api.getRelease(id),
     enabled: id.length > 0,
     retry: 1,
+    gcTime: isRef ? 0 : undefined,
+    // Poll while the server says it is still enriching, so the finished record
+    // appears on its own. Before this, nothing on the page refetched and the
+    // skeleton sat there until a mutation happened to invalidate the query.
+    refetchInterval: (query) => {
+      if (query.state.data?.release.enrichment !== "pending") return false;
+
+      const started = pollStartedRef.current ?? Date.now();
+      if (Date.now() - started > POLL_BUDGET_MS) return false;
+
+      // Backoff: enrichment usually lands within a few seconds, and a release
+      // queued behind a saturated MusicBrainz throttle must not be asked twice a
+      // second for a minute.
+      const attempt = pollAttemptsRef.current++;
+      return Math.min(POLL_BASE_MS * POLL_FACTOR ** attempt, POLL_MAX_MS);
+    },
   });
+
+  const enrichment = data?.release.enrichment;
+
+  // `dataUpdatedAt` moves on every successful poll even when the payload is
+  // byte-identical, which is what lets this notice budget exhaustion.
+  useEffect(() => {
+    if (enrichment !== "pending") {
+      pollStartedRef.current = null;
+      pollAttemptsRef.current = 0;
+      setGaveUp(false);
+      return;
+    }
+    if (pollStartedRef.current === null) {
+      pollStartedRef.current = Date.now();
+      pollAttemptsRef.current = 0;
+      setGaveUp(false);
+      return;
+    }
+    // Budget exhausted: stop, and SAY so. An indefinite spinner is the same
+    // silent failure wearing a different costume.
+    if (Date.now() - pollStartedRef.current > POLL_BUDGET_MS) setGaveUp(true);
+  }, [enrichment, dataUpdatedAt]);
+
+  // Canonicalize: write the response under the resolved id and move the URL
+  // there, so a later visit reads the enriched entry rather than a ref-keyed
+  // skeleton.
+  const resolvedId = data?.release.id;
+  useEffect(() => {
+    if (!resolvedId || !isRef || resolvedId === id) return;
+    queryClient.setQueryData(["release", resolvedId, user?.id], data);
+    navigate(`/release/${encodeURIComponent(resolvedId)}`, { replace: true });
+  }, [resolvedId, isRef, id, user?.id, data, queryClient, navigate]);
 
   const releaseId = data?.release.id;
   const { data: reviewsData } = useQuery({
@@ -120,6 +198,9 @@ export default function Release() {
   const logCount = release.myLogCount ?? 0;
   const year = release.releaseDate?.slice(0, 4);
   const largeCover = release.coverUrlLarge ?? release.coverUrl;
+  // Fields may still be on their way. Used to draw placeholders where data is
+  // missing, so an in-progress gap never reads as a settled absence.
+  const stillArriving = release.enrichment === "pending" && !gaveUp;
 
   const rate = (value: number) => ratingMutation.mutate(value);
   const unrate = () => ratingMutation.mutate(null);
@@ -138,6 +219,7 @@ export default function Release() {
             color={release.coverColor}
             size="hero"
             alt={`${release.title} cover`}
+            pending={stillArriving && !release.coverUrl}
             zoomable={Boolean(largeCover)}
             onClick={() => largeCover && setLightboxOpen(true)}
           />
@@ -196,6 +278,18 @@ export default function Release() {
             />
           </div>
 
+          <EnrichmentNotice
+            status={release.enrichment}
+            gaveUp={gaveUp}
+            onRetry={() => {
+              pollStartedRef.current = null;
+              pollAttemptsRef.current = 0;
+              setGaveUp(false);
+              void refetch();
+            }}
+            retrying={isFetching}
+          />
+
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <span className="type-badge">{RELEASE_TYPE_LABELS[release.type]}</span>
             {year && (
@@ -204,10 +298,15 @@ export default function Release() {
               </Link>
             )}
             {release.trackCount ? <span className="meta">{release.trackCount} tracks</span> : null}
-            {release.label && (
+            {release.label ? (
               <Link to={`/label/${release.label.id}`} className="artist-link meta">
                 {release.label.name}
               </Link>
+            ) : (
+              // A label we are still fetching is drawn as a placeholder; a label
+              // that genuinely isn't there stays absent. The whole defect was
+              // these two looking identical.
+              stillArriving && <span className="skeleton skeleton-text" aria-hidden="true" />
             )}
           </div>
 

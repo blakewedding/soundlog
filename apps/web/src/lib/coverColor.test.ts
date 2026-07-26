@@ -72,8 +72,25 @@ describe("extractCoverColor", () => {
     stubCanvas([255, 255, 255, 255]);
     const color = await extractCoverColor(SRC);
     const [r, g, b] = color!.match(/\d+/g)!.map(Number);
-    // Lightness is compressed to at most L_FLOOR + L_RANGE = 0.24.
-    expect(Math.max(r, g, b)).toBeLessThan(95);
+    // CONTRACT CHANGE (6.1.1): the band widened from 0.10–0.24 to 0.10–0.34, so
+    // the ceiling moves from 0.24·255≈61 to 0.44·255≈112. The bound is
+    // re-derived from the band, not loosened until the suite passed — the
+    // property being defended is unchanged: the lightest possible tile is still
+    // a mid grey on a warm-black page, nowhere near white.
+    expect(Math.max(r, g, b)).toBeLessThan(120);
+  });
+
+  it("makes a pale sleeve visibly paler than an empty tile", async () => {
+    // The 6.1.1 defect: Sky Blue Sky (#d2d2d2, starlings on white) muted to
+    // rgb(55,55,55) against an empty --ink-2 tile of rgb(28,28,33) — the same
+    // dark grey to anyone holding a phone. This is the property that fixed it,
+    // pinned so a future narrowing of the band cannot silently undo it.
+    stubCanvas([210, 210, 210, 255]);
+    const color = await extractCoverColor(SRC);
+    const [r, g, b] = color!.match(/\d+/g)!.map(Number);
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const emptyTile = 0.2126 * 28 + 0.7152 * 28 + 0.0722 * 33; // --ink-2
+    expect(luminance - emptyTile).toBeGreaterThan(50);
   });
 
   it("preserves hue so different sleeves give visibly different tiles", async () => {

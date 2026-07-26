@@ -17,6 +17,11 @@ import {
 } from "./coverProxy.js";
 import { sampleCoverTint } from "./coverTint.js";
 import {
+  enrichmentStatus,
+  trackEnrichment,
+  type EnrichmentHandle,
+} from "./enrichmentState.js";
+import {
   esSearchReleases,
   esSearchArtists,
   esSearchUsers,
@@ -231,22 +236,10 @@ async function seedFromSource(name: SourceName, id: string): Promise<Release | n
 // a saturated MusicBrainz throttle still answers promptly instead of hanging.
 const ENRICH_BUDGET_MS = 1_500;
 
-// In-flight background enrichments, so tests (and shutdown) can await them
-// rather than racing a detached promise.
-const pendingEnrichments = new Set<Promise<unknown>>();
-
-/** Await every background enrichment currently in flight. Used by tests. */
-export async function settleEnrichments(): Promise<void> {
-  while (pendingEnrichments.size > 0) {
-    await Promise.allSettled([...pendingEnrichments]);
-  }
-}
-
-function track<T>(p: Promise<T>): Promise<T> {
-  pendingEnrichments.add(p);
-  void p.finally(() => pendingEnrichments.delete(p));
-  return p;
-}
+// In-flight enrichments are tracked per release id in `enrichmentState`, so the
+// API can tell a client "still working" instead of serving a skeleton that looks
+// finished. Re-exported here because that is where callers already import it.
+export { settleEnrichments } from "./enrichmentState.js";
 
 /** Resolve to the promise's value, or to `null` if it outruns the budget. */
 function withBudget<T>(p: Promise<T>, ms: number): Promise<T | null> {
@@ -316,8 +309,8 @@ export async function persistRelease(detail: ReleaseDetail): Promise<Release> {
   // Slow, best-effort, and individually fault-isolated. Runs in the background;
   // the request waits only up to ENRICH_BUDGET_MS for it. Anything still missing
   // is healed on the next access by enrichExisting, so this is resumable.
-  const enrichment = track(
-    enrichNewRelease(release, detail, mbid, timed).catch((err) => {
+  const enrichment = trackEnrichment(release.id, (handle) =>
+    enrichNewRelease(release, detail, mbid, timed, handle).catch((err) => {
       console.warn(`[seed] enrichment failed for ${release.id}:`, (err as Error).message);
       return null;
     })
@@ -337,14 +330,20 @@ async function enrichNewRelease(
   release: Release,
   detail: ReleaseDetail,
   mbid: string | null,
-  timed: <T>(name: string, fn: () => Promise<T>) => Promise<T>
+  timed: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
+  handle: EnrichmentHandle
 ): Promise<Release> {
   const data: Record<string, unknown> = {};
+  // Still fault-isolated — one upstream having a bad day must not discard the
+  // others' results — but no longer SILENT. A stage that throws is recorded, and
+  // a release that finishes with any broken stage reports `failed` rather than
+  // `ready`, so the page can say "some details couldn't be loaded" instead of
+  // presenting a gap as the finished truth.
   const attempt = async (name: string, fn: () => Promise<void>) => {
     try {
       await timed(name, fn);
     } catch (err) {
-      console.warn(`[seed] stage ${name} failed for ${release.id}:`, (err as Error).message);
+      handle.fail(name, err);
     }
   };
 
@@ -366,17 +365,6 @@ async function enrichNewRelease(
     }
     if (covers.thumb) data.coverUrl = covers.thumb;
     if (covers.large) data.coverUrlLarge = covers.large;
-  });
-
-  // Its own stage, not a tail of "covers": a tint that can't be sampled must
-  // never cost us the URLs the stage above just resolved. Sampling also warms
-  // the w400 rendition on disk, so the visitor whose click seeded this release
-  // gets a cache hit for the cover they are about to load.
-  await attempt("cover-tint", async () => {
-    const cover = (data.coverUrl as string | undefined) ?? release.coverUrl;
-    if (!cover) return;
-    const color = await sampleCoverTint(cover);
-    if (color) data.coverColor = color;
   });
 
   await attempt("artist", async () => {
@@ -412,6 +400,23 @@ async function enrichNewRelease(
     if (best && (!release.releaseDate || best.getTime() < release.releaseDate.getTime())) {
       data.releaseDate = best;
     }
+  });
+
+  // LAST, deliberately. This stage fetches image bytes and runs a sharp encode,
+  // and production logs caught it burning 1,356ms of a 1,500ms budget while
+  // artist, label and genres — the metadata a reader actually sees — waited
+  // behind it. It is the least urgent thing here: a missing tint costs a flat
+  // placeholder tile, while a missing label costs the page its content.
+  //
+  // Its own stage rather than a tail of "covers", so a tint that can't be
+  // sampled never costs us the URLs that stage resolved. Sampling also warms the
+  // w400 rendition on disk, so the visitor whose click seeded this release gets
+  // a cache hit for the cover they are about to load.
+  await attempt("cover-tint", async () => {
+    const cover = (data.coverUrl as string | undefined) ?? release.coverUrl;
+    if (!cover) return;
+    const color = await sampleCoverTint(cover);
+    if (color) data.coverColor = color;
   });
 
   if (Object.keys(data).length === 0) return release;
@@ -571,39 +576,83 @@ export async function getArtistWithReleases(id: string): Promise<{
   return { artist, releases };
 }
 
-// Fill in ids/covers/artist we didn't have before, without clobbering existing data.
-async function enrichExisting(
+/**
+ * A release we already hold, reached through a source ref (`mb:…`, `discogs:…`).
+ *
+ * Everything this does is upstream work, and it used to be **fully awaited in
+ * the request path with no ceiling** — which is why a second visit to a release
+ * page could hang for as long as MusicBrainz, Last.fm and the Cover Art Archive
+ * between them felt like taking. It now runs in the background under the same
+ * registry and budget as a new seed's enrichment: the request waits briefly for
+ * a fast heal, then answers with the row it already has and reports `pending` so
+ * the page can show that it is still filling in.
+ */
+function enrichExisting(
   existing: Release,
   detail: ReleaseDetail,
   mbid: string | null
 ): Promise<Release> {
+  const heal = trackEnrichment(existing.id, (handle) =>
+    healExisting(existing, detail, mbid, handle).catch((err) => {
+      console.warn(`[catalog] heal failed for ${existing.id}:`, (err as Error).message);
+      return existing;
+    })
+  );
+  return withBudget(heal, ENRICH_BUDGET_MS).then((healed) => healed ?? existing);
+}
+
+// Fill in ids/covers/artist we didn't have before, without clobbering existing
+// data. Stage-isolated and stage-reported, exactly like enrichNewRelease: a
+// broken stage leaves the rest intact AND makes the release report `failed`
+// rather than presenting its gap as the finished answer.
+async function healExisting(
+  existing: Release,
+  detail: ReleaseDetail,
+  mbid: string | null,
+  handle: EnrichmentHandle
+): Promise<Release> {
   const data: Record<string, unknown> = {};
+  const attempt = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (err) {
+      handle.fail(name, err);
+    }
+  };
+
   if (!existing.musicbrainzId && mbid) data.musicbrainzId = mbid;
   if (!existing.discogsId && detail.discogsId) data.discogsId = detail.discogsId;
   if (!existing.spotifyId && detail.spotifyId) data.spotifyId = detail.spotifyId;
+
   // Self-heal the release date toward the original (group/master level), never
   // later — this repairs rows seeded from a reissue pressing.
-  const original = await groupLevelReleaseDate(
-    mbid ?? existing.musicbrainzId,
-    existing.discogsId ?? detail.discogsId
-  );
-  if (original && (!existing.releaseDate || original.getTime() < existing.releaseDate.getTime())) {
-    data.releaseDate = original;
-  }
-  if (!existing.artistId) {
+  await attempt("releaseDate", async () => {
+    const original = await groupLevelReleaseDate(
+      mbid ?? existing.musicbrainzId,
+      existing.discogsId ?? detail.discogsId
+    );
+    if (original && (!existing.releaseDate || original.getTime() < existing.releaseDate.getTime())) {
+      data.releaseDate = original;
+    }
+  });
+
+  await attempt("artist", async () => {
+    if (existing.artistId) return;
     const artistId = await resolveArtistId(detail, mbid ?? existing.musicbrainzId);
     if (artistId) data.artistId = artistId;
-  }
-  if (!existing.labelId) {
+  });
+
+  await attempt("label", async () => {
+    if (existing.labelId) return;
     const labelId = await resolveLabelId(detail, mbid ?? existing.musicbrainzId);
     if (labelId) data.labelId = labelId;
-  }
+  });
+
   // Self-heal missing artwork on access, through the full fallback chain.
   // Artwork is supplemental: a Cover Art Archive blip must never fail the
   // request for a release we already hold (it used to surface as a 500 and the
-  // page read "We couldn't load that release"). Fault-isolated like the
-  // enrichment stages in enrichNewRelease.
-  try {
+  // page read "We couldn't load that release").
+  await attempt("covers", async () => {
     if (!existing.coverUrl) {
       const covers = await resolveCovers(detail, mbid ?? existing.musicbrainzId);
       if (covers.thumb) data.coverUrl = covers.thumb;
@@ -620,24 +669,20 @@ async function enrichExisting(
       );
       if (large) data.coverUrlLarge = large;
     }
-  } catch (err) {
-    console.warn(`[catalog] cover-art heal skipped for ${existing.id}:`, (err as Error).message);
-  }
+  });
 
-  // Backfill the tint for rows seeded before it existed. Additive and
-  // fault-isolated: on any failure the column stays null and the client falls
-  // back to browser-side extraction, exactly as it did before 6.1.
-  if (!existing.coverColor) {
-    try {
-      const cover = (data.coverUrl as string | undefined) ?? existing.coverUrl;
-      if (cover) {
-        const color = await sampleCoverTint(cover);
-        if (color) data.coverColor = color;
-      }
-    } catch (err) {
-      console.warn(`[catalog] cover tint skipped for ${existing.id}:`, (err as Error).message);
-    }
-  }
+  // Backfill the tint for rows seeded before it existed. Last, for the same
+  // reason as in enrichNewRelease: it is a fetch plus an image encode, and it is
+  // the least urgent thing on this list. Additive — on any failure the column
+  // stays null and the client falls back to browser-side extraction, exactly as
+  // it did before 6.1.
+  await attempt("cover-tint", async () => {
+    if (existing.coverColor) return;
+    const cover = (data.coverUrl as string | undefined) ?? existing.coverUrl;
+    if (!cover) return;
+    const color = await sampleCoverTint(cover);
+    if (color) data.coverColor = color;
+  });
 
   if (Object.keys(data).length === 0) return existing;
 
@@ -1106,6 +1151,11 @@ export async function toReleaseDTO(release: Release, userId?: string) {
     coverUrl: release.coverUrl,
     coverUrlLarge: release.coverUrlLarge,
     coverColor: release.coverColor,
+    // Whether enrichment is still running, done, or finished broken. Without
+    // this the client cannot tell a skeleton from the finished record, and a
+    // half-seeded page renders as though it were complete — see
+    // services/enrichmentState.ts.
+    enrichment: enrichmentStatus(release.id),
     type: release.type,
     trackCount: release.trackCount,
     musicbrainzId: release.musicbrainzId,
