@@ -7,6 +7,12 @@
 // host keyed by MBID with no auth and no MB rate limit.
 import { env } from "../config/env.js";
 import { cached, invalidateCached } from "./cache.js";
+import {
+  ambientTier,
+  coverArtGate,
+  PriorityRateGate,
+  type UpstreamTier,
+} from "./upstreamPriority.js";
 
 const BASE = "https://musicbrainz.org/ws/2";
 const CAA_BASE = "https://coverartarchive.org";
@@ -14,18 +20,27 @@ const WEEK = 60 * 60 * 24 * 7;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Single shared gate: chain every MB request so consecutive calls are ≥1.1s
-// apart, regardless of how many callers fan out concurrently.
-let gate: Promise<unknown> = Promise.resolve();
-let lastRequestAt = 0;
-function throttle(): Promise<void> {
-  const run = gate.then(async () => {
-    const gap = Date.now() - lastRequestAt;
-    if (gap < 1100) await sleep(1100 - gap);
-    lastRequestAt = Date.now();
-  });
-  gate = run.catch(() => {});
-  return run;
+// Single shared gate: every MB request is spaced ≥1.1s from the last, regardless
+// of how many callers fan out concurrently.
+//
+// It is a PRIORITY gate, not a FIFO chain (6.1.4). The rate is unchanged — that
+// is MusicBrainz's policy, not our knob — but a release someone is looking at no
+// longer queues behind a speculative discography browse. Measured before the
+// change, on Miles Davis' 8-page discography: an interactive seed's MB work went
+// from 2,294ms on an idle gate to 9,034ms mid-assembly, purely from ordering.
+const MIN_REQUEST_GAP_MS = 1100;
+const gate = new PriorityRateGate(MIN_REQUEST_GAP_MS, "mb");
+
+// Every public function here defaults its tier to `ambientTier()` — the tier of
+// the surrounding async context, or `interactive` when nothing set one. A call
+// site that forgets to declare itself therefore gets the user-facing tier, which
+// is the safe way to be wrong about latency. Only work that genuinely blocks
+// nobody opts down: the discography assembly (`browse`) and the pre-warmer
+// (`background`), both pinned by tests.
+
+/** Queue depths at the MusicBrainz gate. Diagnostics and tests. */
+export function mbGateDepth() {
+  return gate.depth();
 }
 
 /**
@@ -59,11 +74,20 @@ const backoffMs = (attempt: number) => Math.min(250 * 2 ** (attempt - 1), 2000);
  * Retries ride the same shared throttle, so backing off never breaks the 1 req/s
  * contract with MusicBrainz.
  */
-async function mbFetch<T>(path: string, maxAttempts = MAX_ATTEMPTS): Promise<T | null> {
+interface MbFetchOptions {
+  maxAttempts?: number;
+  tier?: UpstreamTier;
+}
+async function mbFetch<T>(
+  path: string,
+  { maxAttempts = MAX_ATTEMPTS, tier = ambientTier() }: MbFetchOptions = {}
+): Promise<T | null> {
   let lastProblem = "unknown";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await throttle();
+    // Retries ride the same gate at the same tier, so backing off never breaks
+    // the 1 req/s contract and a retried browse page cannot jump a click.
+    await gate.acquire(tier);
     let res: Response;
     try {
       res = await fetch(`${BASE}${path}`, {
@@ -162,7 +186,7 @@ export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup
     try {
       const data = await mbFetch<ReleaseGroupSearchResponse>(
         `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
-        DISCOVERY_ATTEMPTS
+        { maxAttempts: DISCOVERY_ATTEMPTS }
       );
       return data?.["release-groups"] ?? [];
     } catch (err) {
@@ -176,18 +200,21 @@ export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup
 }
 
 /** Release-group lookup by MBID, with artist credits. Cached 7d. */
-export async function lookupReleaseGroup(mbid: string): Promise<MBReleaseGroup | null> {
+export async function lookupReleaseGroup(
+  mbid: string,
+  tier: UpstreamTier = ambientTier()
+): Promise<MBReleaseGroup | null> {
   const key = `mb:rg:${mbid}`;
   return cached(key, WEEK, () =>
-    mbFetch<MBReleaseGroup>(`/release-group/${mbid}?inc=artist-credits&fmt=json`)
+    mbFetch<MBReleaseGroup>(`/release-group/${mbid}?inc=artist-credits&fmt=json`, { tier })
   );
 }
 
 /** Artist lookup by MBID. Cached 7d. */
-export async function lookupArtist(mbid: string) {
+export async function lookupArtist(mbid: string, tier: UpstreamTier = ambientTier()) {
   // v2 key: aliases were added to the payload, so old cached entries lack them.
   const key = `mb:artist:v2:${mbid}`;
-  return cached(key, WEEK, () => mbFetch<MBArtist>(`/artist/${mbid}?inc=aliases&fmt=json`));
+  return cached(key, WEEK, () => mbFetch<MBArtist>(`/artist/${mbid}?inc=aliases&fmt=json`, { tier }));
 }
 
 // Scripts whose presence means a name won't be readable to a Latin-script
@@ -230,14 +257,18 @@ export function pickLatinName(artist: MBArtist | null | undefined): string | nul
  * Best confident release-group MBID for an artist + title, or null. Used to
  * attach the canonical id when a non-MB source seeds a release. Cached 7d.
  */
-export async function findReleaseGroupMbid(artist: string, title: string): Promise<string | null> {
+export async function findReleaseGroupMbid(
+  artist: string,
+  title: string,
+  tier: UpstreamTier = ambientTier()
+): Promise<string | null> {
   const key = `mb:rg:match:${artist}:${title}`.toLowerCase();
   return cached(key, WEEK, async () => {
     const query = `artist:"${artist}" AND releasegroup:"${title}"`;
     try {
       const data = await mbFetch<ReleaseGroupSearchResponse>(
         `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=1`,
-        DISCOVERY_ATTEMPTS
+        { maxAttempts: DISCOVERY_ATTEMPTS, tier }
       );
       const top = data?.["release-groups"]?.[0];
       // MB search scores are 0–100; require a strong match to avoid mis-dedupe.
@@ -262,14 +293,26 @@ export async function findReleaseGroupMbid(artist: string, title: string): Promi
 // worse than moving on: bound it and let the next source answer.
 const CAA_TIMEOUT_MS = 2500;
 
-export async function getCoverArtUrls(releaseGroupMbid: string): Promise<CoverArtUrls | null> {
+export async function getCoverArtUrls(
+  releaseGroupMbid: string,
+  tier: UpstreamTier = ambientTier()
+): Promise<CoverArtUrls | null> {
   const key = `caa:rg:urls:${releaseGroupMbid}`;
   return cached(key, WEEK, async () => {
-    let res: Response;
+    // Bounded concurrency (6.1.4), the slot held across the body read for the
+    // same reason as the image bytes. The 2.5s timeout was tripping on
+    // congestion WE created — 37 simultaneous requests during one discography
+    // browse — and a timeout here fails the covers stage, which is how a
+    // release ends up reporting `failed` with no artwork.
+    let payload: CoverArtResponse | null;
     try {
-      res = await fetch(`${CAA_BASE}/release-group/${releaseGroupMbid}`, {
-        headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
-        signal: AbortSignal.timeout(CAA_TIMEOUT_MS),
+      payload = await coverArtGate.run(tier, async () => {
+        const res = await fetch(`${CAA_BASE}/release-group/${releaseGroupMbid}`, {
+          headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
+          signal: AbortSignal.timeout(CAA_TIMEOUT_MS),
+        });
+        if (!res.ok) return null; // 404 = no art on file
+        return (await res.json()) as CoverArtResponse;
       });
     } catch (err) {
       // A dropped connection tells us NOTHING about whether art exists, so it
@@ -280,9 +323,8 @@ export async function getCoverArtUrls(releaseGroupMbid: string): Promise<CoverAr
         `Cover Art Archive unreachable for ${releaseGroupMbid}: ${(err as Error).message}`
       );
     }
-    if (!res.ok) return null; // 404 = no art on file
-    const data = (await res.json()) as CoverArtResponse;
-    const front = data.images?.find((i) => i.front) ?? data.images?.[0];
+    if (!payload) return null; // 404 = no art on file
+    const front = payload.images?.find((i) => i.front) ?? payload.images?.[0];
     if (!front) return null;
     const large = front.image ?? front.thumbnails?.["1200"] ?? front.thumbnails?.["500"];
     const thumb = front.thumbnails?.["500"] ?? large;
@@ -306,11 +348,15 @@ export interface MBLabel {
  * its releases (one browse call, inc=labels). Skips MusicBrainz's "[no label]"
  * placeholder. Cached 7d (misses too).
  */
-export async function getReleaseGroupLabel(rgMbid: string): Promise<{ mbid: string; name: string } | null> {
+export async function getReleaseGroupLabel(
+  rgMbid: string,
+  tier: UpstreamTier = ambientTier()
+): Promise<{ mbid: string; name: string } | null> {
   const key = `mb:rg:label:${rgMbid}`;
   return cached(key, WEEK, async () => {
     const data = await mbFetch<LabelBrowseResponse>(
-      `/release?release-group=${rgMbid}&inc=labels&limit=10&fmt=json`
+      `/release?release-group=${rgMbid}&inc=labels&limit=10&fmt=json`,
+      { tier }
     );
     for (const rel of data?.releases ?? []) {
       for (const li of rel["label-info"] ?? []) {
@@ -325,9 +371,12 @@ export async function getReleaseGroupLabel(rgMbid: string): Promise<{ mbid: stri
 }
 
 /** Label lookup by MBID (name, area, founding date). Cached 7d. */
-export async function lookupLabel(mbid: string): Promise<MBLabel | null> {
+export async function lookupLabel(
+  mbid: string,
+  tier: UpstreamTier = ambientTier()
+): Promise<MBLabel | null> {
   const key = `mb:label:${mbid}`;
-  return cached(key, WEEK, () => mbFetch<MBLabel>(`/label/${mbid}?fmt=json`));
+  return cached(key, WEEK, () => mbFetch<MBLabel>(`/label/${mbid}?fmt=json`, { tier }));
 }
 
 export function creditsOf(rg: MBReleaseGroup) {
@@ -409,8 +458,13 @@ async function assembleDiscography(
   for (let page = 0; page < MAX_BROWSE_PAGES; page++) {
     // Throws UpstreamUnavailableError on a transient failure — deliberately
     // uncaught so `cached` never stores an incomplete discography.
+    // `browse`, not `interactive`: someone IS watching the artist page's
+    // progress line, but they are not blocked on any single page of it, and a
+    // click that lands mid-assembly must go first. This is the call that made an
+    // interactive seed 3.9× slower before 6.1.4.
     const data = await mbFetch<BrowseReleaseGroupsResponse>(
-      `/release-group?artist=${artistMbid}&limit=${BROWSE_PAGE_SIZE}&offset=${offset}&fmt=json`
+      `/release-group?artist=${artistMbid}&limit=${BROWSE_PAGE_SIZE}&offset=${offset}&fmt=json`,
+      { tier: "browse" }
     );
 
     if (!data) {

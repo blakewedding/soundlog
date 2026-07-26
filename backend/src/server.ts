@@ -3,9 +3,12 @@ import { env, warnIfInsecureOrigin } from "./config/env.js";
 import { ensureIndices } from "./config/elasticsearch.js";
 import { redis } from "./config/redis.js";
 import { startActivityWorker } from "./jobs/activityQueue.js";
+import { startPrewarming } from "./services/prewarmService.js";
+import { assertSingleApiInstance } from "./config/singleInstance.js";
 
 async function main() {
   warnIfInsecureOrigin();
+  assertSingleApiInstance();
   try { await redis.connect(); } catch { console.warn("[boot] Redis unavailable — continuing"); }
   try { await ensureIndices(); } catch { console.warn("[boot] Elasticsearch unavailable — continuing"); }
 
@@ -15,6 +18,8 @@ async function main() {
   } catch (err) {
     console.warn("[boot] Activity worker failed to start:", (err as Error).message);
   }
+
+  startPrewarming();
 
   const app = createApp();
   app.listen(env.PORT, () => {

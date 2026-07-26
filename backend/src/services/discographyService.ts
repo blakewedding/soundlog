@@ -233,7 +233,11 @@ function prefetchCoverArt(entries: MBDiscographyEntry[]): void {
     })
     .slice(0, PREFETCH_LIMIT);
 
-  void Promise.allSettled(worthwhile.map((e) => getCoverArtUrls(e.mbid)));
+  // `browse` tier: these are speculative, and before 6.1.4 this line alone put
+  // 24 simultaneous requests on the Cover Art Archive — measured — which is what
+  // the cover of the release someone then clicked had to queue behind. The gate
+  // inside `getCoverArtUrls` now bounds them; the fan-out here can stay simple.
+  void Promise.allSettled(worthwhile.map((e) => getCoverArtUrls(e.mbid, "browse")));
 }
 
 /**

@@ -81,6 +81,14 @@ const schema = z.object({
   // Discogs personal access token, sent as `Authorization: Discogs token=<value>`.
   DISCOGS_TOKEN: z.string().optional(),
   MUSICBRAINZ_USER_AGENT: z.string().default("Soundlog/0.1.0 (dev)"),
+  // Catalog pre-warming (6.1.4). Minutes between sweeps; 0 disables it entirely,
+  // which is the default so that tests, CI and a developer's laptop never make
+  // unattended upstream calls. Production opts in.
+  PREWARM_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(0),
+  // Releases healed per sweep. Each costs a handful of throttled MusicBrainz
+  // calls at the lowest tier, so this is a politeness budget, not a throughput
+  // target — the point is to be finished before anyone asks, not to be fast.
+  PREWARM_BATCH_SIZE: z.coerce.number().int().positive().default(5),
 });
 
 export const env = schema.parse(process.env);

@@ -118,6 +118,27 @@ access token silently failed every write.
   allowlisted artwork hosts and a fixed set of widths; anything else is a 404.
 - **MusicBrainz: one shared 1 req/s throttle**, process-wide. Retries ride the
   same gate. A descriptive `User-Agent` is mandatory.
+- **Upstream work is TIERED, and the tier is about ordering, never rate**
+  (`upstreamPriority.ts`). `interactive` (a person is blocked on this response) >
+  `browse` (a person is watching a progress indicator) > `background` (nobody is
+  waiting). Strict priority, FIFO within a tier.
+
+  The rate is MusicBrainz's policy and is not ours to change; what 6.1.4 changed
+  is **which caller gets the next slot**. A FIFO gate made an interactive seed
+  take **9,034ms mid-discography-browse against 2,294ms idle** — the person lost
+  because nothing distinguished them from a background job.
+
+  The default tier is the **ambient** one, and unset means `interactive`: a call
+  site that forgets to declare itself gets the user-facing tier, which is the
+  harmless way to be wrong. Only work that blocks nobody opts down. A tier is
+  never *upgraded* by a call site's local knowledge — see `lowerPriorityOf`.
+- **Bound concurrency to every third party, not just rate.** The Cover Art
+  Archive had no bound at all, and one discography grid put **37 simultaneous
+  requests** on it: **8 of 37 failed**, and the timeouts that resulted failed the
+  covers stage and left releases reporting `failed` with no artwork. We were
+  manufacturing the upstream failure we then blamed upstream for. Bounded at
+  12 concurrent with 3 reserved for interactive, the same burst lost **0 of 37**.
+  A dedupe map is not a limiter.
 - Discovery calls (search, fuzzy match) get **one attempt** and degrade to
   empty; lookups retry. Retrying discovery burns the very throttle slots whose
   exhaustion causes first-access failures. **This governs image bytes too**: a
@@ -131,6 +152,25 @@ access token silently failed every write.
 - **Secrets live in `.env` only** — never committed, never in a K8s ConfigMap,
   never in a URL parameter (tokens go in headers). `.env.example` holds
   placeholders only.
+
+## 7a. The API is single-instance, and that is load-bearing
+
+Two pieces of correctness live in one process's memory, and **both** break
+silently behind a second one:
+
+- the **MusicBrainz rate gate** — two processes each honour 1 req/s and together
+  make 2 req/s, a §7 violation whose symptom is 503s indistinguishable from
+  ordinary upstream flakiness;
+- the **enrichment registry** (`enrichmentState.ts`) — a poll landing on the
+  process that is not doing the work reads `ready` for a half-filled release,
+  which is the 6.1.1 bug reintroduced by deployment topology rather than by code.
+
+Scaling the API past one process is therefore **not a config change**. It needs a
+distributed token bucket in Redis *and* a shared enrichment registry, **together**
+— doing one without the other trades a visible slowdown for a silent lie.
+`config/singleInstance.ts` warns at boot when the environment implies replicas.
+Deliberately a warning, not a crash: these degrade rather than corrupt, and
+Postgres stays truth either way (§5).
 
 ## 8. Reuse over reimplementation
 

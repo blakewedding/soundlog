@@ -5,7 +5,7 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-26 — Phase 6.1 closed out (6.1 · 6.1.1 · 6.1.2 · 6.1.3 · 6.1.3b)
+**Last updated:** 2026-07-26 — Phase 6.1.4 done (6.1 · 6.1.1 · 6.1.2 · 6.1.3 · 6.1.3b · 6.1.4)
 
 ## Status
 
@@ -40,9 +40,11 @@ half-seeded release page it surfaced (6.1.1), the discovery retry cap (6.1.2), a
 retry button that only looked like one (6.1.3), and the edge caching that hid
 the fix from signed-out visitors (6.1.3b). Sections for each below.
 
-**Next: 6.1.4** — cold-seed and discography latency under browse load, first
-session tomorrow. **Then 6.2** — Settings & Profiles, before the Kickstarter
-launch. Phase 7
+**6.1.4 is done** — cold-seed and discography latency under browse load: priority
+tiers at the MusicBrainz gate, a concurrency bound on the Cover Art Archive (the
+half the brief did not name, and the one the report was actually about), and
+background pre-warming. Section below. **Next: 6.2** — Settings & Profiles,
+before the Kickstarter launch. Phase 7
 still carries the mobile app's missing surface (auth, release detail, write
 actions), real icon design, and the navigation component the 380px three-row nav
 is standing in for. Both are sequenced at the end of this file.
@@ -1322,31 +1324,133 @@ lookup, which is cached after the first seed, so a later release enriched too
 fast to ever observe `pending`; the label browse runs per release and is the
 honest choke point.
 
-## Next — Phase 6.1.4: cold-seed and discography latency (first session tomorrow)
+## Phase 6.1.4 — cold-seed and discography latency (DONE 2026-07-26)
 
-Filed from the phone check. **Treat this as a database-wide behaviour under
-browse load, not as per-release defects** — the releases below are reproduction
-cases, not the bug.
+Filed from the phone check: *On the Corner* and *Get Up With It* were slow and
+incomplete on cover detail while browsing Miles Davis' discography. Treated as a
+database-wide behaviour under browse load, not as per-release defects.
 
-**Observed live on Miles Davis' discography:** *On the Corner* and *Get Up With
-It* were slow and incomplete on cover detail while browsing the artist page.
+### The brief named one gate. There were two.
 
-The shape of it: MusicBrainz is a **process-wide 1 req/s gate**, and a
-discography browse fans out speculative work across it at the same moment a
-person is waiting on an interactive seed. The person loses, because nothing
-distinguishes the two.
+The diagnosis pass ran before any change, so the after has a before.
 
-Two directions to take:
+**Gate 1 — MusicBrainz, strictly FIFO.** Miles Davis is **794 release-groups =
+8 browse pages**, each ≥1.1s apart. A click landing mid-assembly queued behind
+speculative work because nothing distinguished the two:
 
-1. **Priority tiers at the MusicBrainz gate** — an interactive, user-facing seed
-   (someone is looking at a spinner) preempts speculative discography work.
-   Today the throttle is strictly FIFO and a click can queue behind forty
-   thumbnails nobody asked for.
-2. **Background pre-warming of the popular catalog**, so the common path is warm
-   before anyone waits on it.
+| interactive seed's MusicBrainz work | |
+|---|---|
+| idle gate | **2,294ms** |
+| mid-assembly | **9,034ms** — 3.9× |
 
-Note the interaction with 6.1.2: capping discovery retries reduced the *volume*
-of speculative work but not its *priority*. Ordering is the remaining half.
+**Gate 2 — the Cover Art Archive, no gate at all.** This is the one the report
+was actually about, and the brief did not name it: cover bytes never touch the
+MusicBrainz gate (CAA is a separate host, explicitly exempt). A cold discography
+put **792 tiles in the DOM and 37 simultaneous requests** on the archive, with
+nothing bounding them — `coverCache`'s `inFlight` map is a **dedupe, not a
+limiter**. Measured server-side, 37 tiles plus one interactive hero cover:
+
+| gate | hero | tiles p50 | grid fill | **tile failures** |
+|---|---|---|---|---|
+| none (was) | 5,469ms | 3,098ms | 5.6s | **8 of 37** |
+| 6 total / 2 reserved | 1,969ms | 7,101ms | 13.4s | 1 of 37 |
+| **12 / 3 (shipped)** | **1,706ms** | 4,588ms | 7.3s | **0 of 37** |
+
+**Eight of thirty-seven speculative tiles failed outright** — we were
+manufacturing the upstream failure we then blamed upstream for. The 2,500ms
+`getCoverArtUrls` timeout was tripping on congestion *we* created, failing the
+covers stage and leaving releases reporting `failed` with no artwork. The
+before-run's logs caught it verbatim: `stage covers failed: Cover Art Archive
+unreachable … aborted due to timeout`, on *Get Up With It*, **with the
+MusicBrainz gate completely idle**. Priority tiers alone would not have moved it.
+
+6.1.2 capped discovery *retries* (volume per URL); it added no concurrency bound.
+Ordering and concurrency were both still outstanding.
+
+### What shipped
+
+**`upstreamPriority.ts` — three tiers, `interactive` > `browse` > `background`.**
+`browse` is its own tier rather than lumped with `background` because someone IS
+watching the artist page's progress line — a discography must keep moving
+whenever no click is outstanding.
+
+Two mechanisms, one vocabulary: a **priority rate gate** (MusicBrainz, spacing
+invariant unchanged) and a **priority concurrency gate** with capacity reserved
+for interactive work (the archive). The reservation is the load-bearing part —
+without it the hero cover of the release someone just opened queues behind a
+screenful of speculative thumbnails.
+
+**The gate selects at dispatch time, not when the slot opens.** Choosing before
+waiting out the 1.1s gap would commit the slot to whoever happened to be queued
+already, so a click arriving during that wait — the overwhelmingly likely case,
+since waiting is most of the gate's life — would still lose a full slot. Found
+while writing the test, not after.
+
+**Tier travels by `AsyncLocalStorage`, not by parameter.** Enrichment reaches
+upstream through eight-odd `catalogService` functions and then **detaches** from
+the request that started it; a parameter would have to be re-passed by hand at
+every hop and would not survive the detachment at all. Unset means `interactive`,
+so forgetting to declare a tier is the harmless kind of wrong.
+
+**Pre-warming (`prewarmService.ts`)** finishes releases we already hold, ordered
+by rating then log count, at the `background` tier. Off by default
+(`PREWARM_INTERVAL_MINUTES=0`) so no test, CI job or laptop makes unattended
+upstream calls. It **never creates a row** — `discographyService`'s "nothing is
+bulk-seeded" invariant stands, and a background job is not the place to overturn
+a documented law. Attempts are remembered in Redis for a week, because some
+releases genuinely have no label and no art and re-asking forever is what a
+sweep with no memory converges on.
+
+### The registry / Redis decision, made explicitly
+
+**Stays in-memory.** The queue design does not imply a second API process — and a
+second API process is *already* broken today, independent of this work: two
+processes each honour 1 req/s and together make 2 req/s (a §7 violation), and
+`enrichmentState` would report `ready` for a release the other process is still
+filling in (the 6.1.1 bug, reintroduced by topology). Neither announces itself.
+
+So the cheap half shipped instead: `config/singleInstance.ts` warns at boot when
+the environment implies replicas, naming what has to move — a distributed token
+bucket **and** a shared registry, together, since doing one without the other
+trades a visible slowdown for a silent lie. New CLAUDE.md **§7a**.
+
+### Verified through the real edge (Varnish :8080, signed out, cold)
+
+| | first response | settled | result |
+|---|---|---|---|
+| Get Up With It, idle gate | 2,256ms `no-store` | **3,562ms** | ready · cover · tint · CBS/Sony · 5 genres |
+| **On the Corner, mid-assembly** | 2,417ms `no-store` | **3,661ms** | ready · cover · tint · Columbia · 5 genres |
+
+**The click mid-browse now costs what the idle click costs** — 3,661ms against
+3,562ms, where before it was 9,034ms against 2,294ms. 6.1.3b's no-store-while-
+pending is intact. Confirmed visually in a browser: *On the Corner* renders its
+artwork, label, year and genres complete.
+
+The browse pays for it, as intended: assembly measured 11.7s–23.1s across runs
+(against ~13.6s before), the spread being upstream variance plus the slots it now
+yields. Nobody is blocked on any single page of it.
+
+**Suites: backend 290 (was 274) + web 185**, both packages typecheck clean.
+
+### Found in passing, deliberately NOT fixed here
+
+`CoverImage`'s fade-in has a load-event race: `.img-loading` sets `opacity: 0`
+and is cleared only by React's `onLoad`, so an image that finishes decoding
+before React attaches the handler stays **permanently invisible** behind the tint
+tile. Caught live during verification — `{ complete: true, naturalWidth: 250,
+opacity: "0" }`, a state only reachable by the missed event. Intermittent
+(warm-cache dependent) and unrelated to latency, so it is filed rather than
+folded into this commit. It is the same silent-failure shape as 6.1.1: a failed
+or stuck image is indistinguishable from a slow one.
+
+### Instruments kept
+
+`scratchpad` harnesses are gone, but two things stayed in the tree: `mbGateDepth()`
+and the gates' `stats()`/`depth()`, which is what the tests assert against, and
+the starvation warning in `PriorityRateGate` — strict priority *can* starve
+`browse` under sustained clicks, and rather than build ageing for load this site
+does not have, the wait is measured and logged the day it stops being
+hypothetical.
 
 ## Then — Phase 6.2: Settings & Profiles (before the Kickstarter launch)
 

@@ -35,6 +35,12 @@ import { env } from "../config/env.js";
 import { UpstreamUnavailableError } from "./musicbrainzService.js";
 import { isDiscoveryCoverUrl } from "./coverProxy.js";
 import type { CoverWidth } from "./coverProxy.js";
+import {
+  ambientTier,
+  coverArtGate,
+  lowerPriorityOf,
+  type UpstreamTier,
+} from "./upstreamPriority.js";
 
 /** Same set as `mbFetch`: conditions where the resource may well be fine. */
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -174,17 +180,72 @@ function etagFor(key: string, width: CoverWidth, bytes: number): string {
  * `UpstreamUnavailableError` when we could not tell — never the other way
  * round, which is the whole of §1.
  */
+/**
+ * The three §1 outcomes, as a value — so the whole decision can be made INSIDE
+ * the concurrency slot (where the body is read) and acted on outside it.
+ */
+type UpstreamImageOutcome =
+  | { kind: "body"; body: Buffer }
+  | { kind: "absent" }
+  | { kind: "retryable"; problem: string };
+
 async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
   let lastProblem = "unknown";
-  const maxAttempts = isDiscoveryCoverUrl(url) ? DISCOVERY_ATTEMPTS : MAX_ATTEMPTS;
+  const discovery = isDiscoveryCoverUrl(url);
+  const maxAttempts = discovery ? DISCOVERY_ATTEMPTS : MAX_ATTEMPTS;
+  // The same split 6.1.2 drew for RETRIES now also decides ORDER (6.1.4): a
+  // speculative `release-group/<mbid>/front-*` tile for something nobody has
+  // seeded is `browse`, while a stored coverUrl for a release we hold is a
+  // person looking at a page. Both ride one shared budget, because they are the
+  // same host — 37 of the former is what made the latter take 18 seconds.
+  // …but never a HIGHER tier than the surrounding context allows: the pre-warmer
+  // fetching a stored coverUrl is still the pre-warmer, and must not take an
+  // interactive slot just because the URL shape looks like a lookup.
+  const tier: UpstreamTier = lowerPriorityOf(
+    ambientTier(),
+    discovery ? "browse" : "interactive"
+  );
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let res: Response;
+    let outcome: UpstreamImageOutcome;
     try {
-      res = await fetch(url, {
-        headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "image/*" },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        redirect: "follow",
+      // The slot is held across the BODY READ, not merely the headers. `fetch`
+      // resolves the moment headers arrive, and for an image essentially all of
+      // the bytes and all of the time are in the body — releasing at headers
+      // would bound how many requests are open while leaving the transfer
+      // itself completely unbounded, which is the thing being fixed.
+      //
+      // The retry backoff below deliberately sleeps OUTSIDE the gate: holding a
+      // slot while waiting to try again would starve callers for no work.
+      outcome = await coverArtGate.run(tier, async (): Promise<UpstreamImageOutcome> => {
+        const res = await fetch(url, {
+          headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "image/*" },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          redirect: "follow",
+        });
+
+        if (res.ok) {
+          const declared = Number(res.headers.get("content-length") ?? 0);
+          if (declared > MAX_UPSTREAM_BYTES) {
+            console.warn(`[covers] ${url} declares ${declared} bytes — refusing`);
+            return { kind: "absent" };
+          }
+          const body = Buffer.from(await res.arrayBuffer());
+          if (body.byteLength > MAX_UPSTREAM_BYTES) {
+            console.warn(`[covers] ${url} delivered ${body.byteLength} bytes — refusing`);
+            return { kind: "absent" };
+          }
+          if (body.byteLength === 0) {
+            // A 200 with no body is not an image; treat as absent rather than
+            // caching an empty rendition.
+            console.warn(`[covers] ${url} returned an empty body`);
+            return { kind: "absent" };
+          }
+          return { kind: "body", body };
+        }
+
+        if (!RETRYABLE_STATUS.has(res.status)) return { kind: "absent" }; // 404: no art here
+        return { kind: "retryable", problem: `HTTP ${res.status}` };
       });
     } catch (err) {
       // A dropped socket or a timeout says nothing about whether the artwork
@@ -195,29 +256,10 @@ async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
       continue;
     }
 
-    if (res.ok) {
-      const declared = Number(res.headers.get("content-length") ?? 0);
-      if (declared > MAX_UPSTREAM_BYTES) {
-        console.warn(`[covers] ${url} declares ${declared} bytes — refusing`);
-        return null;
-      }
-      const body = Buffer.from(await res.arrayBuffer());
-      if (body.byteLength > MAX_UPSTREAM_BYTES) {
-        console.warn(`[covers] ${url} delivered ${body.byteLength} bytes — refusing`);
-        return null;
-      }
-      if (body.byteLength === 0) {
-        // A 200 with no body is not an image; treat as absent rather than
-        // caching an empty rendition.
-        console.warn(`[covers] ${url} returned an empty body`);
-        return null;
-      }
-      return body;
-    }
+    if (outcome.kind === "body") return outcome.body;
+    if (outcome.kind === "absent") return null;
 
-    if (!RETRYABLE_STATUS.has(res.status)) return null; // 404 and friends: no art here
-
-    lastProblem = `HTTP ${res.status}`;
+    lastProblem = outcome.problem;
     console.warn(
       `[covers] ${lastProblem} on ${url} (attempt ${attempt}/${maxAttempts})` +
         (attempt < maxAttempts ? " — retrying" : " — giving up")
