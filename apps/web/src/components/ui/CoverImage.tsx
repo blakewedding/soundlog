@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedCoverColor, extractCoverColor, mutedTint } from "../../lib/coverColor";
 import { coverSources, type CoverSize } from "../../lib/coverVariant";
 
@@ -59,6 +59,7 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
   // Seeded synchronously so a known colour is present on the very first paint
   // rather than flashing --ink-2 for a frame.
   const [tint, setTint] = useState(() => mutedTint(color) ?? cachedCoverColor(src));
+  const imgRef = useRef<HTMLImageElement>(null);
 
   const served = coverSources(src, size);
 
@@ -86,17 +87,41 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
     };
   }, [src, color, served.src]);
 
-  function handleLoad(e: React.SyntheticEvent<HTMLImageElement>) {
-    const img = e.currentTarget;
+  // Everything that must happen once the pixels are known, from whichever path
+  // got us there. It has to be callable without an event, because on the cached
+  // path there is no event to be called from.
+  const settle = useCallback((img: HTMLImageElement) => {
     if (img.naturalWidth && img.naturalHeight) {
       const ratio = img.naturalWidth / img.naturalHeight;
       if (ratio > 1.3 || ratio < 0.77) setLetterbox(true);
     }
     setLoaded(true);
+  }, []);
+
+  function handleLoad(e: React.SyntheticEvent<HTMLImageElement>) {
+    settle(e.currentTarget);
   }
+
+  // An image can finish decoding BEFORE React attaches its onLoad handler — a
+  // warm HTTP cache, a /covers/ rendition already on disk, a bfcache restore.
+  // That load event fires against the element but is never delivered to us, so
+  // waiting for it leaves `.img-loading` in place and the artwork sits at
+  // opacity 0 forever: decoded, correctly sized, and completely invisible.
+  //
+  // So ask the element what has already happened rather than waiting to be
+  // told. Layout effect, not a passive one, so the class is gone before the
+  // browser paints — clearing it after paint is a visible flash of nothing.
+  //
+  // `complete` is also true for an errored or empty src, which is why
+  // naturalWidth is the real predicate: it is non-zero only if pixels exist.
+  useLayoutEffect(() => {
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth) settle(img);
+  }, [served.src, settle]);
 
   const image = src && (
     <img
+      ref={imgRef}
       src={served.src}
       srcSet={served.srcSet}
       alt={onClick ? "" : alt}

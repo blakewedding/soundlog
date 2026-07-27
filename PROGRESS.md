@@ -538,13 +538,37 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 - **Ubuntu 24.04 LTS over 26.04** — production runs LTS.
 
 ## Open items
-- **Enable catalog pre-warming in production — scheduled for 2026-07-27.** It
-  shipped with 6.1.4 but **disabled** (`PREWARM_INTERVAL_MINUTES` unset → 0), so
-  that the ordering and concurrency work could prove itself alone on a live box
-  first. Turning it on is a one-line `.env.production` edit plus
-  `up -d backend` — no rebuild, no migration. Start at 60 minutes and watch
-  `[prewarm] warmed N release(s)` before shortening it. Deliberately its own
-  step, not a second change riding a deploy.
+- ~~**Enable catalog pre-warming in production**~~ — **DONE 2026-07-27**,
+  `PREWARM_INTERVAL_MINUTES=60`, backend recreated 05:20:48 UTC. Details in the
+  6.1.5 section below, including the two things the procedure as filed got
+  wrong about how the first cycle can be observed.
+- **`/api/health` is cached for 60s, so it can report health it did not just
+  verify.** Found 2026-07-27 while decomposing an UptimeRobot latency figure.
+  The route is in Varnish's cache-safe list (`cache-policy.vcl`, `return (hash)`)
+  but — unlike `releases`/`search`/`feed/popular` — is given **no explicit TTL**,
+  so it falls through to `default_ttl=60`. It sends no `Cache-Control` of its own.
+  Confirmed live: `X-Cache: HIT`, `X-Cache-Hits: 5` on the loopback edge.
+
+  The consequence is a **≤60s window in which a monitor is told `ok` by a
+  response that predates the failure** — Postgres, Redis or Elasticsearch can be
+  down and the cached 200 keeps being served. A degraded run returns 503, which
+  Varnish's builtin does not cache, so the lie is bounded rather than sticky; but
+  bounded-and-trusted is exactly the failure mode §9 keeps re-learning ("a check
+  that reports a working system as broken is worse than no check" — this is the
+  same coin, inverted). A health check is the one endpoint whose whole value is
+  that it was *just* evaluated.
+
+  Fix is one line — `no-store` on the route, or an explicit `beresp.ttl = 0s` for
+  `^/api/health` in `vcl_backend_response`. Deliberately NOT fixed inside 6.1.5:
+  it is an edge-policy change to a monitored endpoint and wants its own before/
+  after, not a ride-along on a client rendering fix.
+- **A malformed upstream 200 body throws `TypeError`, not
+  `UpstreamUnavailableError`.** `detail.title.trim()` / `detail.artistName.trim()`
+  (`catalogService.ts:287`) assume fields that a 200 with an unexpected shape does
+  not guarantee. Pre-warming catches and continues, so it is invisible there — it
+  is visible in the prewarm test's logs, where fetch is stubbed to `{}`. An
+  interactive seed would 500 instead of returning a §1 outcome. Low likelihood,
+  cheap fix, but it is a §1 gap and should be closed deliberately.
 - **401 → refresh → replay against a genuinely aged token** — unit-tested, never
   exercised against a real >15-minute session. Low risk, but it is the one auth
   path no automated test can honestly claim.
@@ -1551,7 +1575,7 @@ reports a working system as broken is worse than no check, because it is trusted
 And a `fail()` that exits turns one stale assumption into a silently shortened
 suite — which is how this went unnoticed for two days.
 
-## Next — Phase 6.1.5: the CoverImage load-event race
+## Phase 6.1.5 — the CoverImage load-event race (DONE 2026-07-27)
 
 **Filed from 6.1.4's verification, and reproducing the original cover symptom** —
 which is why it is next rather than queued behind 6.2. A cover that never
@@ -1583,6 +1607,105 @@ a latency one; it is intermittent and warm-cache dependent; and it wants its own
 before/after. It is the same silent-failure shape as 6.1.1 — **a stuck image is
 indistinguishable from a slow one** — which is the third time that shape has cost
 this project a phase.
+
+### What shipped
+
+`settle(img)` in `CoverImage.tsx` now holds everything that must happen once the
+pixels are known, callable **without an event** — because on the cached path
+there is no event to be called from. A `useLayoutEffect` keyed on the served src
+asks `imgRef.current.complete` at mount and settles immediately when the image is
+already there. `onLoad` is unchanged and still owns the cold path.
+
+Two details that are load-bearing:
+
+- **`useLayoutEffect`, not `useEffect`.** The class has to be gone before the
+  browser paints; clearing it after paint is a visible flash of nothing, which is
+  a smaller version of the bug being fixed.
+- **`naturalWidth` is the real predicate, not `complete`.** `complete` is also
+  true for an errored or empty src, so testing it alone would unhide the
+  browser's broken-image glyph at full opacity. Non-zero `naturalWidth` is what
+  actually means "pixels exist".
+
+The ratio/letterbox check moved into `settle` with it. That was a second, quieter
+half of the same defect: a cached **non-square** cover (gatefold scan, cassette
+J-card) lost its letterboxing too, because that logic also lived only in the load
+handler — so it was center-cropped into a smear *and* invisible.
+
+### The regression test, and proving it is worth having
+
+Four cases in `CoverImage.test.tsx`. The two that matter drive the **cached**
+path — jsdom fires no load events on its own, so a test whose image loads after
+mount passes against the broken component and proves nothing.
+
+They assert the **class**, not computed opacity: the `opacity: 0` rule lives in
+`theme.css`, which jsdom does not apply, so opacity reads `""` either way. Pinning
+the mark rather than the value is 5.5's `data-fill` discipline.
+
+**Falsified before being trusted.** Reverted the component, kept the new tests,
+re-ran: **2 failed / 9 passed**, with exactly the right assertions failing —
+`expected 'img-loading' not to contain 'img-loading'` and `expected '' to be
+'contain'`. The other two (broken-image guard, cold path) pass either way by
+design; they exist to catch the fix over-reaching, not to detect the bug.
+
+### The live demo did NOT reproduce the bug, and that is reported, not hidden
+
+§9 asks for a live demo of the pass condition. **The automated browser pane
+cannot reproduce this race, so the fix's before/after was not demonstrated in a
+real browser.** Stated plainly because the alternative is a verification that
+reports success it did not observe — the 6.1.4 lesson, one phase old.
+
+Two structural reasons, both established by measurement rather than assumed:
+
+- Covers are `loading="lazy"`, and in that pane **no image begins loading until a
+  paint is forced** (a screenshot). By then React has long since attached
+  `onLoad`, so `complete` is never true at mount. Initial symptom was 12/12 covers
+  at `complete: false, naturalWidth: 0` with a **0×0 viewport** — the pane had no
+  viewport at all, so nothing was ever "in view". Sizing it to 1280×900 was
+  necessary but not sufficient.
+- CSS transitions **do not advance without compositor frames**. A mid-flight
+  `opacity` reads `0` indefinitely.
+
+That second one produced a **false positive I nearly reported as a reproduction**:
+on the reverted build, an SPA remount over a warm cache measured
+`stuckInvisible: 12`. It was not the bug — `img-loading` had already been
+removed (`stillLoadingClass: 0`), meaning `onLoad` had fired correctly and the
+transition was simply frozen at its start value. Forcing a paint resolved it to
+**0 stuck / 12 visible**. The tell was that the class and the opacity disagreed;
+had the run only measured opacity, it would have "confirmed" a bug that was not
+there. **Measure the mechanism, not just the symptom** — a symptom has more than
+one cause, and the environment is one of them.
+
+What the live pass *does* establish, on the paths this environment can exercise:
+cold load **12/12 decoded, 12/12 at opacity 1**, class cleared; SPA remount over a
+warm cache **12/12 visible, 0 stuck, 1 correctly letterboxed** — `settle` working
+end to end, and no regression to the path that already worked. The falsifiable
+evidence for the fix itself is the test's before/after, plus the original live
+capture on production (`{ complete: true, naturalWidth: 250, opacity: "0" }`).
+
+### Pre-warming enabled in production (the item this phase was gated behind)
+
+`PREWARM_INTERVAL_MINUTES=60`, backend recreated **05:20:48 UTC**. Boot logged
+`[prewarm] catalog pre-warming every 60m`, with the replica warning correctly
+silent. Pre-state measured first: **101 releases, 5 candidates** (3 missing a
+cover, 4 missing a label, overlapping) and **0 Redis markers**.
+
+The MusicBrainz UA contact was swapped to `hello@soundlog.app` **first and
+separately**, with its own recreate, rather than riding this deploy — a first
+pre-warm cycle under a simultaneously-changed UA conflates two changes. Verified
+out of the running process, not off the disk file.
+
+**Two things the filed procedure got wrong**, both worth recording because they
+would have made the verification unfalsifiable:
+
+- `startPrewarming` uses `setInterval` with **no leading call**, so the first
+  sweep is 60 minutes *after* boot, not at boot. "Verify before anything else"
+  was not achievable as written.
+- The `[prewarm] warmed N release(s)` line is **conditional on
+  `attempted.length`**. A healthy cycle with nothing left to warm logs *nothing*,
+  so absence of the line does not distinguish success from failure. It was only
+  verifiable at all because the pre-state check found 5 real candidates —
+  checking that first is what made the log line a meaningful assertion instead of
+  a hopeful one.
 
 ## Then — Phase 6.2: Settings & Profiles (before the Kickstarter launch)
 
