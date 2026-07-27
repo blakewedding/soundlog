@@ -14,6 +14,8 @@
 // has not been healed yet, an upstream host we do not proxy, or a test fixture.
 // Those keep working exactly as before rather than becoming broken images.
 
+import { isProxiedPath, variantAt, variantSources } from "./imageVariant";
+
 /** Widths the backend renders. Anything else 404s — see services/coverProxy.ts. */
 export const COVER_WIDTHS = [96, 200, 400, 640, 1200] as const;
 export type CoverWidth = (typeof COVER_WIDTHS)[number];
@@ -34,7 +36,11 @@ export const COVER_SIZES = {
 
 export type CoverSize = keyof typeof COVER_SIZES;
 
-const PROXY_PATH = /^\/covers\/w\d{1,4}\//;
+// The segment-rewrite itself lives in lib/imageVariant.ts, shared with avatars
+// since 6.2 — see that file. What stays here is everything cover-SPECIFIC: the
+// width ladder, the per-surface sizes, and building a proxied URL for an
+// upstream the catalog does not hold.
+const PREFIX = "covers";
 
 /**
  * Build a proxied URL for an upstream cover the client knows about but the
@@ -56,14 +62,12 @@ export function proxiedUpstream(upstreamUrl: string, width: CoverWidth): string 
 
 /** Is this one of our proxied cover URLs (and therefore resizable)? */
 export function isProxiedCover(src: string | null | undefined): boolean {
-  return typeof src === "string" && PROXY_PATH.test(src);
+  return isProxiedPath(src, PREFIX);
 }
 
 /** The same cover at `width`, or `src` unchanged when it isn't ours to resize. */
 export function coverAt(src: string | null | undefined, width: CoverWidth): string | null {
-  if (!src) return null;
-  if (!isProxiedCover(src)) return src;
-  return src.replace(PROXY_PATH, `/covers/w${width}/`);
+  return variantAt(src, PREFIX, width);
 }
 
 /**
@@ -81,12 +85,5 @@ export function coverSources(
   src: string | null | undefined,
   size: CoverSize
 ): { src: string | undefined; srcSet: string | undefined } {
-  if (!src) return { src: undefined, srcSet: undefined };
-  if (!isProxiedCover(src)) return { src, srcSet: undefined };
-
-  const [oneX, twoX] = COVER_SIZES[size];
-  return {
-    src: coverAt(src, oneX) ?? undefined,
-    srcSet: `${coverAt(src, oneX)} 1x, ${coverAt(src, twoX)} 2x`,
-  };
+  return variantSources(src, PREFIX, COVER_SIZES[size]);
 }

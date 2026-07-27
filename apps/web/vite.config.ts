@@ -97,6 +97,11 @@ export default defineConfig({
       // one, the dev server answers /covers/… with index.html and every cover is
       // a broken image.
       "/covers": apiProxy,
+      // User avatars, for the same reason and with the same failure mode as
+      // /covers above: without this entry the dev server answers /avatars/…
+      // with index.html and every avatar is a broken image. See
+      // backend/src/routes/avatars.ts.
+      "/avatars": apiProxy,
     },
   },
 });

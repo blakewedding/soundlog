@@ -11,6 +11,7 @@ import { logsRouter } from "./logs.js";
 import { reviewsRouter, commentsRouter } from "./reviews.js";
 import { listsRouter } from "./lists.js";
 import { usersRouter } from "./users.js";
+import { meRouter } from "./me.js";
 import { feedRouter } from "./feed.js";
 
 export const apiRouter = Router();
@@ -28,4 +29,7 @@ apiRouter.use("/reviews", reviewsRouter);
 apiRouter.use("/comments", commentsRouter);
 apiRouter.use("/lists", listsRouter);
 apiRouter.use("/users", usersRouter);
+// The caller acting on their own account. Separate from /users/:username, which
+// is the public view of somebody — see routes/me.ts.
+apiRouter.use("/me", meRouter);
 apiRouter.use("/feed", feedRouter);

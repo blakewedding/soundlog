@@ -7,6 +7,12 @@ export const API_ROUTES = {
   labels: "/api/labels",
   charts: "/api/charts",
   users: "/api/users",
+  // The caller acting on their own account, as distinct from `users` — which is
+  // the public view of somebody. See backend/src/routes/me.ts.
+  me: {
+    profile: "/api/me/profile",
+    avatar: "/api/me/avatar",
+  },
   feed: "/api/feed",
   reviewsRecent: "/api/reviews/recent",
   auth: {

@@ -155,8 +155,8 @@ access token silently failed every write.
 
 ## 7a. The API is single-instance, and that is load-bearing
 
-Two pieces of correctness live in one process's memory, and **both** break
-silently behind a second one:
+Three pieces of correctness live in one process's memory or on its local disk,
+and **all** break behind a second one:
 
 - the **MusicBrainz rate gate** — two processes each honour 1 req/s and together
   make 2 req/s, a §7 violation whose symptom is 503s indistinguishable from
@@ -164,13 +164,23 @@ silently behind a second one:
 - the **enrichment registry** (`enrichmentState.ts`) — a poll landing on the
   process that is not doing the work reads `ready` for a half-filled release,
   which is the 6.1.1 bug reintroduced by deployment topology rather than by code.
+- **avatar bytes on local disk** (6.2, `avatarStorage.ts`) — and this one is
+  worse than the other two. A master written on box A does not exist on box B,
+  so a fraction of requests 404 an avatar that uploaded successfully, and which
+  fraction depends on which process answered. The cover cache under replicas
+  merely re-fetches; avatars have no upstream, so replicas do not degrade them,
+  they **lose** them.
 
 Scaling the API past one process is therefore **not a config change**. It needs a
-distributed token bucket in Redis *and* a shared enrichment registry, **together**
-— doing one without the other trades a visible slowdown for a silent lie.
+distributed token bucket in Redis *and* a shared enrichment registry *and* shared
+object storage for avatars, **together** — doing one without the others trades a
+visible slowdown for a silent lie.
 `config/singleInstance.ts` warns at boot when the environment implies replicas.
-Deliberately a warning, not a crash: these degrade rather than corrupt, and
-Postgres stays truth either way (§5).
+Deliberately a warning, not a crash — but note that avatars weakened the
+justification for that choice. The first two degrade rather than corrupt and
+Postgres stays truth either way (§5); the third is the first thing here whose
+only copy is not in Postgres. If a second process ever becomes real, avatars move
+to object storage **first**, not last.
 
 ## 8. Reuse over reimplementation
 
@@ -205,6 +215,37 @@ faithfully; a passing suite is not evidence a feature works.
 An approval-adjacent user message that arrives mid-command is a gate until
 proven otherwise — pause at the next natural boundary and confirm before
 chaining into the next state-changing step.
+
+## 10. A destructive query is read back BEFORE it runs, not after
+
+Any statement that deletes or overwrites rows — `deleteMany`, `DELETE`,
+`UPDATE` without a primary key, `TRUNCATE`, `drop`, a bulk re-index — may only
+run once a **`SELECT` carrying the identical filter** has been executed and its
+**count and rows actually read**, and they match the stated intent. Not a
+similar filter. The same one.
+
+**Prefer an explicit list of ids over a pattern.** A pattern describes what you
+believe is in the table; a list of ids describes what you have looked at. When a
+pattern is genuinely necessary, the `SELECT` is what converts it into the second
+thing.
+
+This exists because of 6.2a. Cleaning up one demo account created minutes
+earlier, `deleteMany({ where: { email: { endsWith: "@demo.local" } } })` also
+matched the seeded dev users `demo_blake` and `sasha`, and the cascade took
+their reviews, ratings and logs — 131 ratings that were the product of real
+browsing, unrecoverable because a developer's laptop is not in the backup story
+that `backup-db.sh` implements for production.
+
+The mechanism is the part worth keeping. **The read-back discipline this project
+already follows covered file writes and did not extend to ad-hoc destructive
+queries** — every config edit that session was read back, and the one statement
+that destroyed data was not. A `SELECT` would have returned three rows where one
+was intended and stopped it in a second. The gap was never a missing rule about
+databases; it was a rule about *writes* that nobody had applied to *deletes*.
+
+It executed against **dev**, which is why this is a law and not an incident
+report. The same reflex aimed at `/srv/soundlog` is the version that ends
+differently.
 
 ---
 

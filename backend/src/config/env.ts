@@ -77,6 +77,30 @@ const schema = z.object({
   // Hard ceiling, swept LRU-style. 1 GiB holds thousands of covers at five
   // widths; the point is that a crawler cannot fill the disk Postgres is on.
   COVER_CACHE_MAX_BYTES: z.coerce.number().int().positive().default(1024 * 1024 * 1024),
+  // ---------- Avatars (see services/avatarStorage.ts) ----------
+  // User avatars. Read the contrast with COVER_CACHE_DIR above carefully,
+  // because the two look alike and are governed by opposite rules.
+  //
+  // A cover rendition is a CACHE: it is keyed by an upstream URL, so anything
+  // dropped is re-fetchable from the Cover Art Archive, which is what makes
+  // dropping it safe. An avatar has NO UPSTREAM. These are the only copy, and
+  // this is the first non-regenerable bytes-on-disk this stack has held.
+  //
+  // Hence, deliberately:
+  //   * `.data/`, not `.cache/` — and `/var/lib/soundlog/avatars` in production,
+  //     not `/var/cache/...`. Under the FHS `/var/cache` may be deleted by
+  //     anything at any time to reclaim space; `/var/lib` is application state.
+  //     The path is the warning, so an operator clearing caches loses nothing.
+  //   * NO max-bytes companion and NO sweeper. An LRU eviction here is not a
+  //     cache miss, it is a user's picture being destroyed.
+  //   * IN the backup story — see infrastructure/scripts/backup-db.sh, which
+  //     archives `master/` nightly. prod_covercache is excluded precisely
+  //     because it is regenerable; inheriting that exclusion by accident would
+  //     be a silent single point of data loss found at restore time.
+  AVATAR_DIR: z
+    .string()
+    .default(".data/avatars")
+    .transform((v) => path.resolve(v)),
   LASTFM_API_KEY: z.string().optional(),
   // Discogs personal access token, sent as `Authorization: Discogs token=<value>`.
   DISCOGS_TOKEN: z.string().optional(),

@@ -1807,6 +1807,171 @@ parent of a live thread. Revisit *at that point* — the trigger is the existenc
 of threaded replies, not a date. Deciding it now, against zero such threads,
 would be designing for a hypothetical.
 
+### 6.2a — DONE (2026-07-27): schema, avatar storage, backup, upload path
+
+**Three of the six columns already existed.** `displayName`, `bio` and
+`avatarUrl` shipped in the `init` migration on 2026-07-15 — read off the live
+table, not off the schema file. More usefully: `avatarUrl` was **read everywhere
+and written nowhere**, already threaded through `authService`'s session payload,
+the profile response, the `publicUser` select in both `reviews.ts` and
+`lists.ts`, `feedService` and `similarService`, carrying `null` since July. So
+6.2a was a write path and a component, not a plumbing job. The one sharp edge:
+`Profile.tsx` rendered a raw `<img src={p.avatarUrl}>`, harmless while the value
+was always null and a §8 violation the moment it was not.
+
+The migration is therefore `links` / `plan` / `profileVisibility` only
+(`20260727143959_profile_links_plan_visibility`), all `NOT NULL DEFAULT`, which
+on PG 11+ is a catalog-only change and does not rewrite the table.
+
+**`profileVisibility` ships unenforced, deliberately and visibly.** The column
+and the enum doc-comment both say so, and no UI writes it. Enforcement is 6.2b
+alongside the security list, and has to cover every read in `users.ts`,
+`feedService`, and the **user documents in Elasticsearch** — §5 means a hidden
+profile is otherwise still answerable from the index. A toggle that renders
+before that is a promise the product does not keep.
+
+**Storage says "not a cache" in the path, not just in a comment.**
+`/var/lib/soundlog/avatars`, not `/var/cache/...`; `.data/`, not `.cache/`; no
+max-bytes companion and no sweeper. Under the FHS `/var/cache` may be deleted by
+anything reclaiming space, which is exactly right for cover renditions and
+exactly wrong for the only copy of a user's photograph. Two tiers: a durable
+512px `master/`, and `w<width>/` renditions derived from it on demand — so the
+non-regenerable bytes are one small directory, and adding a fifth width later is
+a code change rather than a mass re-upload request.
+
+The URL is `/avatars/w<width>/<userId>-<hash16>.webp`, hashed over the **original
+uploaded bytes**. Not reversible like a cover URL — there is no upstream to
+encode and no allowlist needed, because this route fetches nothing. What the hash
+buys is the property that makes `immutable` honest: new picture, new URL, so a
+year-long lifetime cannot serve someone their old face. Sharding is on the
+**hash, not the user id** — cuid ids all begin with `c`, so id-sharding is one
+directory wearing a sharded costume.
+
+**The backup landed and was drilled before the upload endpoint existed.**
+`backup-db.sh` is no longer Postgres-only. It archives `master/` and then does
+the thing a `tar tzf` cannot: it asks Postgres how many users hold an avatar and
+compares. An empty tarball verifies perfectly, which is precisely the
+wrong-volume failure that would otherwise be found at restore time. Zero archived
+against a non-zero database count is a **hard failure**; a smaller shortfall is a
+warning (an upload landing mid-run is benign); zero against zero succeeds,
+because a new stack is not a broken one. An avatar failure exits non-zero but
+**keeps the database dump**, which by then is already written and verified.
+
+All three paths were exercised against a scratch stack, plus archive → destroy →
+restore → **checksums matched byte-for-byte**. The drill also found a real
+portability trap: `verify_archive`'s fallback used GNU `stat -c%s`, and because
+that check *deletes on failure*, on any non-GNU host it would have thrown away a
+good backup every night. Production is Linux so it was never live, but it is the
+one bug in that script that destroys backups.
+
+**The gauntlet is ordered, and the order is the point.** Size at the transport
+(`express.raw` limit) → magic-byte sniff → `limitInputPixels: 24M` → `metadata()`
+for dimensions and frame count → only then pixels. Everything cheap runs before
+sharp allocates. JPEG/PNG/WebP only: that allowlist is what rejects **SVG**,
+which sharp would happily rasterize and which is a script and XXE vector wearing
+an image's clothes. GIF excluded on purpose. Animated WebP rejected rather than
+silently flattened to frame one. **No `withMetadata()`** — a privacy control, not
+an encoding preference: a phone photo carries GPS, and re-serving it from our own
+origin would be publishing a user's home address. Every rejection is a **400
+naming the reason**; §1's 503 is for upstream uncertainty and there is no
+upstream here.
+
+Uploads are `PUT /api/me/avatar` with the image as the **raw body**, not
+multipart — no fields are needed beyond the bytes, the path is derived from the
+user id and the hash so a filename is something to throw away, and both web and
+React Native speak it natively. `/api/me/*` is deliberately separate from
+`/api/users/:username`: same rows, different contract.
+
+`links` is a Json column, which is safe only because there is exactly one write
+path through one zod schema (max 5, `https:` only — `javascript:` parses fine as
+a URL and these render as anchors). Nine rejection cases are tested at the HTTP
+boundary, including that a rejected write leaves the stored value untouched.
+
+**Live demo:** a 1400×600 JPEG carrying 244 bytes of EXIF including GPS →
+512×512 master, all four renditions square and correct, **EXIF stripped**, served
+`immutable` with content-derived ETags, rendered circular at 96 CSS px fetching
+the **w384 2x candidate** on a retina viewport, person-glyph fallback for users
+without one, and `DELETE` removing every byte including derived renditions.
+
+The first attempt at that demo **did not actually prove the EXIF strip** — the
+generator wrote EXIF to a buffer and then re-encoded through a second sharp pass
+that silently stripped it, so the upload had nothing to strip. Recorded because
+the unit test was the only thing genuinely covering it, and a demo that agrees
+with you for the wrong reason is worse than no demo.
+
+**Test suites split into vitest projects.** Integration now runs single-fork,
+sequentially; unit stays parallel. This was the **third** documented instance of
+the shared-state-under-parallelism class (RUN-collision teardown, tabbedSearch,
+and now `prewarm`'s `release.count()` reading a row seeded by
+`discography.test.ts`). Confirmed pre-existing by stashing all 6.2 work and
+reproducing the identical failure on `a4d8ae6`; adding two unrelated unit files
+was enough to shuffle scheduling and surface it. Before: 2 red in 3 runs, a
+different test each time. After: **5 consecutive green runs**. Wall clock
+48s → 110s, accepted. `prewarm`'s assertion changed from a global count to a
+direct watch on `release.create/createMany/upsert` — narrower (the enrich path
+legitimately calls `update`) and strictly stronger (a create-then-delete balances
+a count and is still a violation).
+
+**And the split did NOT fix everything — a second, unrelated bug was hiding
+behind it.** `catalog.test.ts` failed once more after five green single-fork
+runs, which by the standing rule meant it was not parallelism and had to be
+chased. It wasn't, and the mechanism is worth keeping:
+
+Fixture titles end in `Date.now().toString(36)` (e.g. `ms3jrtg7`). The release
+index uses an edge-ngram `autocomplete` analyzer whose search analyzer splits
+letter/digit runs, so that tag tokenizes to **`["ms", "jrtg"]`** — meaning every
+fixture created in the same era shares the leading `ms` token. Invisible to the
+eighteen files that look their fixtures up by id; fatal to the **two that assert
+on search**, because `searchCatalog` returns early once Elasticsearch already
+holds `THIN_RESULTS` (5) matches and never fans out to the mocked MusicBrainz.
+The test's own title is then simply absent, and it reads as a broken fan-out.
+
+Reproduced deterministically by indexing six sibling-tagged documents: the
+time-derived query returned **7 hits (fan-out skipped, test fails)** while an
+alphabetic tag returned **1 (fan-out runs)**. Fixed with `tests/support/runTag.ts`
+— letters only, so it analyzes to exactly one token with no shared prefix —
+applied to the two search-asserting files. Four further full runs green.
+
+Worth stating plainly: this survived the single-fork split *because it was never
+a parallelism problem*. Sequential files still share one index. Parallelism made
+more fixtures coexist and so made it likelier, which is exactly how one bug ends
+up wearing another's clothes.
+
+Final: backend **36 files / 362 tests**, web **27 / 213**, typecheck clean in
+both, four consecutive green full runs.
+
+#### Incident, 2026-07-27 — local dev data loss during 6.2a cleanup
+
+Recorded because the mechanism generalises, and because the near-miss is the
+interesting part.
+
+Cleaning up one demo account created minutes earlier,
+`deleteMany({ where: { email: { endsWith: "@demo.local" } } })` matched **three**
+users, not one: the seeded dev accounts `demo_blake` and `sasha` used the same
+email domain. The cascade took their owned rows — roughly 131 ratings, 147 logs
+and 3 reviews, the product of real browsing.
+
+**Unrecoverable.** No seed script exists, dev Postgres has no WAL archiving, and
+`backup-db.sh` targets `/srv/soundlog` on the production host, so it has never
+dumped a laptop. The accounts were recreated empty; the data stays lost.
+
+**Production was never touched.** Every database command that session went to
+`soundlog-postgres-1` (the local dev container) or the throwaway `soundlog-drill`
+stack. `big_sigh` survived precisely because it uses a real email rather than
+`@demo.local`. The backup drill used a scratch stack specifically so it could not
+reach anything real.
+
+**The catalog survived** — 167 releases, 66 artists, 106 labels. Only user-owned
+rows cascaded, which is the difference between an annoyance and a re-seed.
+
+The mechanism, which is now **CLAUDE.md §10**: the read-back discipline this
+project already follows covered *file writes* and had never been extended to
+*ad-hoc destructive queries*. Every config edit that session was read back; the
+one statement that destroyed data was not. A `SELECT` with the identical filter
+would have returned three rows where one was intended. The gap was not a missing
+rule about databases — it was a rule about writes that nobody had applied to
+deletes. It ran against dev, which is why it became a law rather than an outage.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,

@@ -16,6 +16,28 @@ datasource db {
 // Users & auth
 // ---------------------------------------------------------------------------
 
+/// Subscription tier. Groundwork for 6.2 — there is no billing code behind this
+/// and no path that sets PRO; the settings page renders a "coming soon" row.
+/// An enum rather than a string so that adding a tier is a migration someone has
+/// to write, not a typo someone can persist.
+enum Plan {
+  FREE
+  PRO
+}
+
+/// Who may read a profile and the activity hanging off it.
+///
+/// The column lands in 6.2a but is NOT yet enforced, and no UI writes it — every
+/// row is PUBLIC, which is the pre-existing behaviour expressed explicitly.
+/// Enforcement is 6.2b and has to cover BOTH stores (§5): every read in
+/// routes/users.ts, feedService, and the user documents in searchService, or a
+/// hidden profile is still answerable from the search index. A toggle that
+/// renders before that is a promise the product does not keep.
+enum ProfileVisibility {
+  PUBLIC
+  PRIVATE
+}
+
 model User {
   id          String   @id @default(cuid())
   username    String   @unique
@@ -30,6 +52,25 @@ model User {
   // Unverified accounts are NOT blocked from signing in (Phase 6b launch
   // decision) — the UI shows a reminder instead.
   emailVerifiedAt DateTime?
+
+  // Profile links, as `[{ label, url }]`.
+  //
+  // Json rather than a UserLink table because this is read on every profile,
+  // review card and feed row, and a join for at most five rows is a cost paid
+  // on the hottest path in the app. Json rather than String[] because a custom
+  // domain has no label derivable from its hostname.
+  //
+  // The cost is honest: this is a schemaless column in a schema-first codebase.
+  // What contains it is that there is exactly ONE write path and it parses
+  // through one zod schema (profileLinksSchema) — max 5 entries, https only,
+  // label <= 40 chars, url <= 200. A shape that fails the parse is a 400 and
+  // never reaches the column, so readers do not have to defend themselves.
+  links Json @default("[]")
+
+  plan Plan @default(FREE)
+
+  // See the enum: present but deliberately unenforced until 6.2b.
+  profileVisibility ProfileVisibility @default(PUBLIC)
 
   oauthAccounts      OAuthAccount[]
   refreshTokens      RefreshToken[]

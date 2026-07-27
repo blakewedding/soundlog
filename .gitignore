@@ -16,5 +16,10 @@ coverage/
 # Re-encoded cover renditions (COVER_CACHE_DIR). Regenerable from the catalog's
 # stored URLs — never committed, never backed up.
 .cache/
+# User avatars (AVATAR_DIR). Not committed either, but for the opposite reason:
+# these are the only copy of bytes a user gave us, and in production the volume
+# they live on IS backed up nightly. Keeping them out of git is about not
+# committing user photographs, not about them being disposable.
+.data/
 .DS_Store
 backend/prisma/migrations/dev/

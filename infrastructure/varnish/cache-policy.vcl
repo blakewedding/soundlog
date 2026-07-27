@@ -24,6 +24,18 @@ sub vcl_recv {
     if (req.url ~ "^/covers/") {
         return (pass);
     }
+    # Avatars PASS for the same reason as covers: Varnish's store is memory, and
+    # holding image bytes here evicts the JSON this cache exists to serve. They
+    # are already cached on the origin's disk and at Cloudflare, which is where
+    # a visitor should be getting them from.
+    #
+    # There is a second reason specific to avatars. Their 404 is deliberately
+    # SHORT-LIVED — it usually means the edge asked for the hash the row held a
+    # moment ago, and it heals on the next request. Holding that 404 in a second
+    # cache layer would extend exactly the window we shortened it to close.
+    if (req.url ~ "^/avatars/") {
+        return (pass);
+    }
 
     # Cache only explicitly cache-safe public routes.
     if (req.url ~ "^/api/(releases|search|feed/popular|health)") {

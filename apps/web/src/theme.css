@@ -230,6 +230,34 @@ a:hover .cover,
   border-color: var(--gold-dim);
 }
 
+/* ---------- Avatars ----------
+   Its own component rather than a CoverImage prop (see components/ui/Avatar.tsx):
+   circular, person-glyph fallback, and never letterboxed — the backend centre-
+   crops avatars square, which is right for a face and wrong for a gatefold. */
+.avatar {
+  display: inline-block;
+  flex: none;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  color: var(--text-muted);
+  line-height: 0;
+}
+.avatar img,
+.avatar svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* object-fit: cover is belt-and-braces — the stored rendition is already
+   square — but it keeps a legacy or third-party URL from distorting. */
+.avatar img { object-fit: cover; }
+.avatar-row { width: 28px; height: 28px; }
+.avatar-card { width: 44px; height: 44px; }
+.avatar-hero { width: 96px; height: 96px; }
+
 .release-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

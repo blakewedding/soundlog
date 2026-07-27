@@ -317,6 +317,30 @@ export const api = {
     request<{ reviews: FeedReview[] }>(`${API_ROUTES.feed}/popular?limit=${limit}`),
   profile: (username: string) =>
     request<{ profile: Profile }>(`${API_ROUTES.users}/${encodeURIComponent(username)}`),
+
+  // ---- the caller's own account ----
+  myProfile: () => request<{ profile: OwnProfile }>(API_ROUTES.me.profile),
+  updateMyProfile: (body: {
+    displayName?: string | null;
+    bio?: string | null;
+    links?: ProfileLink[];
+  }) => request<{ profile: OwnProfile }>(API_ROUTES.me.profile, { method: "PATCH", body: JSON.stringify(body) }),
+  /**
+   * The image as the RAW request body — not multipart. There are no fields to
+   * send besides the bytes, and the server derives the path from the user id
+   * and a content hash, so a filename would only be something to throw away.
+   *
+   * The `Content-Type` override is load-bearing: `send()` sets
+   * application/json by default, and the route only accepts `image/*`.
+   */
+  uploadAvatar: (file: File) =>
+    request<{ profile: OwnProfile; bytes: number }>(API_ROUTES.me.avatar, {
+      method: "PUT",
+      body: file,
+      headers: { "Content-Type": file.type },
+    }),
+  deleteAvatar: () =>
+    request<{ profile: OwnProfile }>(API_ROUTES.me.avatar, { method: "DELETE" }),
   follow: (username: string) =>
     request<{ following: boolean; followerCount: number }>(
       `${API_ROUTES.users}/${encodeURIComponent(username)}/follow`,
@@ -353,6 +377,36 @@ export const api = {
 
 export interface FollowUser extends User {
   isFollowing: boolean;
+}
+
+/** One entry in a profile's link list. Validated server-side; https only. */
+export interface ProfileLink {
+  label: string;
+  url: string;
+}
+
+/**
+ * The caller's OWN account — a different shape from `Profile`, which is what
+ * anyone may see about somebody. This one carries the email and the settings
+ * fields, and is only ever returned by `/api/me/*`.
+ */
+export interface OwnProfile {
+  id: string;
+  username: string;
+  email: string;
+  displayName: string | null;
+  bio: string | null;
+  avatarUrl: string | null;
+  links: ProfileLink[];
+  plan: "FREE" | "PRO";
+  /**
+   * Round-tripped but NOT enforced anywhere yet — 6.2b makes it real across
+   * Postgres and Elasticsearch. Nothing should render a control for this until
+   * then: a toggle that appears to work and does not is worse than its absence.
+   */
+  profileVisibility: "PUBLIC" | "PRIVATE";
+  createdAt: string;
+  emailVerified: boolean;
 }
 
 export interface ProfileRating {

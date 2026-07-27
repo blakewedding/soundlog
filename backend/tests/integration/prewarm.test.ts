@@ -77,15 +77,57 @@ afterAll(async () => {
 describe("catalog pre-warming", () => {
   it("never creates a release row — it only finishes ones we already hold", async () => {
     await incompleteRelease("held");
-    const before = await prisma.release.count();
-
-    await prewarmOnce(3);
-    await settleEnrichments();
 
     // `discographyService`'s invariant: nothing is bulk-seeded. A background job
     // that quietly started creating rows would overturn a documented law without
     // anyone deciding to.
-    expect(await prisma.release.count()).toBe(before);
+    //
+    // WATCH THE WRITE METHODS, not `prisma.release.count()`.
+    //
+    // A global count measures every test FILE's writes, not this sweep's. The
+    // suite runs files in parallel against one database, so a release seeded by
+    // discography.test.ts landing inside this window reads as the pre-warmer
+    // creating a row — a failure with the right shape and the wrong cause. It is
+    // the same hazard the Redis markers above are already snapshot-and-delta'd
+    // for; the count assertion simply never got the same treatment, and it stayed
+    // quiet only because no file happened to overlap. Adding two unrelated test
+    // files in 6.2 changed the scheduling and it began failing deterministically.
+    //
+    // The watch is scoped to this worker, so it sees only this file's calls. It
+    // is also strictly stronger than a count: a create-then-delete inside the
+    // sweep balances a count and is still a violation.
+    //
+    // Wrapped by hand rather than with `vi.spyOn`. Prisma's delegate methods are
+    // lazily-created OWN properties, so `mockRestore()` deletes them instead of
+    // reassigning and every later test in the file dies on
+    // "prisma.release.create is not a function". Saving and restoring the
+    // reference explicitly has no such surprise.
+    //
+    // Only the INSERT methods are watched. `reenrichRelease` legitimately calls
+    // `release.update` all over catalogService; `release.create` appears there
+    // exactly once, on the seeding path, which is the line a sweep must never
+    // reach.
+    const methods = ["create", "createMany", "upsert"] as const;
+    const original = new Map(methods.map((m) => [m, prisma.release[m]] as const));
+    const called: string[] = [];
+
+    for (const m of methods) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (prisma.release as any)[m] = (...args: unknown[]) => {
+        called.push(m);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (original.get(m) as any).apply(prisma.release, args);
+      };
+    }
+
+    try {
+      await prewarmOnce(3);
+      await settleEnrichments();
+      expect(called, "a sweep issued a Release insert").toEqual([]);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const m of methods) (prisma.release as any)[m] = original.get(m);
+    }
   }, 60_000);
 
   it("remembers an attempt, so a legitimately-empty release is not re-swept forever", async () => {

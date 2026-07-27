@@ -590,13 +590,47 @@ Log options apply at container CREATION, so after changing them you must
 ### Backups
 
 `infrastructure/scripts/backup-db.sh` runs nightly from cron at 03:17 UTC and
-writes to `/var/backups/soundlog`, retaining 14 days.
+writes to `/var/backups/soundlog`, retaining 14 days. Despite the name it now
+produces **two** artefacts per run:
+
+| Artefact | Holds | Why it is backed up |
+|---|---|---|
+| `soundlog-<stamp>.dump` | the whole database | Postgres is truth (§5) |
+| `avatars-<stamp>.tar.gz` | `master/` from `prod_avatars` | **no upstream — the only copy** |
+
+Everything else on disk is deliberately excluded, and the rule that decides it is
+always the same question: *can these bytes be reconstructed from something else
+we hold?* Elasticsearch rebuilds from Postgres. Cover renditions re-fetch from
+`Release.coverUrl`. **Avatars cannot be reconstructed from anything** — a user
+gave us those bytes and nobody else has them — which is why they are the one
+volume that joins the dumps rather than inheriting the cover cache's exclusion.
+That inheritance-by-default is the failure this table exists to prevent, because
+it is only discovered at restore time.
 
 It uses `pg_dump -Fc` (custom format — compressed, and `pg_restore` can then do
 selective/parallel restores), writes to a `.partial` name and only moves it into
 place after `pg_restore -l` parses it. A backup directory must never contain a
 truncated file that looks like a backup; the point is that its contents are
 trustworthy without inspection.
+
+The avatar archive follows the same partial → verify → move discipline, plus one
+check the dump does not need. `tar tzf` proves an archive is not truncated; it
+cannot prove the archive has anything *in* it, and an empty tarball verifies
+perfectly. So the script asks Postgres how many users hold an avatar and
+compares:
+
+- **0 archived while the database reports ≥1 → hard failure**, nothing kept.
+  This is the wrong-volume / moved-path case, and it is the one that otherwise
+  produces a valid, verifiable, empty backup nobody notices for months.
+- a smaller shortfall → warning only, since an upload or deletion landing
+  between the count and the tar moves it by one in either direction. Failing a
+  good backup over a benign race teaches people to ignore the check.
+- 0 archived and the database reports 0 → success. A new stack is not a broken
+  one.
+
+An avatar failure exits non-zero but **keeps the database dump**, which by then
+has already been written and verified. The two are independent artefacts and
+discarding a good one because the other failed helps nobody.
 
 ```bash
 sudo /srv/soundlog/infrastructure/scripts/backup-db.sh   # run one now
@@ -605,7 +639,7 @@ sudo crontab -l                                          # confirm the schedule
 grep backup-db /var/log/soundlog-backup.log | tail       # last runs
 ```
 
-**Restore** (destructive — it drops and recreates the schema):
+**Restore the database** (destructive — it drops and recreates the schema):
 
 ```bash
 cd /srv/soundlog
@@ -615,11 +649,33 @@ dc exec -T postgres pg_restore -U soundlog -d soundlog --clean --if-exists \
 dc start backend
 ```
 
-The **cover cache is not backed up either**, for the same reason and by the same
-rule. `prod_covercache` (mounted at `/var/cache/soundlog/covers`) holds WebP
-renditions re-encoded from artwork whose URLs live in `Release.coverUrl` — which
-`pg_dump` already captures. Every byte in it is regenerable by asking for the
-cover again, so putting images in the dumps would inflate them for nothing.
+**Restore avatars.** Restore these alongside the database, not instead of it:
+`User.avatarUrl` and the file on disk are two halves of one fact, and restoring
+a dump without the matching archive leaves every profile pointing at a 404.
+Untarring only *adds* `master/` — it does not disturb the derived `w<width>/`
+renditions, which rebuild themselves on first request anyway.
+
+```bash
+docker run --rm -i -v soundlog-prod_prod_avatars:/a postgres:16-alpine \
+  tar xzf - -C /a < /var/backups/soundlog/avatars-YYYYmmdd-HHMMSSZ.tar.gz
+
+# confirm: this count should match the database's
+docker run --rm -v soundlog-prod_prod_avatars:/a postgres:16-alpine \
+  sh -c 'find /a/master -name "*.webp" | wc -l'
+dc exec -T postgres psql -U soundlog -d soundlog -tAc \
+  'SELECT count(*) FROM "User" WHERE "avatarUrl" IS NOT NULL'
+```
+
+This was drilled end-to-end before the upload endpoint existed — archive,
+destroy, restore, compare checksums — including the hard-failure path, rather
+than being assumed to work.
+
+The **cover cache is not backed up**, for the reason given in the table above
+and by the same rule. `prod_covercache` (mounted at `/var/cache/soundlog/covers`)
+holds WebP renditions re-encoded from artwork whose URLs live in
+`Release.coverUrl` — which `pg_dump` already captures. Every byte in it is
+regenerable by asking for the cover again, so putting images in the dumps would
+inflate them for nothing.
 
 It is bounded by `COVER_CACHE_MAX_BYTES` (default 1 GiB) and swept
 least-recently-used once it passes that, so it cannot grow into the disk
@@ -630,6 +686,14 @@ request for each cover re-fetches from the Internet Archive:
 dc exec backend du -sh /var/cache/soundlog/covers    # current footprint
 docker volume rm soundlog-prod_prod_covercache       # nuke it (stack stopped)
 ```
+
+> **Do not run that second command against `prod_avatars`.** The two volumes sit
+> next to each other in `docker volume ls` and only one of them is disposable.
+> Deleting the cover cache costs a re-fetch; deleting the avatar volume destroys
+> every user's picture with no upstream to recover them from, and the most recent
+> nightly archive becomes the only copy. Their mount points differ on purpose —
+> `/var/cache/...` versus `/var/lib/...` — so check the path before removing
+> anything.
 
 Elasticsearch is **not** backed up on purpose: Postgres is truth and the index
 is rebuildable (§5). After a restore, rebuild it rather than restoring it:

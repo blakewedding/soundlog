@@ -28,10 +28,11 @@
  * It is size-bounded and swept LRU-style rather than trusted to stay small.
  */
 import { createHash } from "node:crypto";
-import { mkdir, readdir, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { readdir, stat, unlink, utimes } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { env } from "../config/env.js";
+import { writeFileAtomically } from "./atomicWrite.js";
 import { UpstreamUnavailableError } from "./musicbrainzService.js";
 import { isDiscoveryCoverUrl } from "./coverProxy.js";
 import type { CoverWidth } from "./coverProxy.js";
@@ -164,7 +165,7 @@ async function renderVariant(
     return null;
   }
 
-  await writeAtomically(file, encoded);
+  await writeFileAtomically(file, encoded);
   scheduleSweep();
 
   return { file, bytes: encoded.byteLength, hit: false, etag: etagFor(key, width, encoded.byteLength) };
@@ -274,24 +275,6 @@ async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
     "coverart",
     `Cover art upstream unavailable after ${maxAttempts} attempt(s) (${lastProblem}): ${url}`
   );
-}
-
-/**
- * Write via a `.partial` sibling and rename into place. The same rule the
- * database backups follow: a cache directory must never contain a truncated
- * file that looks complete, because the next request would serve it as one.
- * rename(2) within a filesystem is atomic.
- */
-async function writeAtomically(file: string, data: Buffer): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  const partial = `${file}.${process.pid}.partial`;
-  try {
-    await writeFile(partial, data);
-    await rename(partial, file);
-  } catch (err) {
-    await unlink(partial).catch(() => {});
-    throw err;
-  }
 }
 
 /**

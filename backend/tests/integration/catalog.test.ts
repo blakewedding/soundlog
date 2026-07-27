@@ -5,11 +5,16 @@ import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { es, RELEASE_INDEX, ARTIST_INDEX } from "../../src/config/elasticsearch.js";
 import { settleEnrichments } from "../../src/services/catalogService.js";
+import { runTag } from "../support/runTag.js";
 
 // External metadata APIs are mocked; Postgres, Redis, and Elasticsearch are real.
 // Spotify has no credentials here, so this exercises the required no-Spotify path.
 const app = createApp();
-const RUN = Date.now().toString(36);
+// Letters only, NOT `Date.now().toString(36)`. This file asserts on search, and
+// a time-derived tag analyzes to a token every concurrently-live fixture shares
+// — which silently pushes Elasticsearch past THIN_RESULTS and skips the very
+// fan-out these tests exist to check. See tests/support/runTag.ts.
+const RUN = runTag();
 const MBID = `mbid-${RUN}`;
 const ARTIST_MBID = `artist-${RUN}`;
 const LABEL_MBID = `label-${RUN}`;

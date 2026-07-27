@@ -10,6 +10,7 @@ import { FeedList } from "../components/feed/FeedList";
 import { ReviewCard } from "../components/review/ReviewCard";
 import { StarRating } from "../components/ui/StarRating";
 import { CoverImage } from "../components/ui/CoverImage";
+import { Avatar } from "../components/ui/Avatar";
 
 type Tab = "activity" | "reviews" | "ratings" | "lists" | "diary" | "followers" | "following";
 
@@ -44,9 +45,9 @@ export default function Profile() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <header style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
-        <div className="cover" style={{ width: 96, height: 96, borderRadius: "50%" }}>
-          {p.avatarUrl && <img src={p.avatarUrl} alt="" />}
-        </div>
+        {/* Standalone, so NOT decorative: on this page the avatar is the only
+            thing identifying whose profile this is. */}
+        <Avatar src={p.avatarUrl} name={p.displayName ?? p.username} size="hero" decorative={false} />
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <h1 style={{ margin: 0 }}>{p.displayName ?? p.username}</h1>

@@ -134,7 +134,22 @@ services:
       # dumps would bloat them to no purpose. Same reasoning as Elasticsearch
       # under §5. Safe to delete at any time — see the README's Backups section.
       COVER_CACHE_DIR: /var/cache/soundlog/covers
-    volumes: [prod_covercache:/var/cache/soundlog/covers]
+      # User avatars. Note the path: /var/lib, NOT /var/cache like the covers
+      # above. That is not cosmetic. Under the FHS /var/cache holds data that
+      # can be regenerated and may be deleted by anything reclaiming space,
+      # which is exactly right for cover renditions and exactly wrong here —
+      # an avatar has no upstream to re-fetch from, so these bytes are the only
+      # copy. The path is the first line of defence against someone freeing
+      # disk space and destroying user data.
+      #
+      # IN THE BACKUP STRATEGY, unlike prod_covercache.
+      # infrastructure/scripts/backup-db.sh archives master/ nightly and
+      # verifies the entry count against the number of users holding an avatar.
+      # See the README's Backups section.
+      AVATAR_DIR: /var/lib/soundlog/avatars
+    volumes:
+      - prod_covercache:/var/cache/soundlog/covers
+      - prod_avatars:/var/lib/soundlog/avatars
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -208,3 +223,8 @@ volumes:
   prod_esdata:
   # Regenerable cover renditions, not data. Bounded by COVER_CACHE_MAX_BYTES.
   prod_covercache:
+  # USER DATA. The only volume here besides prod_pgdata holding bytes that
+  # cannot be reconstructed from something else — Elasticsearch rebuilds from
+  # Postgres (§5) and the cover cache re-fetches from upstream, but an avatar
+  # exists nowhere but here. Backed up nightly; never `docker volume rm` it.
+  prod_avatars:

@@ -8,9 +8,14 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { es, RELEASE_INDEX } from "../../src/config/elasticsearch.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = `dg${Date.now().toString(36)}`;
+// Letters only, NOT `Date.now().toString(36)` — see tests/support/runTag.ts.
+// This file asserts that a search surfaces its own fixture, and a time-derived
+// tag shares an analyzed token with every other live fixture, which pushes the
+// query past THIN_RESULTS and skips the fan-out being tested.
+const RUN = runTag("dg");
 // Unique per run so the test never collides with real catalog rows.
 const DISCOGS_ID = 900000000 + (Date.now() % 1000000);
 // Fully synthetic names: search is ES-first and only fans out to sources on
