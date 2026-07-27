@@ -80,6 +80,16 @@ RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
 # process cannot write a single rendition. The failure mode is a silent EACCES
 # per cover on a stack that otherwise looks perfectly healthy.
 RUN mkdir -p /var/cache/soundlog/covers && chown -R app:app /var/cache/soundlog
+# The avatar volume's mount point, for exactly the same reason — and 6.2a
+# proved the reason by omitting this line. Docker creates a mount point that
+# does NOT exist in the image as root:root, so the freshly-created
+# prod_avatars volume arrived unwritable and every upload would have failed
+# with EACCES on a stack reporting six healthy containers.
+#
+# Worse here than for covers: a cover the process cannot write is a missing
+# tile that the next request retries, while an avatar it cannot write is a
+# user's upload failing outright with nothing to fall back on.
+RUN mkdir -p /var/lib/soundlog/avatars && chown -R app:app /var/lib/soundlog
 USER app
 EXPOSE 4000
 CMD ["node", "dist/server.js"]
