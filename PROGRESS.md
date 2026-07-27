@@ -1707,6 +1707,32 @@ would have made the verification unfalsifiable:
   checking that first is what made the log line a meaningful assertion instead of
   a hopeful one.
 
+**First cycle, observed live at 06:20:48 UTC:**
+`[prewarm] warmed 5 release(s), 0 already attempted` — exactly the predicted
+number, no failures logged, 5 Redis markers set, all six containers healthy.
+
+**And it healed nothing.** Candidates after the sweep: still 5, still 3 without a
+cover and 4 without a label — byte-identical to the pre-state. Recorded because
+`warmed N` reports **attempts, not outcomes**, and a cycle that fixes nothing
+logs the same line as one that fixes everything. Checking the row counts either
+side is what turns that line into evidence.
+
+The outcome is legitimate rather than a defect, which the residue itself argues:
+*Jeff Mills at Wire* (DJ set), *The Lonesome Crowded West Demos*, *Third Side of
+the Moon*, *Great Divide*, and Aphex Twin's `[user48736353001]` — demos,
+bootlegs and a SoundCloud alias, the exact profile MusicBrainz holds no art or
+label for. Ordinary browsing already healed everything healable; the sweep
+inherited the genuine upstream gaps. That is §1's "`null` is a real answer", and
+it is the whole reason the attempt marker exists — without it these five would be
+re-asked forever. They are now suppressed for seven days.
+
+**What this does not yet prove:** that pre-warming makes a *first visit faster*,
+which is the reason it exists. This cycle demonstrated the mechanism (selects,
+claims, attempts, logs, bounds itself) against a population with nothing to give.
+The value case needs a cycle that finds a genuinely healable row — most likely
+after new releases are seeded by real browsing. Worth re-reading the log after a
+day of traffic before shortening the interval.
+
 ## Then — Phase 6.2: Settings & Profiles (before the Kickstarter launch)
 
 Positioned before Kickstarter because several items are launch prerequisites
