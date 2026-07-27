@@ -1762,10 +1762,50 @@ user-supplied bytes, so they need the same treatment **plus** upload-side limits
 **"Soundlog Pro — coming soon"** row. Groundwork only — no payment integration in
 this phase.
 
-**Kickstarter / App Store prerequisites, gated on email routing:** a privacy
-policy page and a support contact. Both are blocked behind inbound email routing
-for `hello@soundlog.app` (see the Cloudflare Email Routing item in the
-post-launch checklist).
+**Kickstarter / App Store prerequisites, ~~gated on email routing~~ — UNBLOCKED
+2026-07-27:** a privacy policy page and a support contact. Inbound routing for
+`hello@soundlog.app` is live and verified, so both are now buildable.
+
+### Decisions taken before implementation (Blake, 2026-07-27)
+
+Recorded ahead of any code so the implementation is not the place these get
+argued out.
+
+**1. Avatar storage is durable, NOT evictable.** 6.2 reuses the covers
+*pipeline* — validation, sharp resize, rendition widths, delivery from our own
+origin (§7) — but explicitly **not** `coverCache`'s eviction. The cover cache is
+a size-bounded cache keyed by an upstream URL: anything it drops is re-fetchable
+from the Cover Art Archive, which is what makes dropping safe. An avatar has no
+upstream. Evicting one destroys the only copy, and the user experiences it as
+the product losing their picture.
+
+**2. Avatars are in the backup story, because they are not regenerable.** This
+is the first non-regenerable bytes-on-disk this stack has held.
+`backup-db.sh` is **Postgres only** (`pg_dump -Fc`), and `prod_covercache` is
+deliberately excluded precisely because it *is* regenerable. Avatars cannot
+inherit that exclusion by default — an avatar volume that nobody backs up is a
+silent single point of data loss, and it would be discovered at restore time,
+which is the worst moment to discover it. Either the volume joins the nightly
+backup or the storage decision changes; the one thing not permitted is
+inheriting the cover cache's treatment by accident.
+
+**3. `Avatar` is its own component, sharing the rendition helper with
+`CoverImage`.** §8 asks whether an existing component should gain a prop
+instead, and the answer here is no: avatars are circular, have a
+person-shaped fallback rather than a tint tile, and carry different alt-text
+semantics. What they *do* share is the "never hand-build a proxied URL at a call
+site" rule, so the size→rendition helper is common to both.
+
+**4. Account deletion is a HARD DELETE for v1**, on the
+`deleteReleaseEverywhere` precedent (§5): Postgres *and* Elasticsearch, or it is
+not a delete. This is App Store 5.1.1(v), not a preference.
+
+**Filed as a revisit trigger, not an open question:** anonymize-vs-orphan for
+threaded replies. If, before Kickstarter, real conversations exist where a
+deleted user's review or comment has replies under it, hard delete removes the
+parent of a live thread. Revisit *at that point* — the trigger is the existence
+of threaded replies, not a date. Deciding it now, against zero such threads,
+would be designing for a hypothetical.
 
 ## Then — Phase 7
 
