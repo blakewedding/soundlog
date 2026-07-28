@@ -25,7 +25,23 @@ export function setAccessToken(token: string | null) {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /**
+   * The parsed JSON body, when the failure had one.
+   *
+   * Undefined when the responder was not the app — nginx, Varnish and
+   * Cloudflare emit HTML, which is the case `fallbackMessage` exists for.
+   *
+   * Carried because a status and a message are not always the whole answer. The
+   * account-deletion 502 is the case that forced it: it means "the account IS
+   * gone, and one cached copy could not be cleared", and a client that sees
+   * only `502` would tell the user their deletion failed and invite them to
+   * retry something that has already happened irreversibly.
+   */
+  constructor(
+    public status: number,
+    message: string,
+    public body?: Record<string, unknown>
+  ) {
     super(message);
   }
 }
@@ -81,8 +97,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     let message = fallbackMessage(res.status);
+    let parsed: Record<string, unknown> | undefined;
     try {
       const body = await res.json();
+      if (body && typeof body === "object") parsed = body as Record<string, unknown>;
       if (body?.error) message = body.error;
     } catch {
       // Not JSON. This is the interesting case rather than the boring one: it
@@ -90,7 +108,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // Cloudflare — and those emit HTML. Whatever we show here is what the
       // user sees, so it must not be a status code.
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, parsed);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -378,6 +396,23 @@ export const api = {
     ),
   cancelEmailChange: () =>
     request<{ pendingEmail: null }>(API_ROUTES.me.email, { method: "DELETE" }),
+  /**
+   * Delete the account, permanently.
+   *
+   * `confirmUsername` is required for everyone; `currentPassword` only for
+   * accounts that have one (`profile.hasPassword`). See the route for why the
+   * typed username rather than the password is the universal confirmation.
+   *
+   * A 502 carrying `accountDeleted: true` means the account IS gone but a
+   * cached copy somewhere could not be cleared — the caller must treat that as
+   * a completed deletion with a warning, never as a failure to retry.
+   */
+  deleteAccount: (confirmUsername: string, currentPassword?: string) =>
+    request<{ deleted: true; purge: string }>(API_ROUTES.me.root, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmUsername, currentPassword }),
+    }),
   confirmEmailChange: (token: string) =>
     request<{ user: SessionUser & { email?: string } }>(
       API_ROUTES.auth.confirmEmailChange,
@@ -447,11 +482,19 @@ export interface OwnProfile {
   pendingEmail: string | null;
   plan: "FREE" | "PRO";
   /**
-   * Round-tripped but NOT enforced anywhere yet — 6.2b makes it real across
-   * Postgres and Elasticsearch. Nothing should render a control for this until
-   * then: a toggle that appears to work and does not is worse than its absence.
+   * Enforced across Postgres AND Elasticsearch since 6.2b step 4 — the user
+   * document is removed from the index rather than filtered, so no query
+   * written later can return a private member (§5).
    */
   profileVisibility: "PUBLIC" | "PRIVATE";
+  /**
+   * False for OAuth-only accounts (Spotify / Google), which have no password.
+   *
+   * The delete-account form keys off this: asking an OAuth user for a password
+   * they do not have would make deletion impossible for them, which is exactly
+   * what App Store 5.1.1(v) is checked against.
+   */
+  hasPassword: boolean;
   createdAt: string;
   emailVerified: boolean;
 }

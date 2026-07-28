@@ -44,6 +44,8 @@ import {
 } from "../services/avatarService.js";
 import { parseAvatarPath } from "../services/avatarStorage.js";
 import { indexUser } from "../services/searchService.js";
+import { purgeAvatar, verifyPurgeCredentials, cloudflarePurgeConfigured } from "../services/cloudflarePurge.js";
+import { deleteUserEverywhere } from "../services/accountDeletionService.js";
 
 export const meRouter = Router();
 
@@ -103,6 +105,7 @@ function toOwnProfile(user: {
   profileVisibility: string;
   createdAt: Date;
   emailVerifiedAt: Date | null;
+  password?: string | null;
 }) {
   return {
     id: user.id,
@@ -116,13 +119,22 @@ function toOwnProfile(user: {
     // to cancel. The change has NOT happened while this is set.
     pendingEmail: user.pendingEmail,
     plan: user.plan,
-    // Present so the client can round-trip it, but NOT yet enforced anywhere —
-    // see the enum in schema.prisma. 6.2b makes it real across both stores; no
-    // UI writes it until then, because a toggle that renders before enforcement
-    // is a promise the product does not keep.
+    // Enforced across Postgres AND Elasticsearch since 6.2b step 4 — the user
+    // document is DELETED from the index rather than filtered, so no query
+    // anyone writes later can return a private member (§5).
     profileVisibility: user.profileVisibility,
     createdAt: user.createdAt.toISOString(),
     emailVerified: Boolean(user.emailVerifiedAt),
+    /**
+     * Whether this account has a password at all — false for OAuth-only
+     * accounts, which sign in with Spotify or Google.
+     *
+     * A boolean, never the hash. What it exists for is the delete-account form:
+     * it must ask for a password when there is one and must NOT when there
+     * isn't, because rendering a required field an OAuth user cannot fill is
+     * the client-side half of the lockout that would fail App Store review.
+     */
+    hasPassword: Boolean(user.password),
   };
 }
 
@@ -395,6 +407,17 @@ meRouter.put(
       const old = previous.avatarUrl ? parseAvatarPath(previous.avatarUrl) : null;
       if (old && !url.includes(old.hash)) {
         await deleteAvatarFiles(req.userId!, old.hash);
+        // The edge still holds the old picture, `immutable` for a year, so
+        // unlinking the disk copy alone leaves the previous face retrievable by
+        // anyone who kept the URL.
+        //
+        // BEST EFFORT here, unlike the remove and delete paths, and the
+        // asymmetry is deliberate: what the user asked for is a NEW picture,
+        // and refusing that because Cloudflare is having a bad minute punishes
+        // them for an outage they cannot see. Erasure is not the request, so a
+        // failed purge is logged loudly (inside purgeAvatar) rather than
+        // failing the upload that did succeed.
+        await purgeAvatar(req.userId!, old.hash);
       }
 
       res.json({ profile: toOwnProfile(user), bytes });
@@ -404,18 +427,122 @@ meRouter.put(
   }
 );
 
+/**
+ * Remove the picture.
+ *
+ * Unlike a replace, erasure IS the request here, so the edge is not optional
+ * and a failed purge does not get to report success — the same rule account
+ * deletion follows, applied to the same bytes at a smaller scale.
+ *
+ * The credential is checked BEFORE the row is cleared, for the same reason the
+ * deletion path does it: once `avatarUrl` is null the hash is gone and nothing
+ * can derive the URLs to retry with. Preflighting turns "the token is wrong"
+ * back into an ordinary retryable refusal that changed nothing.
+ */
 meRouter.delete("/avatar", requireAuth, async (req: AuthedRequest, res, next) => {
   try {
     const previous = await ownProfileOrThrow(req.userId!);
+    const old = previous.avatarUrl ? parseAvatarPath(previous.avatarUrl) : null;
+
+    if (old && cloudflarePurgeConfigured()) await verifyPurgeCredentials();
+
     const user = await prisma.user.update({
       where: { id: req.userId! },
       data: { avatarUrl: null },
     });
 
-    const old = previous.avatarUrl ? parseAvatarPath(previous.avatarUrl) : null;
-    if (old) await deleteAvatarFiles(req.userId!, old.hash);
+    let purge: string = "skipped-unconfigured";
+    if (old) {
+      await deleteAvatarFiles(req.userId!, old.hash);
+      const outcome = await purgeAvatar(req.userId!, old.hash);
+      purge = outcome.status;
+      if (outcome.status === "failed") {
+        // Truthful in both directions: the picture IS gone from the row and the
+        // disk, and it is NOT gone from the edge. Reporting a plain 200 would
+        // claim an erase that did not finish.
+        return res.status(502).json({
+          error: "Your picture was removed, but cached copies could not be cleared from our CDN. We have logged it.",
+          avatarRemoved: true,
+          profile: toOwnProfile(user),
+        });
+      }
+    }
 
-    res.json({ profile: toOwnProfile(user) });
+    res.json({ profile: toOwnProfile(user), purge });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Delete the account. App Store Review 5.1.1(v).
+ *
+ * ## Confirmation: the username, always; the password, when there is one
+ *
+ * Step 3 established that an action which would let somebody else KEEP the
+ * account must re-authenticate, because an access token proves the session
+ * authenticated recently, not that the owner is holding the device. Deletion is
+ * the strongest member of that family, so the password is required — but
+ * `reauthenticate` answers 409 for an OAuth-only account, which has no password
+ * to check.
+ *
+ * Reusing it unchanged would therefore have made every Spotify and Google
+ * member permanently unable to delete their account: precisely the scenario
+ * 5.1.1(v) exists to test, failed in the one code path nobody signs in through
+ * locally.
+ *
+ * So the deliberate act is typing the USERNAME — required of everyone, and the
+ * whole confirmation for accounts with no password — and the password is an
+ * additional check wherever one exists. Nobody gets a one-tap irreversible
+ * button, and nobody gets locked out of erasing themselves.
+ */
+const deleteAccountSchema = z.object({
+  confirmUsername: z.string(),
+  currentPassword: z.string().optional(),
+});
+
+meRouter.delete("/", requireAuth, validate(deleteAccountSchema), async (req: AuthedRequest, res, next) => {
+  try {
+    const { confirmUsername, currentPassword } = req.body as z.infer<typeof deleteAccountSchema>;
+
+    const user = await prisma.user.findUnique({ where: { id: req.userId! } });
+    if (!user) throw new HttpError(401, "That account no longer exists.");
+
+    // Exact match, not case-insensitive: usernames are stored lowercase, and
+    // the point of a typed confirmation is that it was typed deliberately.
+    if (confirmUsername !== user.username) {
+      throw new HttpError(400, "That username does not match this account.");
+    }
+
+    if (user.password) {
+      if (!currentPassword) throw new HttpError(400, "Enter your password to confirm.");
+      const ok = await bcrypt.compare(currentPassword, user.password);
+      if (!ok) throw new HttpError(401, "That password is not correct.");
+    }
+
+    const result = await deleteUserEverywhere(req.userId!);
+
+    // The session is over either way — the row is gone. Clearing the cookie is
+    // not the security control (the refresh tokens cascaded with the user, and
+    // the access tokens are denylisted); it is what stops the browser sending a
+    // credential for an account that no longer exists.
+    res.clearCookie(REFRESH_COOKIE, { ...refreshCookieOptions(), maxAge: undefined });
+
+    if (result.residue.length > 0) {
+      // §1's shape, applied to a multi-store delete: this is NOT a successful
+      // deletion and must not be reported as one. But it is also not a failed
+      // one — the account is gone and cannot be recovered — so the body says
+      // both things rather than letting the status code imply a rollback that
+      // did not happen.
+      return res.status(502).json({
+        error:
+          "Your account was deleted, but some cached copies could not be cleared. We have logged it and will remove them.",
+        accountDeleted: true,
+        residue: result.residue.map((r) => r.layer),
+      });
+    }
+
+    res.json({ deleted: true, purge: result.purge });
   } catch (err) {
     next(err);
   }

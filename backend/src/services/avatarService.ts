@@ -311,6 +311,31 @@ export async function deleteAvatarFiles(userId: string, hash: string): Promise<v
   );
 }
 
+/**
+ * Which of an avatar's files are STILL on disk. Empty means the bytes are gone.
+ *
+ * `deleteAvatarFiles` is best-effort by design and swallows every unlink error,
+ * which is the right trade for a replace: the leftover file is unreachable,
+ * because the URL naming it is gone from the row and the hash is not guessable.
+ *
+ * Account deletion cannot rest on that argument. "Unreachable because nobody
+ * can guess the name" is not the same claim as "deleted", and 5.1.1(v) is about
+ * the second one. So the deletion path asks this afterwards and reports what it
+ * finds, rather than inferring success from a function that cannot fail.
+ */
+export async function avatarFilesRemaining(userId: string, hash: string): Promise<string[]> {
+  const candidates = [masterPath(userId, hash), ...AVATAR_WIDTHS.map((w) => variantPath(userId, hash, w))];
+  const present = await Promise.all(
+    candidates.map((p) =>
+      stat(p).then(
+        () => p,
+        () => null
+      )
+    )
+  );
+  return present.filter((p): p is string => p !== null);
+}
+
 /** Test seam: drop in-flight state between cases. */
 export function __resetAvatarState(): void {
   inFlight.clear();

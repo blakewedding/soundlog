@@ -264,6 +264,35 @@ async function deindexDoc(index: string, id: string): Promise<void> {
 export const deindexList = (id: string) => deindexDoc(LIST_INDEX, id);
 export const deindexUser = (id: string) => deindexDoc(USER_INDEX, id);
 
+/**
+ * De-index, and THROW if it did not happen.
+ *
+ * §5's default is the swallow above: an ES failure must never block a core
+ * path, because Postgres is truth and the index is rebuildable. Account
+ * deletion is the one caller for which that default is exactly wrong, and the
+ * reason is worth stating rather than assuming.
+ *
+ * Everywhere else, a failed index write degrades a FEATURE — a release is
+ * briefly missing from search and a re-index fixes it. Here, a failed de-index
+ * leaves a document describing a person who has asked to be erased, in the
+ * store §5 itself calls "the one most likely to answer a question nobody
+ * remembered to guard". The residue is the harm, so it cannot be swallowed and
+ * logged; it has to stop the delete while the delete is still stoppable.
+ *
+ * A 404 is success: the document is already absent, which is the outcome asked
+ * for. Anything else propagates.
+ */
+async function deindexDocStrict(index: string, id: string): Promise<void> {
+  try {
+    await es.delete({ index, id });
+  } catch (err) {
+    const status = (err as { meta?: { statusCode?: number } }).meta?.statusCode;
+    if (status !== 404) throw err;
+  }
+}
+export const deindexListStrict = (id: string) => deindexDocStrict(LIST_INDEX, id);
+export const deindexUserStrict = (id: string) => deindexDocStrict(USER_INDEX, id);
+
 export interface EsUserHit {
   id: string;
   username: string;

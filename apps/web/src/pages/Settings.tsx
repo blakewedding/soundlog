@@ -6,6 +6,7 @@ import { AvatarField } from "../components/settings/AvatarField";
 import { ProfileForm } from "../components/settings/ProfileForm";
 import { AccountSection } from "../components/settings/AccountSection";
 import { PrivacySection } from "../components/settings/PrivacySection";
+import { DangerSection } from "../components/settings/DangerSection";
 import { useState, useEffect } from "react";
 
 /**
@@ -106,6 +107,8 @@ export default function Settings() {
       <AccountSection profile={profile} onChange={setProfile} />
 
       <PrivacySection profile={profile} onChange={setProfile} />
+
+      <DangerSection profile={profile} />
     </div>
   );
 }

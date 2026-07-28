@@ -20,6 +20,30 @@ export function signAccessToken(userId: string): string {
   return jwt.sign({ sub: userId }, env.JWT_SECRET, options);
 }
 
+/**
+ * How long an access token actually lives, in seconds.
+ *
+ * Derived by signing a probe token and reading its own claims, NOT by parsing
+ * `JWT_ACCESS_TTL` ourselves. That string is jsonwebtoken's `ms` format
+ * ("15m", "2 days", a bare number of seconds), and a second parser for it would
+ * be a second opinion that can disagree with the first. Asking the same code
+ * path that mints real tokens cannot drift from it.
+ *
+ * The token denylist depends on this: an entry that expires before the tokens
+ * it is meant to block reopens the window silently, which is the one failure
+ * mode a denylist must not have.
+ */
+export function accessTokenLifetimeSeconds(): number {
+  const decoded = jwt.decode(signAccessToken("probe")) as { iat?: number; exp?: number } | null;
+  if (!decoded?.iat || !decoded?.exp) {
+    // Unreachable with a signed token, but the fallback is deliberately LONG:
+    // over-blocking a deleted account costs a few bytes in Redis, while
+    // under-blocking is the bug.
+    return 3600;
+  }
+  return decoded.exp - decoded.iat;
+}
+
 function hashToken(raw: string): string {
   return crypto.createHash("sha256").update(raw).digest("hex");
 }

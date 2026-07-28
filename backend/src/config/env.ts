@@ -113,6 +113,27 @@ const schema = z.object({
   // calls at the lowest tier, so this is a politeness budget, not a throughput
   // target — the point is to be finished before anyone asks, not to be fast.
   PREWARM_BATCH_SIZE: z.coerce.number().int().positive().default(5),
+  // Cloudflare cache purge (6.2b step 6), used ONLY to evict avatar renditions
+  // from the edge when a picture is replaced, removed, or an account is deleted.
+  //
+  // Why this is not optional-in-spirit even though it is optional-in-schema:
+  // avatars are served `public, max-age=31536000, immutable` and Cloudflare
+  // caches them. Measured on production 2026-07-28 — w192 and w384 answered
+  // `cf-cache-status: HIT` with `age: 59345`, i.e. edge copies 16.5 hours old
+  // under a one-year lifetime. Deleting the row and the disk bytes therefore
+  // does NOT stop the edge serving a deleted member's photograph, which is the
+  // gap between honouring App Store 5.1.1(v) and appearing to.
+  //
+  // Absent is a legitimate configuration (dev, CI, tests) and means the purge
+  // step is SKIPPED AND SAYS SO — never silently treated as done. Same shape as
+  // RESEND_API_KEY, for the same reason: a local stack must not need a
+  // production credential to run.
+  //
+  // The zone id is not a secret; the token is (§7 — it travels in an
+  // Authorization header, and lives only in .env.production on the server).
+  // The token is scoped to Zone → Cache Purge on soundlog.app alone.
+  CLOUDFLARE_ZONE_ID: z.string().optional(),
+  CLOUDFLARE_PURGE_TOKEN: z.string().optional(),
 });
 
 export const env = schema.parse(process.env);

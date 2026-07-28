@@ -195,6 +195,17 @@ h2 { font-size: 18px; }
    3:1 line rather than the decorative one. */
 .btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--line-strong); }
 .btn-ghost:hover { color: var(--text); border-color: var(--text-faint); }
+/* Destructive. Outlined rather than solid, and that is a deliberate restraint
+   rather than a missing fill: this button's job is to be unmistakable when you
+   are looking for it, not to shout at everyone scrolling past a settings page.
+   The commit it guards is already gated behind typing your own username.
+
+   --danger is 5.04:1 on ink, so it clears AA as text AND clears the 3:1 the
+   accessibility floor requires of a border that is the sole identifier of a
+   control — the same rule .btn-ghost's comment above is about. The hover state
+   inverts to ink-0 on danger, which is the same 5.04 ratio read the other way. */
+.btn-danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: var(--danger); color: var(--ink-0); }
 
 /* ---------- Cards & covers ---------- */
 .card {
@@ -281,6 +292,15 @@ a:hover .cover,
 .settings-header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .settings-section { display: flex; flex-direction: column; gap: var(--space-3); }
 .settings-section h2 { margin: 0; font-size: 18px; }
+/* The separation the section-order comment above promises. A danger-tinted top
+   border and a heading in --danger, so the last card cannot be mistaken for one
+   more routine section while thumbing down the page. Colour is not the only
+   signal — the section is titled "Delete account" and its control is outlined
+   in the same colour — so this still reads correctly to anyone who cannot
+   distinguish it. */
+.settings-danger { border-top: 2px solid var(--danger); }
+.settings-danger h2 { color: var(--danger); }
+.settings-danger form { display: flex; flex-direction: column; gap: var(--space-3); }
 .settings-form { display: flex; flex-direction: column; gap: var(--space-4); }
 .settings-row { display: flex; flex-direction: column; gap: var(--space-1); }
 .settings-row label,

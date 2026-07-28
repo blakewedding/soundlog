@@ -14,6 +14,10 @@ export const API_ROUTES = {
     avatar: "/api/me/avatar",
     password: "/api/me/password",
     email: "/api/me/email",
+    // Account deletion (App Store 5.1.1(v)). The bare `/api/me` on purpose:
+    // DELETE on the collection root is the account itself, while every sibling
+    // above names a part of it.
+    root: "/api/me",
   },
   feed: "/api/feed",
   reviewsRecent: "/api/reviews/recent",

@@ -2316,9 +2316,150 @@ sweep should be started detached once and polled, not re-launched.
 
 Final: backend **42 files / 422 tests**, typecheck clean.
 
-Still open in 6.2b: the Pro row, account deletion with the Cloudflare purge
-(token now in hand) plus the orphaned-avatar cleanup noted above, and the
-`runTag` sweep of the remaining eighteen fixture files.
+Still open in 6.2b: the Pro row and the `runTag` sweep of the remaining eighteen
+fixture files. Account deletion is step 6 below.
+
+**Filed out of step 6, deliberately not done there:** the orphaned-`Activity`
+sweep for `COMMENT` and `REVIEW` rows pointing at cascade-deleted targets. Step 6
+clears the `FOLLOW` variant, which names a deleted person directly; the wider
+sweep is a general cleanup that a deletion path should not be quietly performing
+on everyone else's rows.
+
+### 6.2b step 6 — account deletion, to App Store 5.1.1(v) (2026-07-28)
+
+**The largest remaining 6.2b piece, and the survey moved its shape before any
+code was written.** Five findings, two of which were latent bugs rather than
+missing features.
+
+**1. OAuth-only accounts could not have deleted themselves.** `reauthenticate`
+answers **409** when `user.password` is null. Building deletion on step 3's
+password re-auth — the obvious move, and the one the brief implied — would have
+left every Spotify and Google member permanently unable to erase their account:
+*precisely* what App Store review tests, on a sign-in path no local test walks.
+
+The fix is that the deliberate act is **typing the username**, required of
+everyone, with the password as an *additional* check wherever one exists. Nobody
+gets a one-tap irreversible button and nobody gets locked out. `hasPassword` is
+now on the own-profile payload solely so the form can ask for a password only
+when there is one.
+
+**2. `deindexUser` had no caller anywhere.** It existed and was reached only
+*internally* by `indexUser` on a flip to PRIVATE.
+
+**3. Cascade-deleted lists orphaned their Elasticsearch documents.**
+`deindexList` is called only from the explicit list-delete route, so deleting a
+User removed the `List` rows in Postgres and touched ES not at all. Every public
+list a deleted member made would have stayed searchable — the same shape as the
+1,070 orphaned documents 5.5 found.
+
+**4. The Cloudflare purge is load-bearing, and that was measured rather than
+assumed.** Avatars are served `public, max-age=31536000, immutable` on `.webp`,
+which Cloudflare caches by default. Probing production's one live avatar:
+
+```
+w48  MISS → HIT      (cached by the probe itself)
+w96  MISS → HIT
+w192 HIT, age: 59345   ← 16.5 hours old, from the step-1 phone check
+w384 HIT, age: 59345
+```
+
+Under a one-year lifetime. So deleting the row and unlinking the disk bytes does
+**not** stop the edge serving a deleted member's photograph. Two further things
+fell out of that measurement: any width is pullable by anyone who constructs the
+URL (w48/w96 were cold until a probe asked), so the purge covers **all four**
+rather than the ones the UI requests; and **avatar replace and remove already
+deleted disk files while purging nothing**, so a member who changed their
+picture twice left two prior faces at the edge. Fixed as a class — one
+`purgeAvatar` path, three call sites.
+
+**5. Varnish is not an avatar layer.** `cache-policy.vcl` PASSes `^/avatars/`,
+so no VCL change was needed. The API TTLs it *does* hold (releases/search 60s,
+`feed/popular` 300s) are bounded and self-expiring, and are enumerated rather
+than purged.
+
+**The ordering is the design.** The Postgres delete is irreversible and there is
+nobody left to retry afterwards — the user cannot authenticate to try again. So
+everything that can fail retryably is done, or **proven possible**, first:
+
+```
+preflight the purge credential  ─┐  fail here → nothing deleted, 503 +
+de-index user + lists (strict)  ─┘  Retry-After, the user simply retries
+──────────────────────────────────  the point of no return
+delete from Postgres · deny the tokens · unlink the bytes · purge the edge
+```
+
+The purge runs *after* the row and bytes are gone, so the gap between purging
+and deleting cannot re-cache the image being purged; the preflight is what makes
+that ordering safe. Anything failing after the point of no return is **reported,
+never swallowed** — a **502 carrying `accountDeleted: true`**, which says both
+true things at once. `ApiError` now carries the parsed body so the client can
+tell that 502 apart from a failure worth retrying.
+
+**A deliberate §5 departure, flagged as §9 requires.** Everywhere else an ES
+failure is swallowed because Postgres is truth and the index is rebuildable.
+Deletion is the one caller for which that is exactly wrong: a surviving document
+*is* the harm. `deindexUserStrict` / `deindexListStrict` throw, and they stop the
+delete while it is still stoppable.
+
+**The access-token window is closed with a Redis denylist** (Blake's ruling).
+`requireAuth` was stateless JWT verification, so a deleted account kept working
+for up to `JWT_ACCESS_TTL`. The TTL is derived by **signing a probe token and
+reading its own claims** rather than re-parsing the `ms` string, so a second
+parser cannot disagree with the first. It **fails open** — a Redis outage
+reopens the window rather than signing out the whole site — and that limitation
+is written at the top of the file rather than implied.
+
+Making both guards async carried a trap worth naming: Express 4 catches a
+*synchronous* throw out of middleware and does **not** catch a rejected promise,
+so the moment these gained an `await`, every `throw` became a 401 that never
+arrives and a request that hangs — the "no error anywhere" symptom class the
+day-one rating bug taught us to distrust. Every path routes through `next(err)`,
+and `next()` is called once, outside the try.
+
+**Two bugs found in my own work, both by drills rather than by the happy path.**
+
+- **The residue check for disk files could never have fired.**
+  `deleteAvatarFiles` swallows every unlink error by design, so awaiting it
+  proves nothing — a residue branch behind it reads as coverage while detecting
+  nothing. Now `avatarFilesRemaining` **verifies** afterwards. "Unreachable
+  because nobody can guess the name" is a fine argument for a replace and is not
+  the claim 5.1.1(v) is about.
+- **With Elasticsearch stopped, deletion answered `500 Internal server error`.**
+  Blocking is correct there; the *shape* was §1's mistake in the 413 incident's
+  costume — a definite, retryable, caller-actionable condition dressed as an
+  opaque server fault. Now **503 + Retry-After** with nothing deleted, and the
+  contract is pinned by a test.
+
+**The anti-vacuity discipline, applied and then proven.** Every "is it gone?"
+assertion is preceded *in the same test* by the assertion that the thing was
+there first — because `indexUser` swallows failures, so absence checks pass for
+the wrong reason on a dead index. Proven by **stopping Elasticsearch and
+re-running**: 4 of 5 tests fail, and the first fails on its *presence*
+precondition rather than its conclusion.
+
+**Live demo** at 375px on the real page: the section renders folded shut (one
+button, zero inputs — no irreversible field one mis-tap away); expanding shows
+the username and password fields with **zero duplicate accessible names across
+the whole page** (§8 — `Your password` is distinct from Account's
+`Current password` and `Your password, to confirm it's you`); `DEMODEL5994`,
+` demodel5994 ` and `demodel599` all leave the submit **disabled** and only the
+exact string enables it; submitting returned **200** and landed on the
+signed-out home. Verified after, against the stores rather than the UI: Postgres
+user/review/rating/list/activity/refreshToken **all 0**, both the `users` and
+`lists` documents **absent**, **zero** avatar files on disk, the denylist key
+present and the pre-deletion access token **401**. The purge reported
+`skipped-unconfigured` locally, which is the honest outcome with no token
+configured and is never collapsed into `purged`.
+
+*Reported rather than hidden:* the browser pane was hidden for this session, so
+synthetic pointer input did not land and the form was driven through its real
+React handlers via scripted submit. That exercises the component and the whole
+network path; it does **not** re-prove hit-target geometry, which step 1 already
+established for this page. The production pass below is the one that closes it
+on real touch hardware.
+
+Final: backend **43 files / 428 tests**, web **32 / 239**, typecheck clean in
+both.
 
 ## Then — Phase 7
 

@@ -22,6 +22,7 @@ const BASE: OwnProfile = {
   pendingEmail: null,
   plan: "FREE",
   profileVisibility: "PUBLIC",
+  hasPassword: true,
   createdAt: new Date().toISOString(),
   emailVerified: true,
 };
