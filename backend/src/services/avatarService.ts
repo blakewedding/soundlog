@@ -157,8 +157,11 @@ export async function ingestAvatar(
     // limit as "5.24288 MB" next to a size in MB — a message that reads as a
     // bug to the one person guaranteed to see it.
     const mib = (n: number) => n / (1024 * 1024);
+    // 413, matching what errorHandler returns when body-parser refuses a body
+    // before this is ever reached. One condition should not answer 400 down one
+    // path and 413 down another depending on how far the bytes happened to get.
     throw new HttpError(
-      400,
+      413,
       `That image is ${mib(input.byteLength).toFixed(1)} MB. The limit is ${mib(MAX_AVATAR_BYTES)} MB.`
     );
   }

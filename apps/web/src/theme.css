@@ -258,6 +258,20 @@ a:hover .cover,
 .avatar-card { width: 44px; height: 44px; }
 .avatar-hero { width: 96px; height: 96px; }
 
+/* Public profile links. Wrap rather than scroll — at 380px a row of four turns
+   into a horizontal scroller nobody discovers. */
+.profile-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  list-style: none;
+  padding: 0;
+  margin: var(--space-2) 0 0;
+  font-size: 14px;
+}
+.profile-links a { color: var(--gold); }
+.profile-links a:hover { color: var(--gold-bright); }
+
 /* ---------- Settings ----------
    One scrolling page of independent sections; each section owns its own form,
    its own submit and its own error (§6 — a page-wide Save cannot say WHICH of

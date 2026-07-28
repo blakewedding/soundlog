@@ -87,6 +87,18 @@ describe("GET/PATCH /api/me/profile", () => {
     expect(res.body.profile).toMatchObject({ displayName: "Blake", bio: "hi" });
   });
 
+  it("publishes links on the PUBLIC profile, not only back to the editor", async () => {
+    // The gap the phone check found: links saved, persisted, and showed in the
+    // settings form, and no surface anywhere rendered them. A value that only
+    // ever comes back to the person who typed it has not been published.
+    const links = [{ label: "Bandcamp", url: "https://example.bandcamp.com" }];
+    await request(app).patch("/api/me/profile").set(auth(me)).send({ links });
+
+    const pub = await request(app).get(`/api/users/${me.username}`);
+    expect(pub.status).toBe(200);
+    expect(pub.body.profile.links).toEqual(links);
+  });
+
   it("round-trips links", async () => {
     const links = [
       { label: "Bandcamp", url: "https://example.bandcamp.com" },

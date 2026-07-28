@@ -68,6 +68,26 @@ export default function Profile() {
           </div>
           <p className="meta">@{p.username} · joined {joined}</p>
           {p.bio && <p style={{ marginTop: 8, color: "var(--text-muted)", maxWidth: 560 }}>{p.bio}</p>}
+          {/* The display half of the links editor in /settings. Without this the
+              settings form saved into a void: the value persisted, the form
+              showed it back, and no surface anywhere rendered it.
+
+              `rel="noopener noreferrer"` because these point off-site and are
+              user-supplied: noopener denies the target a handle on our window,
+              noreferrer keeps a member's profile URL out of a third party's
+              logs. The scheme is already constrained to https at write time —
+              `javascript:` is a perfectly valid URL and this is an href. */}
+          {p.links && p.links.length > 0 && (
+            <ul className="profile-links">
+              {p.links.map((link) => (
+                <li key={link.url}>
+                  <a href={link.url} target="_blank" rel="noopener noreferrer">
+                    {link.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
           <div style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap" }}>
             <CountButton label="Followers" value={p.counts.followers} onClick={() => setTab("followers")} />
             <CountButton label="Following" value={p.counts.following} onClick={() => setTab("following")} />

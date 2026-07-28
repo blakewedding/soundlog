@@ -80,12 +80,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    let message = `API error ${res.status}`;
+    let message = fallbackMessage(res.status);
     try {
       const body = await res.json();
       if (body?.error) message = body.error;
     } catch {
-      // keep the fallback message
+      // Not JSON. This is the interesting case rather than the boring one: it
+      // means something in front of the app answered — nginx, Varnish, or
+      // Cloudflare — and those emit HTML. Whatever we show here is what the
+      // user sees, so it must not be a status code.
     }
     throw new ApiError(res.status, message);
   }
@@ -94,6 +97,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
+
+/**
+ * What to say when the failure carried no message we can read.
+ *
+ * `API error 413` is what a user actually saw when nginx refused a phone photo:
+ * the proxy answers with HTML, so there is no `error` field to lift, and the
+ * status code went straight to the screen. A status code is not an error
+ * message — it tells the person nothing about what they did or what to do next.
+ *
+ * These are deliberately about the CONDITION rather than the layer, because the
+ * user does not care which hop refused them.
+ */
+function fallbackMessage(status: number): string {
+  if (status === 413) return "That file is too large to upload.";
+  if (status === 401) return "Please sign in again.";
+  if (status === 403) return "You don't have permission to do that.";
+  if (status === 404) return "We couldn't find that.";
+  if (status === 429) return "That's a lot of requests — give it a moment and try again.";
+  if (status >= 500) return "Something went wrong on our end. Please try again.";
+  return "That didn't work. Please try again.";
+}
 
 export interface SessionUser {
   id: string;

@@ -124,6 +124,9 @@ describe("ingestAvatar — what it refuses", () => {
     // Not a valid image either — the size check must fire first, so the error
     // is about size rather than format.
     await reject(Buffer.alloc(MAX_AVATAR_BYTES + 1), /limit is 5 MB/);
+    // 413, not 400 — the same status body-parser's refusal maps to, so one
+    // condition does not answer differently depending on how far the bytes got.
+    await expect(ingestAvatar(USER, Buffer.alloc(MAX_AVATAR_BYTES + 1))).rejects.toMatchObject({ status: 413 });
   });
 
   it("refuses SVG — sharp would rasterize it, and it is a script and XXE vector", async () => {

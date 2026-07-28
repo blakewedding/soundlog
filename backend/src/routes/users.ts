@@ -106,6 +106,12 @@ usersRouter.get("/:username", optionalAuth, async (req: AuthedRequest, res, next
         displayName: user.displayName,
         bio: user.bio,
         avatarUrl: user.avatarUrl,
+        // Public, like the bio — these are links a person chose to publish on
+        // their profile. Validated https-only on the way in (see
+        // profileLinksSchema in routes/me.ts), which is what makes them safe to
+        // render as anchors: `javascript:` parses perfectly well as a URL and
+        // would otherwise reach an href.
+        links: user.links ?? [],
         createdAt: user.createdAt.toISOString(),
         counts: { followers, following, reviews, ratings, lists, logs },
         isFollowing: Boolean(follow),

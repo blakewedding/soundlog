@@ -80,12 +80,20 @@ export interface Paginated<T> {
 }
 
 // Public profile: header + tab counts + viewer-relative flags.
+/** One link on a public profile. Validated https-only server-side. */
+export interface ProfileLink {
+  label: string;
+  url: string;
+}
+
 export interface Profile {
   id: string;
   username: string;
   displayName?: string | null;
   bio?: string | null;
   avatarUrl?: string | null;
+  /** Public, like the bio. Absent on payloads written before 6.2b. */
+  links?: ProfileLink[];
   createdAt: string;
   counts: {
     followers: number;
