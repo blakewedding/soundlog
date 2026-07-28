@@ -2244,10 +2244,81 @@ writing other people have replied to would be caught as loudly as a leak.
 mobile nav redesign rather than being bolted on now. The profile-page entry
 point stays.
 
+### 6.2c — the American Football identity collapse (2026-07-28)
+
+**Reported as** "the 1999 debut shows the 2014 album's cover". **The production
+evidence inverts that**, and the inversion is the whole diagnosis.
+
+The row stored `musicbrainzId = f98334d4…`, which is not a release id at all —
+a release lookup on it returns nothing. It is the **release-group id of the 2016
+self-titled album**. Its cover decodes (the proxied URL encodes its upstream,
+§7) to CAA release `91e25eef…`, whose release-group is that same `f98334d4`. So
+**art and identity agreed**; the `releaseDate` of 1999-09-14 belonged to
+`8e40a68c…`, a different group. A chimera: 2016's identity wearing 1999's date.
+By §3's own rule — identity is the MBID — the art was right and the date was
+wrong.
+
+MusicBrainz lists **four** distinct self-titled American Football albums (1999,
+2016, 2019, 2026) with byte-identical titles and artist names. **Three** code
+paths matched on those strings while ignoring MBIDs that already said the
+records differed:
+
+1. **`dedupeMerge`** — the title+artist tier fired even when both candidates
+   carried MBIDs that disagreed, collapsing four albums into one whose fields
+   came from whichever arrived first (`mergeInto` uses `??=`). That is how one
+   album's year landed on another album's MBID.
+2. **`findExistingRelease`** — fell through to a title+artist `findFirst` even
+   when the candidate *had* an MBID. Clicking the 1999 album missed on id,
+   name-matched the seeded 2016 row, and returned it as "the existing release";
+   the caller then healed that row with 1999 data — and §4 permits a date to
+   move *earlier*, so the wrong date was written by a rule doing exactly what it
+   was designed to do. The same shape as the *Bodycage* / *Live At The Liquid
+   Room* incident already in §3.
+3. **`searchCatalog`'s seeded-key suppression** — once one self-titled album was
+   seeded, every other one vanished from search *by name*. Not mis-linked:
+   unfindable, with no way to seed the one you wanted.
+
+**The unifying rule**, which §3 already states and `idsContradict` now encodes:
+name matching is admissible only when **no id evidence contradicts it**. Two
+candidates both carrying an MBID that disagree are different releases —
+MusicBrainz has answered, and no string similarity outranks that. The fallback
+keeps its real job: collapsing one release across sources that share no id.
+Suppression now keys on MBID, resolved from Postgres rather than the search
+index, which does not carry it (§5).
+
+**Healing needed its own script.** `reenrichReleaseDates()` only moves dates
+*earlier* — correct for reissue-pressing rows, useless here, where 1999 had to
+become 2016. `audit-release-identity.ts` is dry-run by default and prints every
+before → after.
+
+**The audit found 12 disagreements, and they are two different findings.** Only
+American Football was the identity bug (1999-09-14 → 2016-09-30, a different
+album's date). The other **eleven were `YYYY-01-01 → YYYY-MM-DD` within the same
+year** — rows seeded from a year-only source (a Discogs master year parses to
+January 1) where MusicBrainz holds the precise day. Imprecision, not corruption;
+healed in the same pass because they are corrections toward the same MBID truth,
+and no displayed year changed.
+
+**Verified through the real edge:** the row now reads 2016-09-30, agreeing with
+both its MBID and its art, and a search for "American Football" returns **four
+distinct self-titled albums** — 2016 (seeded), 2019, 1999 and 2026 — where
+before the seeded row hid all the others. The 1999 debut is clickable again.
+
+The regression test uses the **real MBIDs**, and was verified against the bug by
+removing the guard: three albums collapse into one and the year lands on the
+wrong MBID.
+
+**One self-inflicted §7a moment worth recording:** a dropped SSH left an
+orphaned audit running, and starting a second one meant two processes each
+honouring the 1 req/s MusicBrainz gate and together making 2 req/s — precisely
+the failure §7a describes. Both were killed before `--fix` ran. A long remote
+sweep should be started detached once and polled, not re-launched.
+
+Final: backend **42 files / 422 tests**, typecheck clean.
+
 Still open in 6.2b: the Pro row, account deletion with the Cloudflare purge
 (token now in hand) plus the orphaned-avatar cleanup noted above, and the
-`runTag` sweep of the remaining eighteen fixture files. Then the American
-Football identity bug, filed for the next handoff.
+`runTag` sweep of the remaining eighteen fixture files.
 
 ## Then — Phase 7
 
