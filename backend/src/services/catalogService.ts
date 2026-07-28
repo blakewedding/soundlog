@@ -93,9 +93,33 @@ export async function searchCatalog(q: string, type?: string): Promise<CatalogSe
   );
   const merged = dedupeMerge(lists.flat());
 
-  // Drop candidates already represented by a seeded release (by title+artist).
-  const seededKeys = new Set(seeded.map((h) => candidateKey(h)));
-  const external = merged.filter((c) => !seededKeys.has(candidateKey(c)));
+  // Drop candidates already represented by a seeded release.
+  //
+  // Suppression is by ID FIRST. Doing it by title+artist alone meant that once
+  // one American Football self-titled album was seeded, every other self-titled
+  // American Football album vanished from search entirely — not mis-linked,
+  // simply unfindable, with no way for anyone to seed the one they wanted.
+  //
+  // Seeded MBIDs come from Postgres rather than the search index, which does not
+  // carry them; Postgres is truth (§5) and this is one keyed lookup.
+  const seededRows = seeded.length
+    ? await prisma.release.findMany({
+        where: { id: { in: seeded.map((h) => h.id) } },
+        select: { musicbrainzId: true, title: true, artistName: true },
+      })
+    : [];
+  const seededMbids = new Set(seededRows.map((r) => r.musicbrainzId).filter(Boolean) as string[]);
+  // The name tier still applies, but ONLY to seeded rows that have no MBID of
+  // their own — there, a name is all either side has to go on.
+  const seededKeysWithoutMbid = new Set(
+    seededRows.filter((r) => !r.musicbrainzId).map((r) => candidateKey(r))
+  );
+
+  const external = merged.filter((c) =>
+    c.musicbrainzId
+      ? !seededMbids.has(c.musicbrainzId)
+      : !seededKeysWithoutMbid.has(candidateKey(c))
+  );
 
   // Link candidates that are already in our DB (so clicking goes to the row).
   const linked = await Promise.all(
@@ -788,6 +812,22 @@ async function findExistingRelease(c: {
     const r = await prisma.release.findUnique({ where: { spotifyId: c.spotifyId } });
     if (r) return r;
   }
+
+  // A candidate that carries ANY strong id and matched no row is NOT SEEDED.
+  // It is emphatically not "probably that other row with the same name".
+  //
+  // This fallback is how American Football's 2016 album ended up dated 1999.
+  // Clicking the 1999 album (MBID 8e40a68c…, not in the catalog) missed on the
+  // id lookup, fell through to title+artist, and returned the seeded 2016 row
+  // (MBID f98334d4…) as "the existing release". The caller then healed that row
+  // with the 1999 album's data — and §4 permits a date to move earlier, so the
+  // wrong date was written by a rule doing exactly what it was designed to do.
+  // The same shape seeded *Bodycage* for *Live At The Liquid Room* (§3).
+  //
+  // The name tier survives only for candidates with no id at all, where there is
+  // genuinely nothing better to match on and nothing to contradict it.
+  if (c.musicbrainzId || c.discogsId || c.spotifyId) return null;
+
   return prisma.release.findFirst({
     where: {
       title: { equals: c.title, mode: "insensitive" },

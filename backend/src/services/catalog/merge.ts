@@ -33,6 +33,36 @@ export function candidateKey(c: Pick<SourceCandidate, "title" | "artistName">): 
   return `${normalizeText(c.title)}|${normalizeText(stripArtistDisambiguation(c.artistName))}`;
 }
 
+/**
+ * Do these two candidates carry ids of the same kind that DISAGREE?
+ *
+ * This is the guard the title+artist fallback was missing, and the reason
+ * American Football's 2016 self-titled album shipped with the 1999 album's
+ * release date.
+ *
+ * MusicBrainz lists four distinct self-titled American Football albums — 1999,
+ * 2016, 2019, 2026 — with identical titles and identical artist names. A search
+ * returns several of them, every one carrying its own MBID, and the name
+ * fallback then collapsed them into a single candidate whose fields were taken
+ * from whichever arrived first (`mergeInto` uses `??=`). The result was one
+ * release wearing one album's MBID and another album's year.
+ *
+ * The principle, which §3 already states and this encodes: **name matching is
+ * only admissible when there is no id evidence to contradict it.** Two
+ * candidates that both carry an MBID and disagree are not the same release —
+ * MusicBrainz has already answered the question, and no amount of string
+ * similarity outranks that answer. The fallback keeps its legitimate job:
+ * collapsing one release across sources that share no id at all (a Discogs hit
+ * with no MBID beside a MusicBrainz one).
+ */
+export function idsContradict(a: SourceCandidate, b: SourceCandidate): boolean {
+  return (
+    (!!a.musicbrainzId && !!b.musicbrainzId && a.musicbrainzId !== b.musicbrainzId) ||
+    (!!a.discogsId && !!b.discogsId && a.discogsId !== b.discogsId) ||
+    (!!a.spotifyId && !!b.spotifyId && a.spotifyId !== b.spotifyId)
+  );
+}
+
 function mergeInto(target: SourceCandidate, src: SourceCandidate): void {
   target.musicbrainzId ??= src.musicbrainzId;
   target.discogsId ??= src.discogsId;
@@ -60,7 +90,10 @@ export function dedupeMerge(candidates: SourceCandidate[]): SourceCandidate[] {
         (!!c.musicbrainzId && g.musicbrainzId === c.musicbrainzId) ||
         (!!c.discogsId && g.discogsId === c.discogsId) ||
         (!!c.spotifyId && g.spotifyId === c.spotifyId) ||
-        candidateKey(g) === candidateKey(c)
+        // The name tier is LAST and is now gated: it may not overrule ids that
+        // disagree. Without `!idsContradict`, four distinct same-titled albums
+        // by the same artist collapse into one — see idsContradict above.
+        (!idsContradict(g, c) && candidateKey(g) === candidateKey(c))
     );
     if (match) mergeInto(match, c);
     else groups.push({ ...c });
