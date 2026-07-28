@@ -348,6 +348,7 @@ export const api = {
     displayName?: string | null;
     bio?: string | null;
     links?: ProfileLink[];
+    profileVisibility?: "PUBLIC" | "PRIVATE";
   }) => request<{ profile: OwnProfile }>(API_ROUTES.me.profile, { method: "PATCH", body: JSON.stringify(body) }),
   /**
    * The image as the RAW request body — not multipart. There are no fields to

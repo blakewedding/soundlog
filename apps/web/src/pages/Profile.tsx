@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RELEASE_TYPE_LABELS } from "@soundlog/shared";
 import type { ProfileRating } from "../services/api";
-import { api } from "../services/api";
+import { api, ApiError } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
 import { FollowButton } from "../components/social/FollowButton";
 import { FeedList } from "../components/feed/FeedList";
@@ -23,17 +23,28 @@ export default function Profile() {
   // Wait for the auth bootstrap so the profile is fetched WITH the viewer's
   // token — otherwise isFollowing/private-list visibility resolve as anonymous.
   // Keyed by the viewer so switching accounts refetches.
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["profile", username, user?.id],
     queryFn: () => api.profile(username),
     enabled: !authLoading,
+    // A 403 (private) and a 404 (no such member) are both definitive answers.
+    // Retrying them only delays the message the viewer needs to see.
+    retry: (count, err) =>
+      err instanceof ApiError && (err.status === 403 || err.status === 404) ? false : count < 2,
   });
 
   if (authLoading || isLoading) return <p className="meta">Loading profile…</p>;
   if (isError || !data) {
+    // A private profile is not a missing one, and saying "we couldn't find that
+    // member" would be false — the account exists, the viewer just may not read
+    // it. The server distinguishes them with 403 vs 404 precisely so this
+    // screen can.
+    const isPrivate = error instanceof ApiError && error.status === 403;
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <p className="meta">We couldn't find that member.</p>
+        <p className="meta">
+          {isPrivate ? "This profile is private." : "We couldn't find that member."}
+        </p>
         <Link to="/">← Home</Link>
       </div>
     );

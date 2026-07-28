@@ -43,6 +43,7 @@ import {
   ingestAvatar,
 } from "../services/avatarService.js";
 import { parseAvatarPath } from "../services/avatarStorage.js";
+import { indexUser } from "../services/searchService.js";
 
 export const meRouter = Router();
 
@@ -85,6 +86,7 @@ const updateProfileSchema = z.object({
   displayName: z.string().trim().min(1).max(60).nullable().optional(),
   bio: z.string().trim().max(500).nullable().optional(),
   links: profileLinksSchema.optional(),
+  profileVisibility: z.enum(["PUBLIC", "PRIVATE"]).optional(),
 });
 
 /** The caller's own account, including fields no one else may read. */
@@ -148,7 +150,8 @@ meRouter.patch(
   validate(updateProfileSchema),
   async (req: AuthedRequest, res, next) => {
     try {
-      const { displayName, bio, links } = req.body as z.infer<typeof updateProfileSchema>;
+      const { displayName, bio, links, profileVisibility } =
+        req.body as z.infer<typeof updateProfileSchema>;
 
       // Only the keys actually sent. A PATCH that names no field must not blank
       // the two it did not mention, which is what spreading undefined would do
@@ -157,8 +160,24 @@ meRouter.patch(
       if (displayName !== undefined) data.displayName = displayName || null;
       if (bio !== undefined) data.bio = bio || null;
       if (links !== undefined) data.links = links;
+      if (profileVisibility !== undefined) data.profileVisibility = profileVisibility;
 
       const user = await prisma.user.update({ where: { id: req.userId! }, data });
+
+      // Re-index on EVERY profile write, not only on a visibility change.
+      //
+      // Two reasons it is unconditional. Going private must remove the
+      // document — `indexUser` does that — and §5 makes Elasticsearch a second
+      // store that can answer questions Postgres has already stopped answering,
+      // so the moment it falls behind, search is the surface that lies. The
+      // displayName and bio in the document are also stale otherwise, which is
+      // the ordinary version of the same bug.
+      //
+      // Swallowed and logged inside indexUser: an ES failure must not fail a
+      // profile save (§5). The cost of that is an index that can drift, which
+      // is exactly why `backfill-search.ts` exists.
+      await indexUser(user);
+
       res.json({ profile: toOwnProfile(user) });
     } catch (err) {
       next(err);

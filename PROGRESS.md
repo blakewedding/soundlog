@@ -2141,10 +2141,72 @@ are in. Relabelled.
 
 Final: backend **39 files / 393 tests**, web **31 / 233**, typecheck clean.
 
-Still open in 6.2b: visibility enforcement across `users.ts` / `feedService` /
-the ES user documents followed by the toggle, the Pro row, account deletion with
-the Cloudflare purge (token to be created), and the `runTag` sweep of the
-remaining eighteen fixture files.
+### 6.2b step 4 — visibility enforcement, across both stores (2026-07-28)
+
+**What PRIVATE means, decided and written down once** (`visibilityService.ts`):
+you do not **broadcast**. Hidden — the profile page and every tab, presence in
+member search, activity in other people's feeds, and reviews in the
+popular-reviews discovery feed. **Not** hidden, and the settings copy says so in
+as many words: a review still sits on the release page it was written about, and
+a public list is still public.
+
+The line is **discovery versus context**. A private account should not be
+browsable or findable *as a person*; it does not retroactively unpublish things
+someone deliberately posted onto shared pages where others have already replied
+and liked. The field is named `profileVisibility`, not `accountPrivacy`, and
+promising the second while shipping the first is the gap that only surfaces when
+it matters.
+
+**Elasticsearch DELETES the document rather than filtering it.** §5 makes the
+index a second place the same fact lives, and the one most likely to answer a
+question nobody remembered to guard. A query-time filter must be applied at
+every call site forever; an absent document cannot be returned by any query
+anyone writes later. Follows `indexList`, which already de-indexes a list the
+moment it stops being public. Re-indexing runs on **every** profile write, not
+only on a visibility change — `displayName` and `bio` in the document go stale
+otherwise, which is the ordinary version of the same bug.
+
+**One chokepoint, not nine checks.** Every read in `users.ts` goes through
+`visibleUserByUsername`; nine call sites each remembering a rule is nine chances
+to forget, and the one that forgets is the leak. In the feed, the filter is
+applied to the **actor map** rather than per activity type — the loop already
+drops an activity whose actor is missing, so one filter covers every type
+including ones added later. `403`, not `404`: the username is already public
+wherever this person posted, so pretending the account doesn't exist protects
+nothing while making a private profile look like a typo.
+
+Two bugs found while wiring it: `/ratings` and `/diary` had **no `optionalAuth`
+at all**, so there was no viewer id — a private owner could not have seen their
+own tabs. And popular reviews excludes private members *unconditionally* rather
+than per-viewer, because that response is Varnish-cached for 5 minutes when
+anonymous and a viewer-dependent result would make the shared cache entry a lie.
+
+**The §5 bar, met against the live index rather than the code path.** Before:
+document present, raw search returns 1 hit. After flipping to private through
+the real API: `GET /users/_doc/<id>` → **404**, raw `multi_match` → **0 hits**,
+and a `match_all` over the whole index (2 documents) does not contain the user.
+Not filtered — absent. Reversible: back to public restores the document and the
+profile.
+
+**The tests were then checked for vacuity, which mattered.** `indexUser`
+swallows ES failures by design (§5), so every "is it gone?" assertion passes for
+the wrong reason on a dead index. Each now asserts presence *first*, in the same
+test. Proven by **stopping Elasticsearch and re-running**: before the
+preconditions, one test still passed; after, all five fail. The API-level member
+search needed the same treatment for a sharper reason — search degrades to `[]`
+when ES is down, so "not in the results" is exactly what an outage looks like.
+
+**Live demo** at 375px: toggle flips, server agrees immediately (403 on the
+public profile), owner still sees their own profile and all tabs, a signed-out
+stranger gets **"This profile is private."** rather than "we couldn't find that
+member", and every one of the nine endpoints returns 403 to strangers and 200 to
+the owner.
+
+Final: backend **40 files / 406 tests**, web **31 / 233**, typecheck clean.
+
+Still open in 6.2b: the Pro row, account deletion with the Cloudflare purge
+(token now in hand) plus the orphaned-avatar cleanup noted above, and the
+`runTag` sweep of the remaining eighteen fixture files.
 
 ## Then — Phase 7
 

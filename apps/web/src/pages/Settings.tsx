@@ -5,6 +5,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { AvatarField } from "../components/settings/AvatarField";
 import { ProfileForm } from "../components/settings/ProfileForm";
 import { AccountSection } from "../components/settings/AccountSection";
+import { PrivacySection } from "../components/settings/PrivacySection";
 import { useState, useEffect } from "react";
 
 /**
@@ -32,11 +33,11 @@ import { useState, useEffect } from "react";
  *
  *   1. Profile   — avatar, display name, bio, links      (here)
  *   2. Account   — email with re-verification, password with re-auth
- *   3. Privacy   — profile visibility. The slot is RESERVED and renders
- *                  nothing until enforcement lands across users.ts,
- *                  feedService and the Elasticsearch user documents (§5). A
- *                  toggle that appears to work and does not is worse than its
- *                  absence.
+ *   3. Privacy   — profile visibility. Rendered from 6.2b step 4 onward,
+ *                  once enforcement was real across users.ts, feedService AND
+ *                  the Elasticsearch user documents (§5) — the last of which
+ *                  removes the document rather than filtering it, so the index
+ *                  cannot answer a question nobody thought to guard.
  *   4. Plan      — Soundlog Pro, coming soon
  *   5. Danger    — delete account
  *
@@ -98,6 +99,8 @@ export default function Settings() {
       </section>
 
       <AccountSection profile={profile} onChange={setProfile} />
+
+      <PrivacySection profile={profile} onChange={setProfile} />
     </div>
   );
 }

@@ -853,3 +853,13 @@ input::placeholder { color: var(--text-faint); }
   margin: var(--space-2) 0;
   width: 100%;
 }
+
+/* A checkbox and its label as one hit target — on a phone the label is the part
+   a thumb actually lands on. */
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.settings-check input { width: 18px; height: 18px; accent-color: var(--gold); flex: none; }

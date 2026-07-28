@@ -178,8 +178,24 @@ export async function esSearchArtists(q: string, size = 5): Promise<EsArtistHit[
 // Members (users), lists, labels — indexed for the tabbed search (Phase 5).
 // ---------------------------------------------------------------------------
 
+/**
+ * Index a member — or REMOVE them, if their profile is private.
+ *
+ * Same shape as `indexList` below, and for a stronger reason. §5 makes this
+ * index a second place the same fact lives, and the one most likely to answer a
+ * question nobody remembered to guard: a query-time filter has to be applied at
+ * every call site forever, while an absent document cannot be returned by any
+ * query anyone writes later.
+ *
+ * Must be called whenever `profileVisibility` changes, not only on
+ * registration — going private has to take the document out.
+ */
 export async function indexUser(user: User): Promise<void> {
   try {
+    if (user.profileVisibility === "PRIVATE") {
+      await deindexUser(user.id);
+      return;
+    }
     await es.index({
       index: USER_INDEX,
       id: user.id,

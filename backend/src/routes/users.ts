@@ -10,6 +10,7 @@ import {
   likedReviewIds,
 } from "../services/feedService.js";
 import { getSimilarListeners, invalidateSimilar } from "../services/similarService.js";
+import { isHiddenFrom } from "../services/visibilityService.js";
 
 export const usersRouter = Router();
 
@@ -30,6 +31,24 @@ const profileReleaseSelect = {
 async function userByUsername(username: string) {
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user) throw new HttpError(404, "User not found");
+  return user;
+}
+
+/**
+ * The same lookup, refusing when the profile is private and the caller is not
+ * its owner. Every tab endpoint below goes through this rather than checking
+ * for itself — nine call sites each remembering a rule is nine chances to
+ * forget it, and the one that forgets is the leak.
+ *
+ * 403 rather than 404. The username is already public wherever this person has
+ * posted (review cards, list bylines, follower rows), so pretending the account
+ * does not exist protects nothing while making a private profile
+ * indistinguishable from a typo. See visibilityService for what PRIVATE covers
+ * and — just as importantly — what it does not.
+ */
+async function visibleUserByUsername(username: string, viewerId: string | undefined) {
+  const user = await userByUsername(username);
+  if (isHiddenFrom(user, viewerId)) throw new HttpError(403, "This profile is private.");
   return user;
 }
 
@@ -81,7 +100,7 @@ usersRouter.delete("/:username/follow", requireAuth, async (req: AuthedRequest, 
 
 usersRouter.get("/:username", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const isMe = req.userId === user.id;
     const listWhere = isMe ? { userId: user.id } : { userId: user.id, isPublic: true };
 
@@ -141,7 +160,7 @@ async function followEdgeUsers(userIds: string[], viewerId?: string) {
 
 usersRouter.get("/:username/followers", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const edges = await prisma.follow.findMany({
       where: { followingId: user.id },
       orderBy: { createdAt: "desc" },
@@ -155,7 +174,7 @@ usersRouter.get("/:username/followers", optionalAuth, async (req: AuthedRequest,
 
 usersRouter.get("/:username/following", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const edges = await prisma.follow.findMany({
       where: { followerId: user.id },
       orderBy: { createdAt: "desc" },
@@ -172,7 +191,7 @@ usersRouter.get("/:username/following", optionalAuth, async (req: AuthedRequest,
 // a viewer is present, each result carries the viewer's own follow state.
 usersRouter.get("/:username/similar", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const similar = await getSimilarListeners(user.id);
     const followedByViewer = req.userId
       ? new Set(
@@ -198,7 +217,7 @@ usersRouter.get("/:username/similar", optionalAuth, async (req: AuthedRequest, r
 
 usersRouter.get("/:username/activity", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const limit = Math.min(Number(req.query.limit) || 20, 50);
     const cursor = parseCursor(req.query.cursor);
     const activities = await prisma.activity.findMany({
@@ -217,7 +236,7 @@ usersRouter.get("/:username/activity", optionalAuth, async (req: AuthedRequest, 
 
 usersRouter.get("/:username/reviews", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const reviews = await prisma.review.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: "desc" },
@@ -231,9 +250,9 @@ usersRouter.get("/:username/reviews", optionalAuth, async (req: AuthedRequest, r
   }
 });
 
-usersRouter.get("/:username/ratings", async (req, res, next) => {
+usersRouter.get("/:username/ratings", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const ratings = await prisma.rating.findMany({
       where: { userId: user.id },
       orderBy: { updatedAt: "desc" },
@@ -251,7 +270,7 @@ usersRouter.get("/:username/ratings", async (req, res, next) => {
 // Lists tab — private lists hidden from everyone but the owner.
 usersRouter.get("/:username/lists", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const isMe = req.userId === user.id;
     const lists = await prisma.list.findMany({
       where: isMe ? { userId: user.id } : { userId: user.id, isPublic: true },
@@ -273,9 +292,9 @@ usersRouter.get("/:username/lists", optionalAuth, async (req: AuthedRequest, res
   }
 });
 
-usersRouter.get("/:username/diary", async (req, res, next) => {
+usersRouter.get("/:username/diary", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const user = await userByUsername(req.params.username);
+    const user = await visibleUserByUsername(req.params.username, req.userId);
     const limit = Math.min(Number(req.query.limit) || 30, 100);
     const cursor = parseCursor(req.query.cursor);
     const logs = await prisma.log.findMany({

@@ -7,6 +7,7 @@
 // the first place). Deleted targets are dropped too.
 import type { Activity } from "@prisma/client";
 import { prisma } from "../config/database.js";
+import { isHiddenFrom } from "./visibilityService.js";
 
 export const publicUserSelect = {
   id: true,
@@ -61,6 +62,13 @@ const POPULAR_CANDIDATES = 200; // cap the set we score in memory
 
 export async function getPopularReviews(viewerId: string | undefined, limit = 20) {
   const reviews = await prisma.review.findMany({
+    // Private members are excluded from popular outright — not "hidden from
+    // everyone but themselves". This surface is the logged-out front door, and
+    // its anonymous response is cached by Varnish for 5 minutes (see
+    // routes/feed.ts): making the result depend on the viewer would turn that
+    // shared cache entry into a lie. Excluding unconditionally keeps one
+    // answer for everyone, which is what makes it cacheable at all.
+    where: { user: { profileVisibility: "PUBLIC" } },
     include: feedReviewInclude,
     orderBy: { createdAt: "desc" },
     take: POPULAR_CANDIDATES,
@@ -106,7 +114,10 @@ export async function hydrateActivities(activities: Activity[], viewerId?: strin
   const ratingActs = activities.filter((a) => a.type === "RATING");
 
   const [actors, releases, reviews, lists, comments, followTargets, ratings] = await Promise.all([
-    prisma.user.findMany({ where: { id: { in: actorIds } }, select: publicUserSelect }),
+    prisma.user.findMany({
+      where: { id: { in: actorIds } },
+      select: { ...publicUserSelect, profileVisibility: true },
+    }),
     prisma.release.findMany({ where: { id: { in: [...releaseIds] } }, select: releaseSelect }),
     fetchReviews([...reviewIds]),
     prisma.list.findMany({
@@ -128,7 +139,20 @@ export async function hydrateActivities(activities: Activity[], viewerId?: strin
 
   const liked = await likedReviewIds(viewerId, [...reviewIds]);
 
-  const actorMap = new Map(actors.map((u) => [u.id, u]));
+  // A private member's activity does not broadcast. Filtering the ACTOR MAP
+  // rather than the loop below is deliberate: the loop already drops any
+  // activity whose actor is missing (`if (!user) continue`), so one filter
+  // here covers every activity type — including any added later, which a
+  // per-type check would silently miss.
+  //
+  // Viewer-aware, so the owner still sees their own activity on their own
+  // profile tab; nobody can follow themselves, so this never affects the feed.
+  // `profileVisibility` is stripped here so it never reaches a public payload.
+  const actorMap = new Map(
+    actors
+      .filter((u) => !isHiddenFrom(u, viewerId))
+      .map(({ profileVisibility: _hidden, ...u }) => [u.id, u])
+  );
   const releaseMap = new Map(releases.map((r) => [r.id, r]));
   const reviewMap = new Map(reviews.map((r) => [r.id, r]));
   const listMap = new Map(lists.map((l) => [l.id, l]));
