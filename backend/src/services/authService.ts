@@ -78,6 +78,18 @@ export async function registerUser(input: RegisterInput): Promise<User> {
  * hashed at a different cost than registration would be invisible until someone
  * audited the table.
  */
+/**
+ * Hash a password at the project's one cost factor.
+ *
+ * Exported so the 6.2b password-change endpoint cannot quietly hash at a
+ * different cost than registration — a discrepancy that is invisible until
+ * somebody audits the table, and that silently weakens whichever path got it
+ * wrong. Same reasoning `resetUserPassword` was written for.
+ */
+export function hashPassword(plain: string): Promise<string> {
+  return bcrypt.hash(plain, SALT_ROUNDS);
+}
+
 export async function resetUserPassword(userId: string, newPassword: string): Promise<User> {
   const password = await bcrypt.hash(newPassword, SALT_ROUNDS);
   return prisma.user.update({

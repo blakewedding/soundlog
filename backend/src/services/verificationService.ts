@@ -27,6 +27,12 @@ const TOKEN_BYTES = 32;
 const TTL_MS: Record<VerificationPurpose, number> = {
   EMAIL_VERIFICATION: 24 * 60 * 60 * 1000,
   PASSWORD_RESET: 60 * 60 * 1000,
+  // Between the two, and closer to the reset. An email change is a
+  // security-relevant action like a reset, so it should not sit claimable for a
+  // day — but unlike a reset the user is not usually standing at the keyboard
+  // waiting, because the link lands in a mailbox they may have to go and open
+  // on another device.
+  EMAIL_CHANGE: 2 * 60 * 60 * 1000,
 };
 
 function hashToken(raw: string): string {

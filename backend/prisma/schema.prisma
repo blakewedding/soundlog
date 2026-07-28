@@ -53,6 +53,22 @@ model User {
   // decision) — the UI shows a reminder instead.
   emailVerifiedAt DateTime?
 
+  /// An address the user has asked to move to, NOT yet in effect.
+  ///
+  /// The change is deliberately not applied on request. `email` is the login
+  /// identifier — `verifyCredentials` looks the account up by it — so writing a
+  /// new address immediately means a single typo locks someone out of their own
+  /// account with nothing to log in with and no address to receive a reset at.
+  /// The old address keeps working until the link sent to the NEW one is
+  /// clicked, which is what makes this recoverable: an unconfirmed change
+  /// simply expires.
+  ///
+  /// Deliberately NOT unique. Two people may hold the same pending address at
+  /// once; the first to confirm takes it and the second is refused at
+  /// confirmation, when we can say so plainly. A unique constraint would
+  /// instead fail the *request*, which leaks that the address is spoken for.
+  pendingEmail String?
+
   // Profile links, as `[{ label, url }]`.
   //
   // Json rather than a UserLink table because this is read on every profile,
@@ -118,6 +134,10 @@ model RefreshToken {
 enum VerificationPurpose {
   EMAIL_VERIFICATION
   PASSWORD_RESET
+  /// Confirming a NEW address before it becomes the account's login email.
+  /// The token is sent to the pending address, so clicking it proves control of
+  /// the mailbox being moved to — which is the whole point of the exercise.
+  EMAIL_CHANGE
 }
 
 /// Single-use, expiring, emailed tokens.

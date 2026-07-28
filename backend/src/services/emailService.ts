@@ -117,7 +117,13 @@ export async function sendEmail({ to, subject, html, text }: SendInput): Promise
 const INK = "#12100e";
 const GOLD = "#c8a24a";
 
-function shell(heading: string, body: string, cta: { href: string; label: string }): string {
+/**
+ * `cta` is optional because not every transactional email should carry a link.
+ * The email-change notice to the OLD address is a tripwire, and a button in it
+ * would be one more thing for a phisher to imitate — the safest version of
+ * "someone is trying to take your account" asks you to go to the site yourself.
+ */
+function shell(heading: string, body: string, cta?: { href: string; label: string }): string {
   return `<!doctype html>
 <html><body style="margin:0;padding:0;background:${INK};color:#efe9dd;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${INK};padding:32px 16px;">
@@ -127,11 +133,15 @@ function shell(heading: string, body: string, cta: { href: string; label: string
           <div style="font-size:20px;font-weight:700;color:${GOLD};letter-spacing:0.02em;margin-bottom:24px;">Soundlog</div>
           <h1 style="margin:0 0 16px;font-size:22px;line-height:1.3;color:#efe9dd;">${heading}</h1>
           <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#bdb3a4;">${body}</p>
-          <a href="${cta.href}" style="display:inline-block;background:${GOLD};color:${INK};text-decoration:none;font-weight:600;font-size:15px;padding:12px 24px;border-radius:8px;">${cta.label}</a>
+          ${
+            cta
+              ? `<a href="${cta.href}" style="display:inline-block;background:${GOLD};color:${INK};text-decoration:none;font-weight:600;font-size:15px;padding:12px 24px;border-radius:8px;">${cta.label}</a>
           <p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#8b8275;">
             If the button does not work, paste this link into your browser:<br>
             <span style="color:#bdb3a4;word-break:break-all;">${cta.href}</span>
-          </p>
+          </p>`
+              : ""
+          }
         </td></tr>
       </table>
     </td></tr>
@@ -155,6 +165,60 @@ export function verificationEmail(link: string): Omit<SendInput, "to"> {
       link,
       "",
       "If you didn't create a Soundlog account, ignore this message.",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Sent to the NEW address. Clicking it is what proves control of the mailbox
+ * being moved to, and is the only thing that makes the change take effect.
+ */
+export function emailChangeEmail(link: string, newEmail: string): Omit<SendInput, "to"> {
+  return {
+    subject: "Confirm your new email — Soundlog",
+    html: shell(
+      "Confirm your new email",
+      `Confirm that ${newEmail} should become the address you sign in with. This link works once and expires in 2 hours. Until you click it, nothing changes and your old address still works.`,
+      { href: link, label: "Confirm new email" }
+    ),
+    text: [
+      "Confirm your new email",
+      "",
+      `Confirm that ${newEmail} should become the address you sign in with.`,
+      "This link works once and expires in 2 hours:",
+      link,
+      "",
+      "Until you click it, nothing changes and your old address still works.",
+      "If you didn't ask for this, ignore this message.",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Sent to the OLD address, for its own sake rather than the user's convenience.
+ *
+ * If someone else has taken the account, the legitimate owner's only warning is
+ * a message at the address they still control — and it has to arrive when the
+ * change is REQUESTED, not when it completes, because by then the attacker
+ * holds the mailbox the confirmation went to. Deliberately carries no link and
+ * no action: it is a tripwire, and a link in it would be one more thing to
+ * phish.
+ */
+export function emailChangeNoticeEmail(newEmail: string): Omit<SendInput, "to"> {
+  return {
+    subject: "Someone asked to change your Soundlog email",
+    html: shell(
+      "Email change requested",
+      `We received a request to change this account's email to ${newEmail}. It does not take effect until that address is confirmed. If this was you, no action is needed. If it wasn't, change your password now — someone else may have access to your account.`
+    ),
+    text: [
+      "Email change requested",
+      "",
+      `We received a request to change this account's email to ${newEmail}.`,
+      "It does not take effect until that address is confirmed.",
+      "",
+      "If this was you, no action is needed.",
+      "If it wasn't, change your password now — someone else may have access.",
     ].join("\n"),
   };
 }

@@ -4,6 +4,7 @@ import { api, type OwnProfile } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
 import { AvatarField } from "../components/settings/AvatarField";
 import { ProfileForm } from "../components/settings/ProfileForm";
+import { AccountSection } from "../components/settings/AccountSection";
 import { useState, useEffect } from "react";
 
 /**
@@ -95,6 +96,8 @@ export default function Settings() {
         <AvatarField profile={profile} onChange={setProfile} />
         <ProfileForm profile={profile} onChange={setProfile} />
       </section>
+
+      <AccountSection profile={profile} onChange={setProfile} />
     </div>
   );
 }

@@ -19,6 +19,7 @@ const BASE: OwnProfile = {
   bio: null,
   avatarUrl: null,
   links: [],
+  pendingEmail: null,
   plan: "FREE",
   profileVisibility: "PUBLIC",
   createdAt: new Date().toISOString(),

@@ -2047,10 +2047,104 @@ called `support` messaging users is a phishing primitive.
 
 Final: backend **37 files / 372 tests**, web **30 / 230**, typecheck clean.
 
-Still open in 6.2b: the Account section (password with re-auth, email with
-re-verification), visibility enforcement across `users.ts` / `feedService` / the
-ES user documents followed by the toggle, the Pro row, account deletion with the
-Cloudflare purge, and the `runTag` sweep of the remaining eighteen fixture files.
+#### Phone-check findings on steps 1–2, both fixed (2026-07-28)
+
+**Links saved into a void.** The editor persisted them and showed them back, and
+no surface rendered them — because the **public profile endpoint never returned
+the field**. So it was missing in `users.ts`, in the shared `Profile` type *and*
+on the page, not merely in `Profile.tsx`. A value that only ever returns to the
+person who typed it has not been published, and the display surface was part of
+step 1's definition of done.
+
+**A real phone photo returned a bare `API error 413`** — three faults, none
+covered by a test:
+
+- The **container nginx had no `client_max_body_size`**, so nginx's 1m default
+  refused the body two hops before Express. The API advertises 5 MB and the
+  gauntlet answers oversize with a reason; neither is worth anything if a proxy
+  overrules them first. Now `6m`, deliberately **above** the app's 5 MB, because
+  only the app can say *why* while nginx can only emit a status. Host nginx was
+  already 12m; Varnish was never involved (2 MB straight at Varnish → 401, i.e.
+  it reached the app).
+- Above 5 MB, **body-parser throws before any route runs**, and that fell
+  through `errorHandler` to a generic **500**. §1's mistake in another costume:
+  a definite, caller-fixable condition reported as an opaque server fault.
+- The client printed `API error ${status}` whenever a response was not JSON —
+  which is exactly what a proxy returns. A status code is not an error message.
+
+The gauntlet's own size check moved 400 → 413 so one condition cannot answer
+differently depending on how far the bytes got.
+
+**Why 6.2a's live verification missed all of it: the edge check used a 30 KB
+image.** That proves a happy path and nothing whatsoever about a ceiling. The
+regression test is now sized at the real boundary — a 4 MB JPEG through the app,
+and an oversize body asserted to be 413-with-reason and explicitly *not*
+"internal server error". Verified through the full production chain afterwards
+at **4,846,606 bytes → 200**.
+
+**Cleanup also exposed a step-6 gap:** purging a test account left **5 orphaned
+avatar files**. Deleting a user cascades their rows and removes nothing from
+disk. Identified against the DB, confirmed unreferenced, removed by explicit
+path (§10). `deleteAvatarFiles` already exists; account deletion just has to
+call it — alongside the CDN purge, since one clears our disk and the other the
+edge, and 5.1.1(v) needs both.
+
+### 6.2b step 3 — Account: password and email (2026-07-28)
+
+Both re-authenticate with the current password. The access token proves the
+session authenticated in the last fifteen minutes, not that the owner is the one
+holding the device — and these are precisely the two actions that would let
+somebody else *keep* the account.
+
+**Email changes do NOT take effect on request.** `email` is the login
+identifier, so writing a new address immediately means one typo locks someone
+out of their own account with nothing to sign in with and no mailbox to receive
+a reset at. The new address is held in `pendingEmail` (new migration) and only
+becomes the login address when the link sent **to it** is clicked. Until then
+the old address still signs in, and an unconfirmed change simply expires. That
+is what "with re-verification" has to mean when the address is the identifier.
+
+`pendingEmail` is deliberately **not unique**: two people may hold the same
+pending address, the first to confirm takes it, and the loser is refused at
+confirmation where we can say so plainly. A unique constraint would instead fail
+the *request*, leaking that the address is spoken for.
+
+Two emails go out, and the second is the interesting one. The confirmation goes
+to the **new** address — clicking it is the proof. A notice goes to the **old**
+address **at request time, not on completion**: if someone else has taken the
+account, the owner's only warning is a message where they still receive mail,
+and by the time a hostile change completes the attacker holds the mailbox the
+confirmation went to. That notice deliberately carries **no link** — a tripwire
+with a button on it is one more thing to phish.
+
+Both actions revoke every refresh token. A password change that leaves other
+sessions minting access tokens is theatre; a completed email change is a change
+of *who can get in*. The password path then issues a fresh pair so the person
+who made the change is not signed out of the device they made it on — a security
+control that punishes the people who use it is one they stop using.
+
+Confirmation is unauthenticated by necessity (it is clicked from a mailbox,
+often on another device) and re-checks the address at confirm time as well as at
+request time.
+
+**Live demo** drove the real page at 375px: wrong password → *"That password is
+not correct."* on both forms; correct → pending state showing the old address
+unchanged with a cancel affordance, DB confirming `email` untouched,
+`pendingEmail` set and a live token at ~1h58m; cancel clearing both the column
+and the outstanding token; password change → confirmation, new password signs
+in, old one 401s, and this browser stays signed in.
+
+**Running it caught a §8 violation the tests did not:** both forms had a field
+labelled *"Current password"*, so two controls on one page shared an accessible
+name — a screen reader user hears it twice with no way to tell which form they
+are in. Relabelled.
+
+Final: backend **39 files / 393 tests**, web **31 / 233**, typecheck clean.
+
+Still open in 6.2b: visibility enforcement across `users.ts` / `feedService` /
+the ES user documents followed by the toggle, the Pro row, account deletion with
+the Cloudflare purge (token to be created), and the `runTag` sweep of the
+remaining eighteen fixture files.
 
 ## Then — Phase 7
 

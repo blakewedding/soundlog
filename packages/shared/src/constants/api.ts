@@ -12,6 +12,8 @@ export const API_ROUTES = {
   me: {
     profile: "/api/me/profile",
     avatar: "/api/me/avatar",
+    password: "/api/me/password",
+    email: "/api/me/email",
   },
   feed: "/api/feed",
   reviewsRecent: "/api/reviews/recent",
@@ -25,6 +27,8 @@ export const API_ROUTES = {
     resendVerification: "/api/auth/resend-verification",
     forgotPassword: "/api/auth/forgot-password",
     resetPassword: "/api/auth/reset-password",
+    // Clicked from the mailbox being claimed, so unauthenticated by necessity.
+    confirmEmailChange: "/api/auth/confirm-email-change",
   },
 } as const;
 

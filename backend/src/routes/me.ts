@@ -13,9 +13,27 @@
  */
 import { Router } from "express";
 import express from "express";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../config/database.js";
 import { redis } from "../config/redis.js";
+import { REFRESH_COOKIE, refreshCookieOptions } from "../config/refreshCookie.js";
+import { hashPassword } from "../services/authService.js";
+import {
+  issueRefreshToken,
+  revokeAllRefreshTokens,
+  signAccessToken,
+} from "../services/tokenService.js";
+import {
+  issueVerificationToken,
+  verificationLink,
+} from "../services/verificationService.js";
+import {
+  emailChangeEmail,
+  emailChangeNoticeEmail,
+  emailConfigured,
+  sendEmail,
+} from "../services/emailService.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { validate } from "../middleware/validate.js";
@@ -78,6 +96,7 @@ function toOwnProfile(user: {
   bio: string | null;
   avatarUrl: string | null;
   links: unknown;
+  pendingEmail: string | null;
   plan: string;
   profileVisibility: string;
   createdAt: Date;
@@ -91,6 +110,9 @@ function toOwnProfile(user: {
     bio: user.bio,
     avatarUrl: user.avatarUrl,
     links: user.links ?? [],
+    // Present so the settings page can show "waiting on confirmation" and offer
+    // to cancel. The change has NOT happened while this is set.
+    pendingEmail: user.pendingEmail,
     plan: user.plan,
     // Present so the client can round-trip it, but NOT yet enforced anywhere —
     // see the enum in schema.prisma. 6.2b makes it real across both stores; no
@@ -143,6 +165,145 @@ meRouter.patch(
     }
   }
 );
+
+// ---- Account: password and email ------------------------------------------
+//
+// Both re-authenticate with the CURRENT password before doing anything, even
+// though the caller already holds a valid access token. The token proves the
+// session was authenticated at some point in the last fifteen minutes; it does
+// not prove the person holding the device right now is the account's owner.
+// An unattended unlocked phone is the ordinary case these guard against, and
+// both of these actions are the ones that would let someone keep the account.
+
+const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(10),
+});
+
+const emailChangeSchema = z.object({
+  currentPassword: z.string().min(1),
+  newEmail: z.string().email(),
+});
+
+/**
+ * Re-authenticate the CALLER. Distinct from `verifyCredentials`, which takes an
+ * email — here the identity is already fixed by the token, and only the
+ * password is in question.
+ */
+async function reauthenticate(userId: string, password: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new HttpError(401, "That account no longer exists.");
+  // An OAuth-only account has no password to re-check. It cannot use these
+  // endpoints at all, and saying so is more useful than a wrong-password error
+  // for a password that does not exist.
+  if (!user.password) {
+    throw new HttpError(
+      409,
+      "This account signs in with Spotify or Google, so it has no password to change."
+    );
+  }
+  const ok = await bcrypt.compare(password, user.password);
+  if (!ok) throw new HttpError(401, "That password is not correct.");
+}
+
+meRouter.post(
+  "/password",
+  requireAuth,
+  validate(passwordChangeSchema),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const { currentPassword, newPassword } = req.body as z.infer<typeof passwordChangeSchema>;
+      await reauthenticate(req.userId!, currentPassword);
+
+      await prisma.user.update({
+        where: { id: req.userId! },
+        data: { password: await hashPassword(newPassword) },
+      });
+
+      // Changing a password is how someone evicts an intruder, so every OTHER
+      // session has to die — a refresh token issued before the change would
+      // otherwise keep minting access tokens with the old password's authority,
+      // which makes the change theatre.
+      await revokeAllRefreshTokens(req.userId!);
+
+      // …including this one, which was just revoked with the rest. Issue a
+      // fresh pair so the person who made the change is not signed out of the
+      // device they made it on. That is the difference between a security
+      // control people use and one they avoid.
+      const refreshToken = await issueRefreshToken(req.userId!);
+      res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+
+      res.json({ ok: true, accessToken: signAccessToken(req.userId!), otherSessionsSignedOut: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+meRouter.post(
+  "/email",
+  requireAuth,
+  validate(emailChangeSchema),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const { currentPassword, newEmail } = req.body as z.infer<typeof emailChangeSchema>;
+      const email = newEmail.toLowerCase();
+      await reauthenticate(req.userId!, currentPassword);
+
+      const user = await prisma.user.findUnique({ where: { id: req.userId! } });
+      if (!user) throw new HttpError(401, "That account no longer exists.");
+      if (user.email === email) {
+        throw new HttpError(409, "That is already your email address.");
+      }
+
+      // Consistent with registration, which also answers 409 for a taken
+      // address. Being cagey here while the signup form says it plainly would
+      // be theatre, not privacy.
+      const taken = await prisma.user.findUnique({ where: { email } });
+      if (taken) throw new HttpError(409, "An account with that email already exists.");
+
+      // Recorded as PENDING. `email` is untouched, so the old address still
+      // signs in and a typo here costs nothing but an unclicked link.
+      await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: email } });
+
+      const token = await issueVerificationToken(user.id, "EMAIL_CHANGE");
+      const link = verificationLink("/confirm-email", token);
+
+      // To the NEW address: the proof. Fault-isolated like every other send —
+      // the pending row stands even if the mail does not go out, and the user
+      // can ask again.
+      await sendEmail({ to: email, ...emailChangeEmail(link, email) }).catch((err: unknown) =>
+        console.warn(`[email] change confirmation to ${email} failed: ${(err as Error).message}`)
+      );
+      // To the OLD address: the tripwire. Sent on REQUEST, not on completion —
+      // by the time a hostile change completes, the attacker holds the mailbox
+      // the confirmation went to and the owner would never see it.
+      await sendEmail({ to: user.email, ...emailChangeNoticeEmail(email) }).catch((err: unknown) =>
+        console.warn(`[email] change notice to ${user.email} failed: ${(err as Error).message}`)
+      );
+
+      res.json({ pendingEmail: email, emailConfigured: emailConfigured() });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/** Abandon a requested change. Clears the pending address and its token. */
+meRouter.delete("/email", requireAuth, async (req: AuthedRequest, res, next) => {
+  try {
+    await prisma.user.update({ where: { id: req.userId! }, data: { pendingEmail: null } });
+    // The outstanding link must stop working too, or "cancel" only hides the
+    // change from the UI while leaving it one click from taking effect.
+    await prisma.verificationToken.updateMany({
+      where: { userId: req.userId!, purpose: "EMAIL_CHANGE", consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    res.json({ pendingEmail: null });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ---- Avatar ---------------------------------------------------------------
 

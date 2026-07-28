@@ -843,3 +843,13 @@ input::placeholder { color: var(--text-faint); }
      35% bar frozen off-screen. */
   .progress-indeterminate { animation: none !important; width: 100%; margin-left: 0; }
 }
+
+/* Separates the two independent forms inside the Account card. They are one
+   section but two mutations, and running them together visually would suggest a
+   single Save — which is exactly the shape §6 rules out. */
+.settings-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: var(--space-2) 0;
+  width: 100%;
+}

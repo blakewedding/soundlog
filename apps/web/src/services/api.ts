@@ -365,6 +365,23 @@ export const api = {
     }),
   deleteAvatar: () =>
     request<{ profile: OwnProfile }>(API_ROUTES.me.avatar, { method: "DELETE" }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ ok: true; accessToken: string; otherSessionsSignedOut: boolean }>(
+      API_ROUTES.me.password,
+      json({ currentPassword, newPassword })
+    ),
+  requestEmailChange: (currentPassword: string, newEmail: string) =>
+    request<{ pendingEmail: string; emailConfigured: boolean }>(
+      API_ROUTES.me.email,
+      json({ currentPassword, newEmail })
+    ),
+  cancelEmailChange: () =>
+    request<{ pendingEmail: null }>(API_ROUTES.me.email, { method: "DELETE" }),
+  confirmEmailChange: (token: string) =>
+    request<{ user: SessionUser & { email?: string } }>(
+      API_ROUTES.auth.confirmEmailChange,
+      json({ token })
+    ),
   follow: (username: string) =>
     request<{ following: boolean; followerCount: number }>(
       `${API_ROUTES.users}/${encodeURIComponent(username)}/follow`,
@@ -422,6 +439,11 @@ export interface OwnProfile {
   bio: string | null;
   avatarUrl: string | null;
   links: ProfileLink[];
+  /**
+   * An address awaiting confirmation. The change has NOT happened while this is
+   * set — the old address still signs in until the link is clicked.
+   */
+  pendingEmail: string | null;
   plan: "FREE" | "PRO";
   /**
    * Round-tripped but NOT enforced anywhere yet — 6.2b makes it real across

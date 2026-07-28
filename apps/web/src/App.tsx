@@ -18,6 +18,7 @@ import VerifyEmail from "./pages/VerifyEmail";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Settings from "./pages/Settings";
+import ConfirmEmail from "./pages/ConfirmEmail";
 import VerifyReminder from "./components/ui/VerifyReminder";
 
 export default function App() {
@@ -60,6 +61,9 @@ export default function App() {
               See backend/src/config/reservedUsernames.ts; the pairing is
               enforced by App.reservedRoutes.test.ts. */}
           <Route path="/settings" element={<Settings />} />
+          {/* Landing page for the link sent to a NEW address. Above
+              /:username for the same reason as the rest. */}
+          <Route path="/confirm-email" element={<ConfirmEmail />} />
           {/* Public member profile — kept last so static routes win the match. */}
           <Route path="/:username" element={<Profile />} />
         </Routes>

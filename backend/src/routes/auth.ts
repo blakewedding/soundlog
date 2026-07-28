@@ -11,14 +11,15 @@
 // browser history / server logs and gives the same shape to web and to the
 // expo-auth-session mobile flow.
 import { Router } from "express";
-import type { CookieOptions, NextFunction, Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import type { AuthenticateOptions } from "passport";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { prisma } from "../config/database.js";
-import { env, cookieSecure } from "../config/env.js";
+import { env } from "../config/env.js";
+import { REFRESH_COOKIE, refreshCookieOptions } from "../config/refreshCookie.js";
 import { passport, oauthProviders, type OAuthProvider } from "../config/passport.js";
 import {
   registerUser,
@@ -50,22 +51,6 @@ import {
 } from "../services/oauthCodeService.js";
 
 export const authRouter = Router();
-
-const REFRESH_COOKIE = "refresh_token";
-
-function refreshCookieOptions(): CookieOptions {
-  return {
-    httpOnly: true,
-    // Follows the app's own scheme, not NODE_ENV — see cookieSecure in
-    // config/env.ts for why those two must not be conflated.
-    secure: cookieSecure,
-    // The SPA and /api are one origin, so every request carrying this cookie is
-    // same-site; `lax` costs nothing and blocks cross-site POSTs.
-    sameSite: "lax",
-    path: "/api/auth",
-    maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
-  };
-}
 
 const registerSchema = z.object({
   username: z
@@ -206,6 +191,61 @@ authRouter.post("/verify-email", validate(tokenSchema), async (req, res, next) =
       data: { emailVerifiedAt: new Date() },
     });
     res.json({ user: toPublicUser(user) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Confirm a requested email change. Unauthenticated by necessity — this is
+ * clicked from a mailbox, quite possibly on a different device from the one
+ * that asked, and requiring a session would defeat the point of proving control
+ * of the address rather than of the browser.
+ *
+ * The token is the authorization. It is single-use, expires in two hours, and
+ * was delivered only to the address being claimed.
+ */
+authRouter.post("/confirm-email-change", validate(tokenSchema), async (req, res, next) => {
+  try {
+    const userId = await consumeVerificationToken(req.body.token, "EMAIL_CHANGE");
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new HttpError(400, "This link is invalid or has expired");
+    // The pending address can be cleared between request and click — by the
+    // user cancelling, or by a second request replacing it. Confirming a change
+    // that is no longer wanted would resurrect it.
+    if (!user.pendingEmail) {
+      throw new HttpError(409, "That email change was already completed or cancelled.");
+    }
+
+    // Re-check at CONFIRM time, not only at request time. Two accounts may hold
+    // the same pending address simultaneously (it is deliberately not unique),
+    // and somebody else may simply have registered it in the interim. First to
+    // confirm wins; the loser is told plainly rather than hitting a constraint.
+    const taken = await prisma.user.findUnique({ where: { email: user.pendingEmail } });
+    if (taken && taken.id !== user.id) {
+      await prisma.user.update({ where: { id: user.id }, data: { pendingEmail: null } });
+      throw new HttpError(409, "An account with that email already exists.");
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        email: user.pendingEmail,
+        pendingEmail: null,
+        // Clicking a link sent to this address IS the verification — asking for
+        // it again immediately afterwards would be asking twice for one proof.
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    // The address is the login identifier, so a completed change is a change of
+    // who can get in. Every other session dies with it: if this change was made
+    // by someone who should not have had the account, their sessions must not
+    // survive the thing that evicted them.
+    await revokeAllRefreshTokens(user.id);
+
+    res.json({ user: toPublicUser(updated) });
   } catch (err) {
     next(err);
   }

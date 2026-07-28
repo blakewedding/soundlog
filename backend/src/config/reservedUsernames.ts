@@ -43,6 +43,7 @@
 export const RESERVED_USERNAMES: readonly string[] = [
   // --- static routes that exist today (apps/web/src/App.tsx) ---
   "artist",
+  "confirm-email",
   "diary",
   "explore",
   "forgot-password",
