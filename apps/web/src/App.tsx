@@ -17,6 +17,7 @@ import Profile from "./pages/Profile";
 import VerifyEmail from "./pages/VerifyEmail";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import Settings from "./pages/Settings";
 import VerifyReminder from "./components/ui/VerifyReminder";
 
 export default function App() {
@@ -53,6 +54,12 @@ export default function App() {
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
+          {/* Same rule as the email flows above: this MUST sit above /:username,
+              and "settings" is now a name nobody may register — otherwise the
+              account that took it would have a permanently unreachable profile.
+              See backend/src/config/reservedUsernames.ts; the pairing is
+              enforced by App.reservedRoutes.test.ts. */}
+          <Route path="/settings" element={<Settings />} />
           {/* Public member profile — kept last so static routes win the match. */}
           <Route path="/:username" element={<Profile />} />
         </Routes>

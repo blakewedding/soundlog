@@ -1972,6 +1972,86 @@ would have returned three rows where one was intended. The gap was not a missing
 rule about databases — it was a rule about writes that nobody had applied to
 deletes. It ran against dev, which is why it became a law rather than an outage.
 
+### 6.2b — IN PROGRESS. Steps 1–2 done (2026-07-28)
+
+**The phone check found the gap 6.2a left: there was no settings UI.** The
+endpoints, the `Avatar` component and the rendition helper all shipped and
+worked, and no route or form reached any of them. Verified by curl and by tests,
+never by asking whether a person could do it.
+
+**Step 1 — the settings page.** `/settings`, declared above `/:username` (the
+catch-all that App.tsx already warns about for the email routes). Entry is an
+**"Edit profile" button on your own profile**, not a nav link — the nav already
+wraps to three rows at 380px, and a seventh link would worsen that on the exact
+device this is tested on. `Profile.tsx` already computed `isMe`, and
+`FollowButton` already returned null there, so the button is a pure addition.
+
+The structural decision, because every later control inherits it: **one
+scrolling page where each section is its own form, with its own submit, busy
+state and error.** Not a page-wide Save. §6 wants every mutation to fail
+visibly, and one Save across six controls cannot say *which* failed — a partial
+failure leaves the page showing values that never persisted. Section order is
+descending frequency, ascending consequence: Profile → Account → Privacy → Plan
+→ Danger. Privacy's slot is reserved and renders nothing until enforcement
+lands, so the layout does not shift under a user later.
+
+Two things aimed squarely at the test device:
+
+- **`accept="image/jpeg,image/png,image/webp"`, never `image/*`.** An iPhone
+  photo library hands over HEIC when the input accepts anything; Safari
+  transcodes to JPEG only when it sees concrete types. A wide accept turns
+  "pick a photo" into a 400 on the most common device we have. No `capture`
+  attribute, which would force the camera and remove the library.
+- **HEIC is named in both the client guard and the server's rejection.** The
+  server sniffs the ISO-BMFF `ftyp` brand, so an MP4 is not mistaken for a
+  photo. "That file is not a JPEG, PNG or WebP" is true and useless to someone
+  looking at a picture they can plainly see.
+
+**Live demo at 375px** drove the real page: save → `Saved` and the nav updating
+to the new display name (cross-surface propagation); an `http://` link →
+`role="alert"` with a message naming https, the Saved badge cleared, and the
+typed value kept so it can be fixed; corrected → persisted, confirmed by reading
+the row back off the server rather than believing the UI; upload → circular,
+centre-cropped, serving the **w384 candidate on a DPR-2 viewport**; HEIC →
+refused client-side with no request made; remove → glyph fallback, label
+reverted, **zero files on disk**.
+
+**A bug the demo caught that tests would not have.** On a successful upload the
+component kept showing the local `blob:` preview instead of the served
+rendition. Not cosmetic: the stored master is centre-cropped square, so the
+uploader would see an uncropped picture while everyone else saw the crop, and
+they would only find out on somebody else's screen. Fixed by clearing and
+revoking the preview once the real URL lands — and it is now the thing one of
+the tests asserts.
+
+**Step 2 — reserved usernames.** There was no reserved list at all: username
+validation was length plus `[a-z0-9_]`. Because `/:username` is routed last as a
+catch-all, **eight segments were already registerable as names whose owner would
+have a permanently unreachable profile** — `diary`, `explore`,
+`forgot-password`, `lists`, `login`, `reset-password`, `search`,
+`verify-email`. None were taken on production (checked), so this closed a latent
+hole rather than repairing a live one; `/settings` would have made nine.
+
+The list lives in the **backend**, not `@soundlog/shared`, because shared is
+deliberately not a backend dependency and this is a validation rule that has to
+be enforced where accounts are created. The drift risk — someone adds a route
+and forgets to reserve it — is covered by `App.reservedRoutes.test.ts`, which
+reads both files from disk and fails **in the web package**, where the route was
+added. It also asserts it found the routes at all, so a restructured App.tsx
+cannot make it pass vacuously.
+
+Also reserved: names we will plausibly route later (cheap now, impossible once
+someone holds them) and names that should never be a person — `admin`,
+`support`, `official`. That last group is not a routing problem: an account
+called `support` messaging users is a phishing primitive.
+
+Final: backend **37 files / 372 tests**, web **30 / 230**, typecheck clean.
+
+Still open in 6.2b: the Account section (password with re-auth, email with
+re-verification), visibility enforcement across `users.ts` / `feedService` / the
+ES user documents followed by the toggle, the Pro row, account deletion with the
+Cloudflare purge, and the `runTag` sweep of the remaining eighteen fixture files.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,

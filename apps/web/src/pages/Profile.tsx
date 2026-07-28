@@ -49,13 +49,22 @@ export default function Profile() {
             thing identifying whose profile this is. */}
         <Avatar src={p.avatarUrl} name={p.displayName ?? p.username} size="hero" decorative={false} />
         <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <h1 style={{ margin: 0 }}>{p.displayName ?? p.username}</h1>
-            <FollowButton
-              username={p.username}
-              initialFollowing={p.isFollowing}
-              onChange={() => queryClient.invalidateQueries({ queryKey: ["profile", username] })}
-            />
+            {/* The ONLY entry point to /settings, deliberately. A seventh nav
+                link would worsen the three-row wrap the nav already has at
+                380px, and this is the place people look for it. */}
+            {p.isMe ? (
+              <Link to="/settings" className="btn btn-ghost">
+                Edit profile
+              </Link>
+            ) : (
+              <FollowButton
+                username={p.username}
+                initialFollowing={p.isFollowing}
+                onChange={() => queryClient.invalidateQueries({ queryKey: ["profile", username] })}
+              />
+            )}
           </div>
           <p className="meta">@{p.username} · joined {joined}</p>
           {p.bio && <p style={{ marginTop: 8, color: "var(--text-muted)", maxWidth: 560 }}>{p.bio}</p>}

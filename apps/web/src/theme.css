@@ -258,6 +258,57 @@ a:hover .cover,
 .avatar-card { width: 44px; height: 44px; }
 .avatar-hero { width: 96px; height: 96px; }
 
+/* ---------- Settings ----------
+   One scrolling page of independent sections; each section owns its own form,
+   its own submit and its own error (§6 — a page-wide Save cannot say WHICH of
+   six controls failed). Section order is descending frequency, ascending
+   consequence, with destructive actions last and separated. */
+.settings { display: flex; flex-direction: column; gap: var(--space-4); max-width: 640px; }
+.settings-header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.settings-section { display: flex; flex-direction: column; gap: var(--space-3); }
+.settings-section h2 { margin: 0; font-size: 18px; }
+.settings-form { display: flex; flex-direction: column; gap: var(--space-4); }
+.settings-row { display: flex; flex-direction: column; gap: var(--space-1); }
+.settings-row label,
+.settings-label { font-size: 13px; color: var(--text-muted); }
+.settings-hint { margin: 0; }
+.settings-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.settings-error { color: var(--danger); margin: 0; }
+.settings-ok { color: var(--gold); margin: 0; }
+
+.settings-avatar { display: flex; gap: var(--space-4); align-items: flex-start; flex-wrap: wrap; }
+.settings-avatar-actions { display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
+/* A label styled as a button still needs to look disabled while a write is in
+   flight — aria-disabled is the only signal available, since a <label> has no
+   disabled state of its own. */
+.settings-avatar-actions label[aria-disabled="true"] { opacity: 0.65; pointer-events: none; }
+
+/* Name / address / remove. Collapses to stacked rows on a phone rather than
+   squeezing two text inputs and a button into 380px. */
+.settings-link-row { display: grid; grid-template-columns: 1fr 1.6fr auto; gap: var(--space-2); align-items: center; }
+@media (max-width: 560px) {
+  .settings-link-row { grid-template-columns: 1fr auto; }
+  /* The address spans the full width above the remove button. */
+  .settings-link-row input[type="url"] { grid-column: 1 / -1; order: 2; }
+  .settings-link-row button { order: 1; }
+}
+
+/* Visually hidden but still focusable and announced — the real <input
+   type="file">, which is unstyleable and reads as "Choose file / no file
+   chosen". `display: none` would remove it from the tab order and break the
+   label association for keyboard users. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .release-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -663,6 +714,15 @@ input::placeholder { color: var(--text-faint); }
     min-height: 44px;
     min-width: 44px;
     justify-content: center;
+  }
+
+  /* Settings is a form-heavy page and the phone is the test device. .btn above
+     already covers its buttons and the file-picker label; text fields need the
+     same floor so a tap lands in the field rather than between two of them. */
+  .settings input:not([type="checkbox"]):not([type="radio"]),
+  .settings textarea,
+  .settings select {
+    min-height: 44px;
   }
 
   /* Review actions were the worst measured: ♥ / 💬 / Edit / Delete at 22x19. */

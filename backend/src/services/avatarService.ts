@@ -119,6 +119,19 @@ const SIGNATURES: ReadonlyArray<{ format: string; test: (b: Buffer) => boolean }
   },
 ];
 
+/**
+ * Recognise HEIC/HEIF so it can be REJECTED with a message that names it.
+ *
+ * Not an accepted format — this is purely so the error is actionable. HEIC is
+ * an ISO-BMFF file: a length-prefixed `ftyp` box at offset 4, with the brand at
+ * offset 8. The brands below are what Apple's camera and Photos produce.
+ */
+function isHeic(b: Buffer): boolean {
+  if (b.length < 12 || b.subarray(4, 8).toString("ascii") !== "ftyp") return false;
+  const brand = b.subarray(8, 12).toString("ascii");
+  return ["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].includes(brand);
+}
+
 /** In-flight renders, so a burst for one avatar renders it exactly once. */
 const inFlight = new Map<string, Promise<string | null>>();
 
@@ -153,6 +166,18 @@ export async function ingestAvatar(
   // 2. Magic bytes. Before any decoder sees this.
   const signature = SIGNATURES.find((s) => s.test(input));
   if (!signature) {
+    // HEIC gets named rather than lumped in with "not an image", because it is
+    // BY FAR the most likely rejection: an iPhone photo library hands over HEIC
+    // unless the file input narrows `accept` to concrete types, so this is the
+    // first thing a real phone will send. "That file is not a JPEG, PNG or
+    // WebP" is technically true and useless to someone holding a photo they can
+    // plainly see.
+    if (isHeic(input)) {
+      throw new HttpError(
+        400,
+        "iPhone photos in HEIC format aren't supported yet — please choose a JPEG or PNG."
+      );
+    }
     throw new HttpError(400, "That file is not a JPEG, PNG or WebP image.");
   }
 

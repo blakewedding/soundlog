@@ -141,6 +141,33 @@ describe("ingestAvatar — what it refuses", () => {
     await reject(Buffer.from("this is definitely a picture, honest"), /not a JPEG, PNG or WebP/);
   });
 
+  it("names HEIC specifically, because it is what a phone will actually send", async () => {
+    // An iPhone photo library hands over HEIC unless the file input narrows
+    // `accept`, so this is the most likely rejection in practice. A generic
+    // "not an image" is useless to someone looking at a photo.
+    for (const brand of ["heic", "mif1"]) {
+      const heic = Buffer.concat([
+        Buffer.from([0, 0, 0, 0x18]),
+        Buffer.from("ftyp"),
+        Buffer.from(brand),
+        Buffer.alloc(16),
+      ]);
+      await reject(heic, /HEIC/);
+    }
+  });
+
+  it("does not mistake an unrelated ISO-BMFF file for HEIC", async () => {
+    // An MP4 shares the ftyp box; only the brand distinguishes them, and
+    // claiming an MP4 is an iPhone photo would send someone down a dead end.
+    const mp4 = Buffer.concat([
+      Buffer.from([0, 0, 0, 0x18]),
+      Buffer.from("ftyp"),
+      Buffer.from("isom"),
+      Buffer.alloc(16),
+    ]);
+    await reject(mp4, /not a JPEG, PNG or WebP/);
+  });
+
   it("refuses bytes with a valid signature but a corrupt body", async () => {
     // Passes the magic-byte check, fails in the header parse. The point is that
     // it fails as a 400 about unreadable bytes, not as a crash.

@@ -40,6 +40,7 @@ import {
   verificationLink,
 } from "../services/verificationService.js";
 import { sendEmail, passwordResetEmail, emailConfigured } from "../services/emailService.js";
+import { isReservedUsername } from "../config/reservedUsernames.js";
 import {
   createOAuthState,
   consumeOAuthState,
@@ -67,7 +68,18 @@ function refreshCookieOptions(): CookieOptions {
 }
 
 const registerSchema = z.object({
-  username: z.string().min(3).max(24).regex(/^[a-z0-9_]+$/i),
+  username: z
+    .string()
+    .min(3)
+    .max(24)
+    .regex(/^[a-z0-9_]+$/i)
+    // A reserved name is refused HERE rather than at the database, because the
+    // harm is not a collision — it is that `/:username` is a catch-all behind
+    // every static route, so an account called `settings` would have a profile
+    // nobody, including its owner, could ever open. See config/reservedUsernames.ts.
+    .refine((v) => !isReservedUsername(v), {
+      message: "That username is reserved — please choose another.",
+    }),
   email: z.string().email(),
   password: z.string().min(10),
 });
