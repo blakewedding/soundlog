@@ -124,6 +124,12 @@ describe("account deletion removes the member from every store", () => {
       .send({ confirmUsername: a.username, currentPassword: PASSWORD });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.deleted).toBe(true);
+    // This account uploaded no picture, so there was nothing at the edge to
+    // clear. Distinct from `skipped-unconfigured`, which means the credential is
+    // absent — caught on the production pass, where a correctly-configured box
+    // reported "unconfigured" and would have sent an operator hunting a token
+    // that was present and working.
+    expect(res.body.purge).toBe("skipped-no-avatar");
 
     // ---- and now absence --------------------------------------------------
     expect(await prisma.user.findUnique({ where: { id: a.id } })).toBeNull();

@@ -60,10 +60,19 @@ export interface DeleteUserResult {
   /** Empty means every layer came clean. Non-empty is a 502, not a 200. */
   residue: DeletionResidue[];
   /**
-   * What happened at the edge. `skipped` is an honest outcome on a stack with
-   * no token configured (dev, CI) and must never be conflated with `purged`.
+   * What happened at the edge.
+   *
+   * FOUR outcomes, not three, and the split between the two `skipped` values is
+   * the point. Caught on the production pass: an account with no avatar
+   * reported `skipped-unconfigured` on a stack where the credential was
+   * present and working, because "nothing to purge" fell through to the
+   * unconfigured default. Both are honest about not having purged, which is
+   * what stops a non-purge reading as a purge — but they say different things
+   * about the SYSTEM, and an operator reading `skipped-unconfigured` on a
+   * correctly-configured box would go looking for a missing token that is not
+   * missing.
    */
-  purge: "purged" | "skipped-unconfigured" | "failed";
+  purge: "purged" | "skipped-no-avatar" | "skipped-unconfigured" | "failed";
 }
 
 /**
@@ -88,7 +97,7 @@ export async function deleteUserEverywhere(userId: string): Promise<DeleteUserRe
     // so failing loudly would turn a best-effort tidy-up into a 503 on an
     // operation that has nothing left to do.
     await deindexUser(userId);
-    return { deleted: false, residue: [], purge: "skipped-unconfigured" };
+    return { deleted: false, residue: [], purge: "skipped-no-avatar" };
   }
 
   // Read the things that stop being readable once the row is gone.
@@ -185,7 +194,10 @@ export async function deleteUserEverywhere(userId: string): Promise<DeleteUserRe
 
   // Not residue when unconfigured — a stack with no token is a legitimate
   // configuration, and saying "skipped" is what keeps it from reading as done.
-  let purge: DeleteUserResult["purge"] = "skipped-unconfigured";
+  // The default is the no-avatar case: most accounts never upload one, and
+  // reporting those as "unconfigured" would send an operator hunting a token
+  // that is present.
+  let purge: DeleteUserResult["purge"] = "skipped-no-avatar";
   if (avatar) {
     const outcome = await purgeAvatar(userId, avatar.hash);
     purge = outcome.status;

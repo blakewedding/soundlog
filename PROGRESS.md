@@ -2458,6 +2458,76 @@ network path; it does **not** re-prove hit-target geometry, which step 1 already
 established for this page. The production pass below is the one that closes it
 on real touch hardware.
 
+#### Production pass — two throwaway accounts, every layer (2026-07-28)
+
+Deployed at `dd572a0`; the purge credential was added on the box with `read -s`
+so it never entered a shell history or this repo (§7), and the preflight was run
+against the live token **before** any account was created — the check that turns
+a wrong scope into a refusal rather than a half-finished delete.
+
+Two accounts on `@soundlog.test` (RFC 2606, already recognised by
+`scripts/lib/fixtures.ts`). **A reviewed an already-seeded release** —
+*OK Computer* — so the exercise created **zero** catalog rows. A carried an
+avatar, a review with a canary string, a rating, a log, a public list, a like and
+a comment on B's review, follows in **both** directions, and an unconfirmed
+email change with two live verification tokens. All four edge renditions were
+warmed to `HIT` first, so the purge had something real to clear.
+
+**A was deleted through the real UI on a phone.** The near-miss guard held on
+touch hardware: the capital-D variant left the button disabled, and only the
+exact username plus the password enabled it.
+
+| Layer | Before | After |
+|---|---|---|
+| `User` | 1 | **0** |
+| `VerificationToken` (from `pendingEmail`) | 2 | **0** |
+| `Review` · `Rating` · `Log` · `List` | 1 each | **0** each |
+| `ReviewLike` · `ReviewComment` (on B's review) | 1 each | **0** each |
+| `Follow` A→ / →A | 1 / 1 | **0 / 0** |
+| `Activity` by A | 6 | **0** |
+| `Activity` → A in **B's** feed (`FOLLOW`) | 1 | **0** |
+| `RefreshToken` | 1 | **0** |
+| ES `users/_doc` | found | **found:false**, and absent from `match_all` |
+| ES `lists/_doc` | found | **found:false**, and absent from `match_all` |
+| Avatar files on disk | **5** (master + 4) | **0** |
+| Cloudflare `w48` | HIT | **404 · MISS** |
+| Cloudflare `w96` | HIT | **404 · MISS** |
+| Cloudflare `w192` | HIT | **404 · MISS** |
+| Cloudflare `w384` | HIT | **404 · MISS** |
+| `/api/reviews/recent` canary | 1 hit | **0** |
+| `/api/feed/popular` canary | 1 hit | **0** |
+| `/api/users/<A>` | 200 | **404** |
+| member search for A | — | **0 hits** |
+| A's pre-deletion access token | 200 | **401** (denylist key present) |
+
+B was then deleted through the API, and `purge-test-fixtures.ts --dry-run`
+reported **0 fixture rows and 0 orphaned documents** across all five indices,
+with the catalog back at its exact baseline: **109 releases, 31 artists, 2
+users**.
+
+**A third bug in my own work, found by the B deletion.** B had no avatar, and
+the response reported `purge: "skipped-unconfigured"` — on a box where the
+credential was present and working. Both values are honest about not having
+purged, which is what stops a non-purge reading as a purge, but they say
+different things about the *system*, and an operator reading "unconfigured" on a
+correctly-configured host would go hunting a token that is not missing. Split
+into `skipped-no-avatar` vs `skipped-unconfigured`, and pinned by a test.
+
+*Not a defect, recorded so it is not re-investigated:* B's first delete returned
+401 because its access token had aged past the 15-minute TTL during setup. A
+fresh login deleted it cleanly.
+
+**Two items for the ledger from the phone pass:**
+
+- **Login requires an email address, not a username.** Filed as a Phase 7 UX
+  item: accept either. Someone who has just typed their *username* into a
+  delete-confirmation field and then cannot sign in with it is being asked to
+  hold two different identifiers for one account.
+- **`@soundlog.test` addresses register and sign in normally through the real
+  form**, which is what makes them usable as throwaway verification accounts:
+  the reserved TLD never resolves, so no mail escapes, and the fixture purge
+  already recognises them.
+
 Final: backend **43 files / 428 tests**, web **32 / 239**, typecheck clean in
 both.
 
@@ -2483,7 +2553,15 @@ What Phase 7 carries, in the order the work naturally falls:
    a new component, not polish.
 4. **Desktop half-star hit targets** — still 8×24, pre-existing and tight even
    for a mouse. Touch was fixed in 5.5; desktop was out of that brief.
-5. **The post-launch checklist above**, which is dated rather than blocked.
+5. **Sign in with username OR email.** The login form takes an email address
+   only. Found on the 6.2b step 6 phone pass, and the reason it is worth fixing
+   rather than filing forever: the delete-account form asks a person to type
+   their **username** to confirm, so the product now demands they know two
+   different identifiers for one account and is picky about which goes where.
+   `verifyCredentials` looks up by email today; accepting either means one
+   lookup that tries both, with the same uniform "invalid email or password"
+   answer so it cannot be used to probe which usernames exist.
+6. **The post-launch checklist above**, which is dated rather than blocked.
 
 Before starting **either phase**, read the **Production operations** section of
 the README — everything from here on ships to a live site with real users' data
