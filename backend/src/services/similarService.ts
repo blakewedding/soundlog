@@ -3,6 +3,7 @@
 // user and anyone they already follow. The computation touches every co-rater,
 // so results are cached in Redis for a day (taste graphs move slowly).
 import { prisma } from "../config/database.js";
+import { discoverableUser } from "./visibilityService.js";
 import { redis } from "../config/redis.js";
 import { cached } from "./cache.js";
 import { publicUserSelect } from "./feedService.js";
@@ -49,7 +50,10 @@ async function computeSimilar(userId: string): Promise<SimilarListener[]> {
     .sort((a, b) => b[1] - a[1])
     .slice(0, MAX_RESULTS);
   const users = await prisma.user.findMany({
-    where: { id: { in: ranked.map(([id]) => id) } },
+    // "Listeners like you" actively SUGGESTS members to other people, which is
+    // discovery in its purest form — a private member offered as somebody to go
+    // and follow. Found in the same audit as the /api/reviews/recent leak.
+    where: { ...discoverableUser, id: { in: ranked.map(([id]) => id) } },
     select: publicUserSelect,
   });
   const userMap = new Map(users.map((u) => [u.id, u]));

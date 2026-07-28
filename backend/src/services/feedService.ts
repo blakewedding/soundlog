@@ -7,7 +7,7 @@
 // the first place). Deleted targets are dropped too.
 import type { Activity } from "@prisma/client";
 import { prisma } from "../config/database.js";
-import { isHiddenFrom } from "./visibilityService.js";
+import { discoverableUser, isHiddenFrom } from "./visibilityService.js";
 
 export const publicUserSelect = {
   id: true,
@@ -68,7 +68,7 @@ export async function getPopularReviews(viewerId: string | undefined, limit = 20
     // routes/feed.ts): making the result depend on the viewer would turn that
     // shared cache entry into a lie. Excluding unconditionally keeps one
     // answer for everyone, which is what makes it cacheable at all.
-    where: { user: { profileVisibility: "PUBLIC" } },
+    where: { user: discoverableUser },
     include: feedReviewInclude,
     orderBy: { createdAt: "desc" },
     take: POPULAR_CANDIDATES,

@@ -24,6 +24,11 @@ import { useState, useEffect } from "react";
  * tab strip would add another horizontal row competing with the nav, which
  * already wraps to three rows at 380px.
  *
+ * The only entry point is the "Edit profile" button on your own profile, for
+ * that same reason. Making settings a first-class nav destination is DEFERRED
+ * to Phase 7's mobile nav redesign — it is the right answer and it needs the
+ * nav rethought first, not a seventh link added to a bar that already wraps.
+ *
  * ## Section order
  *
  * Descending frequency of use, ascending consequence: what other people see →

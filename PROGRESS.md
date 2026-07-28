@@ -2204,9 +2204,50 @@ the owner.
 
 Final: backend **40 files / 406 tests**, web **31 / 233**, typecheck clean.
 
+#### 6.2b step 4 leak — a private member's reviews were public (2026-07-28)
+
+**Found on the phone check, in production.** With the account private, its
+reviews — full text — still appeared on the logged-out home page.
+
+**Neither of the two suspected causes.** Not the Varnish shadow: the anonymous
+cache holds `^/api/(releases|search|feed/popular|health)` and the leaking
+endpoint matches none of them, so this was immediate and permanent rather than
+TTL-bound. And not the activity feed: `Home.tsx` renders that behind
+`{user && <FeedSection />}`, so it never appears logged out at all.
+
+The actual surface was **`/api/reviews/recent`** — `RecentReviewsSection`, the
+logged-out home page's review feed — which had no visibility filter of any kind.
+Reproduced on production before touching anything: register, review, flip
+private, and the canary text came straight back one second later.
+
+**The audit that followed found a second one.** `getSimilarListeners` selected
+members with no filter — "Listeners like you" actively suggests a private
+account as somebody to go and follow, which is discovery in its purest form.
+
+**The lesson is not "add two filters".** Step 4 enforced surface-by-surface from
+a written checklist, and the checklist was not exhaustive — which is precisely
+what `visibleUserByUsername`'s own comment warns about ("nine call sites each
+remembering a rule is nine chances to forget it"). That chokepoint was built for
+`users.ts` and never carried across service boundaries. There is now one
+importable `discoverableUser` filter, and `visibilityDiscovery.test.ts`
+enumerates every anonymous-readable surface and asserts against a **canary
+string in the raw response body**, so a payload that nests a user somewhere new
+is still caught. Confirmed to catch the real bug by reverting the fix and
+watching it fail.
+
+That file also pins the line in the **other** direction: the review must still
+appear on the release page it was written about. PRIVATE means *do not
+broadcast*, not *unpublish* — and an over-correction that silently retracts
+writing other people have replied to would be caught as loudly as a leak.
+
+**Deferred, filed:** settings as a first-class nav destination goes to Phase 7's
+mobile nav redesign rather than being bolted on now. The profile-page entry
+point stays.
+
 Still open in 6.2b: the Pro row, account deletion with the Cloudflare purge
 (token now in hand) plus the orphaned-avatar cleanup noted above, and the
-`runTag` sweep of the remaining eighteen fixture files.
+`runTag` sweep of the remaining eighteen fixture files. Then the American
+Football identity bug, filed for the next handoff.
 
 ## Then — Phase 7
 

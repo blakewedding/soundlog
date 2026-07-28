@@ -39,6 +39,31 @@ export interface VisibilityOwner {
   profileVisibility: ProfileVisibility;
 }
 
+/**
+ * The Prisma filter every DISCOVERY query must carry.
+ *
+ * Spread into a `where` — `where: { user: discoverableUser }` for a query over
+ * content, or `where: { ...discoverableUser, id: { in: ids } }` for one over
+ * members directly.
+ *
+ * This exists because of a leak that reached production. Enforcement was done
+ * surface-by-surface from a written list, the list was not exhaustive, and
+ * `/api/reviews/recent` — the logged-out home page's review feed, full text
+ * included — was not on it. A private member's review was readable by anyone,
+ * immediately and indefinitely, while the profile page, member search and the
+ * activity feed were all correctly sealed.
+ *
+ * `routes/users.ts` already had the right shape and I did not carry it across
+ * service boundaries: one chokepoint, because nine call sites each remembering
+ * a rule is nine chances to forget it. This is that chokepoint for the queries.
+ *
+ * Deliberately NOT viewer-aware. Every caller is a shared, cacheable, or
+ * broadcast surface where the answer must be the same for everybody — see the
+ * note on `getPopularReviews`, whose anonymous response Varnish holds for five
+ * minutes. A per-viewer discovery feed would make that cache entry a lie.
+ */
+export const discoverableUser = { profileVisibility: "PUBLIC" } as const;
+
 /** Is this profile hidden from `viewerId`? The owner always sees their own. */
 export function isHiddenFrom(owner: VisibilityOwner, viewerId: string | undefined): boolean {
   if (owner.profileVisibility !== "PRIVATE") return false;

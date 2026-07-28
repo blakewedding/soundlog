@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/database.js";
+import { discoverableUser } from "../services/visibilityService.js";
 import { validate } from "../middleware/validate.js";
 import { requireAuth, optionalAuth, type AuthedRequest } from "../middleware/auth.js";
 import { HttpError } from "../middleware/errorHandler.js";
@@ -112,6 +113,12 @@ reviewsRouter.post("/", requireAuth, validate(createReviewSchema), async (req: A
 reviewsRouter.get("/recent", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
     const reviews = await prisma.review.findMany({
+      // A DISCOVERY surface: the logged-out home page's review feed, full text
+      // included. This is where the 6.2b step 4 leak lived — enforcement was
+      // applied from a list of surfaces and this one was not on it, so a
+      // private member's review stayed readable by anyone, immediately and
+      // indefinitely, while their profile and search presence were sealed.
+      where: { user: discoverableUser },
       orderBy: { createdAt: "desc" },
       take: Math.min(Number(req.query.limit) || 10, 25),
       include: {
