@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedCoverColor, extractCoverColor, mutedTint } from "../../lib/coverColor";
 import { coverSources, type CoverSize } from "../../lib/coverVariant";
+import { useInViewport } from "../../hooks/useInViewport";
 
 interface Props {
   src?: string | null;
@@ -25,6 +26,18 @@ interface Props {
   pending?: boolean;
   zoomable?: boolean;
   onClick?: () => void;
+  /**
+   * Hold the request until the tile is actually near the viewport.
+   *
+   * Opt-in, and deliberately not the default: the hero cover on a release page
+   * and the row thumbnails in a short list are above the fold by construction,
+   * and deferring those would add an observer round-trip to the one image that
+   * should start first.
+   *
+   * Turn it on for LONG grids, where native `loading="lazy"` is too generous —
+   * see useInViewport for the measurement that motivated it.
+   */
+  defer?: boolean;
 }
 
 /**
@@ -53,15 +66,29 @@ interface Props {
  * inside the tile instead of being center-cropped into an unrecognizable
  * smear by object-fit: cover.
  */
-export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, onClick }: Props) {
+export function CoverImage({
+  src,
+  alt,
+  size = "grid",
+  color,
+  pending,
+  zoomable,
+  onClick,
+  defer,
+}: Props) {
   const [loaded, setLoaded] = useState(false);
   const [letterbox, setLetterbox] = useState(false);
   // Seeded synchronously so a known colour is present on the very first paint
   // rather than flashing --ink-2 for a frame.
   const [tint, setTint] = useState(() => mutedTint(color) ?? cachedCoverColor(src));
   const imgRef = useRef<HTMLImageElement>(null);
+  const { ref: viewportRef, visible } = useInViewport<HTMLDivElement>();
 
-  const served = coverSources(src, size);
+  // The tint still paints immediately — a deferred tile is a coloured tile, not
+  // an empty one, so the grid reads as loading rather than as broken while the
+  // observer waits. That is the same distinction 6.1.1 was about.
+  const withheld = Boolean(defer) && !visible;
+  const served = coverSources(withheld ? null : src, size);
 
   useEffect(() => {
     const fromServer = mutedTint(color);
@@ -72,6 +99,10 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
 
     setTint(cachedCoverColor(src));
     if (!src) return;
+    // A withheld tile must not extract either: extraction reads the rendition
+    // the browser is fetching, so running it here would issue exactly the
+    // request the defer exists to postpone — the optimisation cancelling itself.
+    if (withheld) return;
 
     let active = true;
     // Extraction reads the rendition the browser is already fetching, so it
@@ -85,7 +116,7 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
     return () => {
       active = false;
     };
-  }, [src, color, served.src]);
+  }, [src, color, served.src, withheld]);
 
   // Everything that must happen once the pixels are known, from whichever path
   // got us there. It has to be callable without an event, because on the cached
@@ -119,7 +150,7 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
     if (img?.complete && img.naturalWidth) settle(img);
   }, [served.src, settle]);
 
-  const image = src && (
+  const image = src && !withheld && (
     <img
       ref={imgRef}
       src={served.src}
@@ -144,6 +175,7 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
     return (
       <button
         type="button"
+        ref={viewportRef as unknown as React.RefObject<HTMLButtonElement>}
         className={`cover cover-button${zoomable ? " cover-zoom" : ""}${state}`}
         onClick={onClick}
         style={background}
@@ -155,7 +187,7 @@ export function CoverImage({ src, alt, size = "grid", color, pending, zoomable, 
   }
 
   return (
-    <div className={`cover${zoomable ? " cover-zoom" : ""}${state}`} style={background}>
+    <div ref={viewportRef} className={`cover${zoomable ? " cover-zoom" : ""}${state}`} style={background}>
       {image}
     </div>
   );
