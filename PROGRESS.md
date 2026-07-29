@@ -5,11 +5,12 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-28 — **Phase 6.2b is CLOSED**, all six steps deployed
+**Last updated:** 2026-07-29 — **Phase 6.2b is CLOSED**, all six steps deployed
 and verified on production (settings page · reserved usernames · password and
 email change · visibility across both stores · the Pro row · account deletion to
-App Store 5.1.1(v)), plus 6.2c. Next: **Phase 7**, and one filed operational
-task — the server reboot for 3 pending security updates and a kernel bump.
+App Store 5.1.1(v)), plus 6.2c. The server housekeeping task is **done**: 18
+updates applied, rebooted into kernel `6.8.0-136`, ~60s downtime, full chain
+re-verified. Next: **Phase 7**.
 
 ## Status
 
@@ -2643,7 +2644,98 @@ a wider select.
 in `apps/mobile`, which is why this is Phase 7 scope there rather than an
 omission here.
 
-#### Server housekeeping — filed as its own task
+#### Server housekeeping — DONE 2026-07-29
+
+Executed as its own task, in the filed order: fresh dump → verify → 18 updates →
+reboot → full-chain verification.
+
+**The dump was verified the way the backup script's own bug taught.** A fresh
+manual backup was taken rather than trusting the 03:17 nightly, and checked with
+`pg_restore -l` against a **real file path inside the container, never a pipe** —
+a custom-format archive must be seekable, and piping it is precisely what made
+`verify_archive` reject every good dump in 6b. Result: byte-identical transfer
+(80,474 bytes host and container), exit 0, **102 TOC entries**, and all **16
+tables carrying data**. An empty archive passes a `tar tzf`; it does not pass
+that. The avatar leg passed too — 1 master file of 1 expected.
+
+**18 updates applied**, the 3 security ones being glibc (`libc6`, `libc-bin`,
+`locales` → 2.39-0ubuntu8.8). `needrestart` restarted host nginx among others and
+**deferred `docker.service`**, so no container was bounced before the reboot; the
+site was confirmed 200 through the real edge in between.
+
+**Rebooted into `6.8.0-136-generic`** from `6.8.0-117`, reboot-required cleared.
+
+| | |
+|---|---|
+| Reboot issued | 04:21:27Z |
+| Kernel boot | 04:21:44Z (**17s**) |
+| All six containers started | 04:21:54Z |
+| Full green through the edge | ~04:22:2xZ |
+| **Actual origin downtime** | **~60 seconds** |
+
+**The 2–4 minute estimate was wrong, and the reason is worth keeping.** All six
+containers started **simultaneously at 04:21:54**, not in dependency order:
+on a host reboot Docker's `restart: unless-stopped` policy starts everything at
+once, and **`depends_on` + healthcheck gating does not apply** — that ordering is
+a `compose up` behaviour only. Elasticsearch was therefore not waited on, which
+is also why the backend logged `[boot] Elasticsearch unavailable — continuing`.
+
+That line is §5 working exactly as designed rather than a fault, but it was
+**verified rather than assumed**: search was exercised after boot and returns
+releases, artists and members, with all five indices intact at counts matching
+Postgres (109 releases, 31 artists, 58 labels, 2 users). The indices live on a
+volume, so a boot-time ES gap cannot lose them — but "the health check says ok"
+would not have proven the fan-out recovered.
+
+**Post-boot verification, through the real chain and not loopback:**
+
+- all six containers **auto-started** and healthy, no manual intervention
+- `/api/health` **200** with `postgres`/`redis`/`elasticsearch` all `ok`, read
+  through Cloudflare → nginx → Varnish → backend. Trustworthy here specifically
+  *because* Varnish's cache is memory and started empty, so the known 60s
+  health-cache open item cannot be masking a stale 200
+- site shell **200** through the edge
+- **an avatar and a cover both served** — checked through the edge *and* against
+  the origin directly, since a Cloudflare HIT alone proves nothing about the
+  origin. The cover was a CF **MISS**, i.e. it genuinely round-tripped to the
+  origin and returned 200 with real bytes
+- `[prewarm] catalog pre-warming every 60m` present in the boot log — timer
+  restarted
+
+**UptimeRobot could not be verified from here** and is Blake's to check: there is
+no API key in the repo or on the box, and the monitor runs on a **5-minute
+interval** against a **~60-second** outage. A window that short can fall entirely
+between two checks, so *no recorded incident is the likely outcome and is not
+evidence the site stayed up*.
+
+#### The §9 typecheck gap, closed (2026-07-29)
+
+`backend/tsconfig.json` is `include: ["src"]`, so `tsc -p tsconfig.json --noEmit`
+— the command every phase has reported clean — never looked at `tests/`.
+
+`backend/tsconfig.test.json` now covers `src`, `tests`, `scripts` and the vitest
+configs, with `noEmit` and a widened `rootDir`. A separate file rather than a
+wider `include` on the base config, because widening it would drag tests into
+`rootDir` and emit them into `dist/`, shipping test code in the production image.
+Wired up as `pnpm typecheck:all` alongside `pnpm typecheck`.
+
+**It surfaced 6 pre-existing errors, all type-level friction in test harness
+code. Zero in `src/` or `scripts/`** — so the production code was already clean
+and the gap was genuinely only about tests. Triaged, not fixed:
+
+| File | Error | Assessment |
+|---|---|---|
+| `authResilience.test.ts:26` | `MockInstance` variance on a `vi.spyOn` of the ES client | Harness typing. No runtime meaning. |
+| `coverProxyRoute.test.ts:57` | `Buffer` not assignable to `BodyInit` | Node/undici types disagree; `Buffer` is valid at runtime. |
+| `avatarService.test.ts:99` | `GPS` not in sharp's `Exif` type | **Worth a second look** — it is the EXIF-strip test. sharp accepts the key at runtime and the strip is separately proven live, so the assertion holds; the type is narrower than the API. |
+| `emailService.test.ts:75,86,86` | casting `[]` to a `[string, RequestInit]` tuple | Assertions on mock call args. Harness typing. |
+
+None indicate a product defect, which is why none were fixed tonight. The value
+already banked is that the gap is now visible and runnable; the honest caveat is
+that **`typecheck:all` is not yet green**, so it cannot join the §9 ritual as a
+gate until those six are cleared.
+
+#### Server housekeeping — as originally filed
 
 Read off the box 2026-07-28, not estimated:
 

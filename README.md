@@ -568,6 +568,40 @@ ports by writing iptables rules in the `DOCKER` chain, which are evaluated
 needs an explicit `BASE` (its default composes `http://localhost:$WEB_PORT`,
 which a bind address does not fit into).
 
+### Rebooting the box
+
+Measured 2026-07-29 on a real reboot (kernel `6.8.0-117` → `6.8.0-136`):
+**~60 seconds of origin downtime**, 17s of it kernel boot. Cloudflare answers
+521/522 for uncached requests during the window; already-cached assets keep
+serving, so it does not look uniformly down from outside.
+
+**`depends_on` does NOT apply on a host reboot.** All six containers start
+*simultaneously* under `restart: unless-stopped` — the dependency ordering and
+healthcheck gating in `docker-compose.prod.yml` are `compose up` behaviour only.
+The visible consequence is `[boot] Elasticsearch unavailable — continuing` in the
+backend log, which is §5 working as designed (ES must never block a core path)
+rather than a fault. It self-corrects, but **verify the search fan-out after a
+reboot rather than trusting `/api/health`** — health reports each store
+separately and will go green as soon as ES is reachable, which says nothing about
+whether the index survived.
+
+Before rebooting, take a dump rather than relying on the 03:17 nightly, and
+verify it against a **file path, never a pipe** — a custom-format archive must be
+seekable for `pg_restore -l`:
+
+```bash
+sudo /srv/soundlog/infrastructure/scripts/backup-db.sh
+```
+
+Afterwards, check through the **real edge**, not loopback: `/api/health` with all
+three stores `ok`, the site shell, one cover and one avatar (a Cloudflare `HIT`
+proves nothing about the origin — force a `MISS` or check `127.0.0.1:8090`
+directly), and `[prewarm] catalog pre-warming every 60m` in the backend log.
+
+**UptimeRobot runs a 5-minute interval**, so a ~60s reboot can fall entirely
+between checks. No recorded incident is the likely outcome and is not evidence
+the site stayed up.
+
 ### Logs
 
 Docker's `json-file` driver ships with **no rotation at all** — the default is

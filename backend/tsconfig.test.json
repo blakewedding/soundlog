@@ -1,0 +1,37 @@
+{
+  // Typecheck the TESTS, which `tsconfig.json` does not.
+  //
+  // ## Why this file exists
+  //
+  // `tsconfig.json` is `include: ["src"]` and `rootDir: "src"`, both correct for
+  // a build that emits `dist/`. The consequence nobody had noticed is that
+  // `npx tsc -p tsconfig.json --noEmit` — the command §9's "typecheck green"
+  // ritual runs, and the one every phase has reported clean — says nothing
+  // whatsoever about `tests/`.
+  //
+  // Found during the 6.2b close-out: a scripted edit inserted an import INSIDE a
+  // multi-line import block in two test files, and `tsc --noEmit` reported clean
+  // while those files were syntactically invalid TypeScript. The failing vitest
+  // run is what caught it. A syntax error is the mildest version of that gap —
+  // the suite always catches those, because esbuild has to parse the file to run
+  // it. What the suite does NOT catch is a type error on a branch no test
+  // exercises, since esbuild strips types without checking them.
+  //
+  // ## Why a separate file rather than widening `include`
+  //
+  // Adding `tests` to the main config would drag them into `rootDir` and emit
+  // them into `dist/`, shipping test code in the production image. This config
+  // is `noEmit` and exists only to be checked.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // `rootDir` is inherited as `src`, which every file under `tests/` is
+    // outside of. Widened here rather than removed so the base config keeps the
+    // constraint that matters for the build.
+    "rootDir": ".",
+    // Vitest's `describe`/`it`/`expect` are imported explicitly in this suite
+    // rather than relied on as globals, but the types still have to resolve.
+    "types": ["node"]
+  },
+  "include": ["src", "tests", "scripts", "vitest.config.ts", "vitest.workspace.ts"]
+}
