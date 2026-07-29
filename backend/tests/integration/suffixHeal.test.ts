@@ -9,8 +9,9 @@ import {
   healDiscogsSuffixDuplicates,
   deleteReleaseEverywhere,
 } from "../../src/services/catalogService.js";
+import { runTag } from "../support/runTag.js";
 
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const TITLE = `Atrocity Exhibition ${RUN}`;
 const DOMAIN = `p58heal-${RUN}.local`;
 

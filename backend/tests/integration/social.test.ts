@@ -9,9 +9,10 @@ import { redis } from "../../src/config/redis.js";
 import { es, RELEASE_INDEX } from "../../src/config/elasticsearch.js";
 import { indexRelease } from "../../src/services/searchService.js";
 import { deleteReleaseEverywhere } from "../../src/services/catalogService.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 // Own cleanup domain — sharing auth.test.ts's domain caused a parallel-run
 // race where this suite's afterAll deleted the auth suite's users mid-test.
 const DOMAIN = "p3test.local";
@@ -21,9 +22,14 @@ let user1: { token: string; id: string };
 let user2: { token: string; id: string };
 
 async function makeUser(tag: string) {
+  const username = `p3_${tag}_${RUN}`;
+  // Usernames cap at 24 (auth.ts) and RUN is 12 letters, so a longer tag here
+  // fails as a 422 whose only symptom is a TypeError on res.body.user.id.
+  // Fail at the fixture, where the message says what is actually wrong.
+  if (username.length > 24) throw new Error(`fixture username too long: ${username}`);
   const res = await request(app)
     .post("/api/auth/register")
-    .send({ username: `p3_${tag}_${RUN}`, email: `p3_${tag}_${RUN}@${DOMAIN}`, password: "correct horse battery" });
+    .send({ username, email: `${username}@${DOMAIN}`, password: "correct horse battery" });
   return { token: res.body.accessToken as string, id: res.body.user.id as string };
 }
 

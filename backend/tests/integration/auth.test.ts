@@ -6,12 +6,13 @@ import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { createAuthCode } from "../../src/services/oauthCodeService.js";
 import { isAllowedMobileRedirect, appendQueryParam } from "../../src/routes/auth.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
 
 // All test accounts live under this domain so cleanup is a single deleteMany.
 const TEST_DOMAIN = "authtest.local";
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 let seq = 0;
 function freshCreds() {
   seq += 1;

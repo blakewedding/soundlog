@@ -17,9 +17,10 @@ import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { deleteReleaseEverywhere, settleEnrichments } from "../../src/services/catalogService.js";
 import { __resetEnrichmentState } from "../../src/services/enrichmentState.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const MBID = `enrich-${RUN}`;
 const ARTIST_MBID = `enrich-artist-${RUN}`;
 const TITLE = `Sky Blue Sky ${RUN}`;
@@ -113,12 +114,17 @@ afterAll(async () => {
   await settleEnrichments();
 
   // Cleanup is scoped to the EXACT ids this file created, never to a `contains`
-  // match on RUN. Every suite derives RUN from `Date.now().toString(36)`, so two
-  // files loading in the same second share it — a `contains` teardown here
-  // deleted the discography suite's artist out from under it mid-run, and that
-  // suite then 404'd on an artist it had legitimately created. Cross-suite
-  // demolition is worse than leftover debris: the global teardown catches
-  // debris, and nothing catches this.
+  // match on RUN. This originally bit because every suite derived RUN from
+  // `Date.now().toString(36)`, so two files loading in the same second shared
+  // it — a `contains` teardown here deleted the discography suite's artist out
+  // from under it mid-run, and that suite then 404'd on an artist it had
+  // legitimately created. Cross-suite demolition is worse than leftover debris:
+  // the global teardown catches debris, and nothing catches this.
+  //
+  // RUN is now `runTag()`, which is random rather than time-derived, so the
+  // collision that caused it is gone. The id-scoped cleanup STAYS regardless:
+  // it is correct on its own terms, and it does not depend on anyone preserving
+  // a property of how run tags happen to be generated.
   for (const mbid of [MBID, `${MBID}-broken`, `${MBID}-cacheable`]) {
     const row = await prisma.release.findUnique({ where: { musicbrainzId: mbid } });
     if (row) await deleteReleaseEverywhere(row.id).catch(() => {});

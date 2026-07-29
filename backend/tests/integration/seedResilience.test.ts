@@ -19,9 +19,10 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { deleteReleaseEverywhere } from "../../src/services/catalogService.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const MBID = `seedres-${RUN}`;
 const ARTIST_MBID = `seedres-artist-${RUN}`;
 const TITLE = `Contention LP ${RUN}`;

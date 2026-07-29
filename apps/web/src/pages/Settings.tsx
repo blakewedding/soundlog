@@ -6,6 +6,7 @@ import { AvatarField } from "../components/settings/AvatarField";
 import { ProfileForm } from "../components/settings/ProfileForm";
 import { AccountSection } from "../components/settings/AccountSection";
 import { PrivacySection } from "../components/settings/PrivacySection";
+import { PlanSection } from "../components/settings/PlanSection";
 import { DangerSection } from "../components/settings/DangerSection";
 import { useState, useEffect } from "react";
 
@@ -44,11 +45,15 @@ import { useState, useEffect } from "react";
  *                  the Elasticsearch user documents (§5) — the last of which
  *                  removes the document rather than filtering it, so the index
  *                  cannot answer a question nobody thought to guard.
- *   4. Plan      — Soundlog Pro, coming soon
- *   5. Danger    — delete account
+ *   4. Plan      — Soundlog Pro, coming soon. Groundwork only: `plan` is
+ *                  READ-ONLY here, because unlike `profileVisibility` there is
+ *                  nothing behind PRO to enforce yet, and a control that could
+ *                  set it would grant a tier the product does not implement.
+ *   5. Danger    — delete account (6.2b step 6). Folded shut, and the only
+ *                  irreversible control on the page.
  *
- * Sections 2–5 arrive in 6.2b; the order above is what stops the layout
- * shifting under a user each time one lands.
+ * Sections 2–5 arrived across 6.2b and all five are now present; the order
+ * above is what stopped the layout shifting under a user each time one landed.
  */
 export default function Settings() {
   const { user, loading: authLoading } = useAuth();
@@ -107,6 +112,8 @@ export default function Settings() {
       <AccountSection profile={profile} onChange={setProfile} />
 
       <PrivacySection profile={profile} onChange={setProfile} />
+
+      <PlanSection profile={profile} />
 
       <DangerSection profile={profile} />
     </div>

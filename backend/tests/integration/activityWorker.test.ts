@@ -7,8 +7,9 @@ import { Queue, Worker, type Job } from "bullmq";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { bullConnection, recordActivity, type ActivityJob } from "../../src/jobs/activityQueue.js";
+import { runTag } from "../support/runTag.js";
 
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const QUEUE = `test-activity-${RUN}`; // BullMQ forbids ":" in queue names
 
 let userId: string;

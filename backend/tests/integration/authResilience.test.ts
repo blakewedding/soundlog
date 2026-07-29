@@ -10,9 +10,10 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { es } from "../../src/config/elasticsearch.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const DOMAIN = "p5authres.local";
 const USERNAME = `esout_${RUN}`;
 const EMAIL = `${USERNAME}@${DOMAIN}`;

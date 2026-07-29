@@ -10,8 +10,9 @@ import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { prewarmOnce } from "../../src/services/prewarmService.js";
 import { settleEnrichments } from "../../src/services/enrichmentState.js";
+import { runTag } from "../support/runTag.js";
 
-const RUN = `prewarm${Date.now().toString(36)}`;
+const RUN = runTag("prewarm");
 const created: string[] = [];
 /**
  * `prewarmOnce` sweeps the WHOLE catalog — that is what it does, and scoping it

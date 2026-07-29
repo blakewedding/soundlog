@@ -11,11 +11,12 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { issueVerificationToken } from "../../src/services/verificationService.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
 
 const TEST_DOMAIN = "verifytest.local";
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 let seq = 0;
 function freshCreds() {
   seq += 1;

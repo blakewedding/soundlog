@@ -27,13 +27,14 @@ import {
   COVER_THUMB_WIDTH,
   decodeProxiedCoverPath,
 } from "../../src/services/coverProxy.js";
+import { runTag } from "../support/runTag.js";
 
 /** The upstream URL a stored (proxied) cover URL points at. */
 const decoded = (stored: string | null) =>
   (stored && decodeProxiedCoverPath(stored)?.upstreamUrl) ?? stored;
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const MBID = `caahttp-${RUN}`;
 const ARTIST_MBID = `caahttp-artist-${RUN}`;
 const TITLE = `Confield ${RUN}`;

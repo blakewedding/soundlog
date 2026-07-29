@@ -7,9 +7,10 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { es } from "../../src/config/elasticsearch.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const DOMAIN = "p5search.local";
 // Distinctive, single-token terms so text matches are unambiguous.
 const MEMBER_TAG = `zorbtron${RUN}`;

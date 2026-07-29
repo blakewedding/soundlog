@@ -5,9 +5,11 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-26 — Phase 6.1.4 done, deployed and phone-checked
-(6.1 · 6.1.1 · 6.1.2 · 6.1.3 · 6.1.3b · 6.1.4). Next: **6.1.5**, the `CoverImage`
-load-event race. Pre-warming ships disabled — enable tomorrow as its own step.
+**Last updated:** 2026-07-28 — **Phase 6.2b is CLOSED**, all six steps deployed
+and verified on production (settings page · reserved usernames · password and
+email change · visibility across both stores · the Pro row · account deletion to
+App Store 5.1.1(v)), plus 6.2c. Next: **Phase 7**, and one filed operational
+task — the server reboot for 3 pending security updates and a kernel bump.
 
 ## Status
 
@@ -2316,8 +2318,8 @@ sweep should be started detached once and polled, not re-launched.
 
 Final: backend **42 files / 422 tests**, typecheck clean.
 
-Still open in 6.2b: the Pro row and the `runTag` sweep of the remaining eighteen
-fixture files. Account deletion is step 6 below.
+~~Still open in 6.2b: the Pro row and the `runTag` sweep.~~ **Both done — 6.2b is
+closed.** See the close-out section below.
 
 **Filed out of step 6, deliberately not done there:** the orphaned-`Activity`
 sweep for `COMMENT` and `REVIEW` rows pointing at cascade-deleted targets. Step 6
@@ -2517,6 +2519,22 @@ into `skipped-no-avatar` vs `skipped-unconfigured`, and pinned by a test.
 401 because its access token had aged past the 15-minute TTL during setup. A
 fresh login deleted it cleanly.
 
+**The carried caveat is closed (2026-07-28).** The production pass had exercised
+the purge only through the *deletion* path; replace and remove were covered by
+tests alone. Both are now verified on production, on a throwaway account rather
+than a real one — identical code path, and no reason to replace a real member's
+photograph with a generated test image to prove it:
+
+| Step | Before | After |
+|---|---|---|
+| **Replace** — upload avatar 2 over avatar 1 | avatar 1: all four widths **HIT** | avatar 1: all four **404 · MISS** |
+| **Remove** — `DELETE /api/me/avatar` | avatar 2: all four widths **HIT** | avatar 2: all four **404 · MISS**, response `purge: "purged"` |
+| Disk, both hashes | 5 files each | **0** |
+
+The `skipped-no-avatar` fix from the same session was confirmed live in passing:
+deleting that account afterwards reported `skipped-no-avatar` rather than
+`skipped-unconfigured`, on a box where the credential is present and working.
+
 **Two items for the ledger from the phone pass:**
 
 - **Login requires an email address, not a username.** Filed as a Phase 7 UX
@@ -2528,8 +2546,119 @@ fresh login deleted it cleanly.
   the reserved TLD never resolves, so no mail escapes, and the fixture purge
   already recognises them.
 
-Final: backend **43 files / 428 tests**, web **32 / 239**, typecheck clean in
-both.
+### 6.2b step 5 — the Soundlog Pro row (2026-07-28)
+
+Groundwork, and deliberately nothing more: no upgrade button, no price, no
+waitlist. Each of those is a promise with a date attached, and the honest form of
+"not built yet" is a sentence rather than a control that does nothing when
+tapped. The test asserts **zero** buttons, links, textboxes and checkboxes in the
+section — so if billing ever arrives, that assertion is the thing someone has to
+change on purpose rather than quietly outgrow.
+
+`plan` is **read-only** here. Unlike `profileVisibility` — which the Privacy
+section writes, and which was withheld through 6.2a precisely until enforcement
+was real — there is nothing behind `PRO` to enforce yet. A control that could set
+it would grant a tier the product does not implement: the same mistake as a
+privacy toggle that hides nothing, with money attached.
+
+With this the settings page is complete at all five sections, in the order fixed
+up front — Profile, Account, Privacy, Plan, Danger. That order was chosen in step
+1 so the layout would not shift under a returning user as sections landed, and
+it held across five separate landings.
+
+### 6.2b — the `runTag` sweep (2026-07-28)
+
+All **eighteen** remaining integration fixture files moved off
+`Date.now().toString(36)` to `runTag()`. The three `tests/unit` files that still
+use a time-derived tag are **deliberately left**: the collision is an
+Elasticsearch analyzer artifact, and unit tests never reach the index. The two
+remaining mentions in integration files are comments describing the bug.
+
+Also added: an explicit `username.length > 24` guard in the five fixture helpers
+that concatenate a caller-supplied tag with `RUN`. `runTag()` is 12 letters where
+the old tag was 8, and `p3_logcount_<RUN>` now lands at **exactly 24** — at the
+cap with no headroom. Without the guard, one longer tag would fail as a 422 whose
+only symptom is a `TypeError` on `res.body.user.id`. `suffixHeal` needs no guard:
+it writes via `prisma.user.create`, which bypasses the zod cap entirely.
+
+**Two things this turned up, both worth keeping.**
+
+- **`tsc` does not typecheck the tests.** `backend/tsconfig.json` is
+  `include: ["src"]`, so the whole `tests/` tree is outside it. This surfaced
+  because a scripted edit inserted an import *inside* a multi-line import block
+  in two files, and `npx tsc --noEmit` reported **clean** while those files were
+  syntactically invalid — the failing vitest run is what caught it. So "typecheck
+  green" in the §9 ritual has always meant *src only*, and the suite's own
+  esbuild transform is what validates test syntax. Filed rather than fixed here:
+  a `tsconfig.test.json` would close it properly, and doing that mid-close-out
+  risks surfacing a pile of pre-existing test type errors.
+- **A read-back that checks the wrong property proves nothing.** The sweep's
+  read-back confirmed `const RUN = runTag()` was present and the import string
+  existed — both true in the two broken files. It did not confirm the file still
+  parsed. §10's discipline is about reading back *the thing that could be wrong*,
+  and "the string I inserted is there" is not that. The suite was the real check.
+
+### 6.2b — CLOSED (2026-07-28)
+
+All six steps done, deployed and verified on production:
+
+| Step | What |
+|---|---|
+| 1 | Settings page, avatar field, profile form |
+| 2 | Reserved usernames |
+| 3 | Password change + email change via `pendingEmail` |
+| 4 | Profile visibility across Postgres **and** Elasticsearch (+ the discovery leak fix) |
+| 5 | Soundlog Pro coming-soon row |
+| 6 | Account deletion to App Store 5.1.1(v), across five stores |
+
+Plus **6.2c**, the American Football identity collapse, which ran inside the
+phase. Final: backend **43 files / 428 tests**, web **33 / 242**, typecheck clean
+in both packages (with the caveat above about what backend typecheck covers).
+
+#### Carried to the profiles slice — the remaining avatar surfaces
+
+Named explicitly rather than left implicit, because the 6.2 work built the whole
+avatar pipeline and then rendered it in **two places**. Avatars appear only on
+the **profile header** and in **Settings**. Everywhere below, `avatarUrl` is
+*already in the payload* and simply is not drawn — so these are client-side
+additions, not API work:
+
+- **`ReviewCard`** — the big one. Every review, on release pages, profile tabs
+  and the home feed. Data present via `publicUser` in `reviews.ts`.
+- **`CommentThread`** — comment authors, same select.
+- **`FeedList`** — activity rows, both the actor and the `FOLLOW` target.
+  Data present via `feedService`'s `publicUserSelect`.
+- **Lists surfaces** — `Lists.tsx` / `ListDetail.tsx`, the list owner. Data
+  present via `publicUser` in `lists.ts`.
+- **Follower / following lists** — `FollowUser extends User`, and `users.ts`
+  selects `publicUserSelect`, so the field is there.
+- **`Nav`** — the signed-in user's own avatar; the session user carries it.
+
+One surface genuinely needs backend work: **member search**. The Elasticsearch
+user document holds `username`, `displayName` and `bio` only (§5 — the index is
+deliberately thin), so search hits would need hydrating from Postgres rather than
+a wider select.
+
+**Mobile renders no images at all**, by design — there is no `<Image>` anywhere
+in `apps/mobile`, which is why this is Phase 7 scope there rather than an
+omission here.
+
+#### Server housekeeping — filed as its own task
+
+Read off the box 2026-07-28, not estimated:
+
+- **18 updates pending, 3 of them security.**
+- **Restart required**, and it is a kernel bump specifically: running
+  `6.8.0-117-generic` against an installed `6.8.0-136-generic`, plus
+  `linux-base`. Up 4 days 22 hours.
+- `unattended-upgrades` is **enabled**; disk is at **30%** (22G of 75G).
+
+Deliberately its own task rather than a ride-along on a phase close-out, and the
+reason is §7a: **the API is single-instance**, so a reboot is real downtime, not
+a rolling restart. It wants a chosen quiet window, a database dump taken first
+(the nightly runs at 03:17 UTC, so "since the last one" is up to 24 hours of
+writes), and a post-boot check that all six containers came back and
+`/api/health` answers through the full chain rather than just on the loopback.
 
 ## Then — Phase 7
 

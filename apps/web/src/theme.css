@@ -308,6 +308,18 @@ a:hover .cover,
 .settings-hint { margin: 0; }
 .settings-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .settings-error { color: var(--danger); margin: 0; }
+/* Plan. The coming-soon block is separated by a rule rather than a coloured
+   panel: it is informational, and giving it the visual weight of a call to
+   action would make it read as something you can act on, which is exactly what
+   it is not until billing exists. */
+.settings-plan-current { margin: 0; font-size: 14px; }
+.settings-plan-soon { border-top: 1px solid var(--line); padding-top: var(--space-3); }
+.settings-plan-badge {
+  font-family: var(--font-data); font-size: 11px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--gold);
+  border: 1px solid var(--gold-dim); border-radius: var(--radius-sm);
+  padding: 2px 8px; margin-left: var(--space-2); white-space: nowrap;
+}
 .settings-ok { color: var(--gold); margin: 0; }
 
 .settings-avatar { display: flex; gap: var(--space-4); align-items: flex-start; flex-wrap: wrap; }

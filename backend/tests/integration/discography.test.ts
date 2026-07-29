@@ -18,9 +18,10 @@ import {
 } from "../../src/services/musicbrainzService.js";
 import { mergeDiscography, settleDiscographies } from "../../src/services/discographyService.js";
 import { deleteReleaseEverywhere, settleEnrichments } from "../../src/services/catalogService.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const ARTIST_MBID = `disco-artist-${RUN}`;
 const ARTIST_NAME = `Prolific ${RUN}`;
 

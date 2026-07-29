@@ -14,9 +14,10 @@ import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { deleteReleaseEverywhere } from "../../src/services/catalogService.js";
 import { getCoverArtUrls, UpstreamUnavailableError } from "../../src/services/musicbrainzService.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const MBID = `caa-fail-${RUN}`;
 let releaseId: string;
 

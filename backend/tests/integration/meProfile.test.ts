@@ -14,9 +14,10 @@ import { createApp } from "../../src/app.js";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { __setAvatarDir, masterPath, parseAvatarPath } from "../../src/services/avatarStorage.js";
+import { runTag } from "../support/runTag.js";
 
 const app = createApp();
-const RUN = Date.now().toString(36);
+const RUN = runTag();
 const DOMAIN = "p62test.local";
 
 let dir: string;
@@ -25,6 +26,9 @@ const auth = (u: { token: string }) => ({ Authorization: `Bearer ${u.token}` });
 
 async function makeUser(tag: string) {
   const username = `p62_${tag}_${RUN}`;
+  // Usernames cap at 24 (auth.ts) and RUN is 12 letters, so a longer tag here
+  // fails as a 422 whose only symptom is a TypeError on res.body.user.id.
+  if (username.length > 24) throw new Error(`fixture username too long: ${username}`);
   const res = await request(app)
     .post("/api/auth/register")
     .send({ username, email: `${username}@${DOMAIN}`, password: "correct horse battery" });
