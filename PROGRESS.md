@@ -2810,6 +2810,75 @@ all clearing AA. Footer confirmed present with a working `/privacy` link on `/`,
 Final: web **34 files / 247 tests**, backend **43 / 428**, typecheck clean in
 both.
 
+### 6.2d — the launch-prep performance investigation (2026-07-29)
+
+Reported as a widespread production slowdown. **It was not a regression, and it
+was not the server.** Five deploys and a reboot were all exonerated by
+measurement before anything was changed.
+
+**Ruled out, with numbers:**
+
+| Suspected | Measured |
+|---|---|
+| Resource exhaustion | load **0.30** on 4 cores *mid-burst*, 5.6 Gi free, disk 33% |
+| The reboot | zero container restarts, zero OOM kills, all six up since 04:21:54 |
+| Elasticsearch | heap 51%, **zero** old-GC collections |
+| The application | origin-local **1–7ms** on every endpoint including the profile |
+| Cover cache thrash | 88 MB against a 1 GiB ceiling |
+| The 974 cover 404s | every sampled one is a genuine upstream 404 — correct §1/§7 behaviour |
+| Cover serving | 120 cached covers at 40 concurrent left the profile API at **5–7ms** |
+
+**What the HARs actually showed.** Run B's profile API was **220ms with
+`blocked` 0.0** — as fast as the control. The API was never slow. The symptom
+was the *tiles*:
+
+| Run B covers (1,647 requests) | `blocked` (client queue) | `wait` (server TTFB) |
+|---|---|---|
+| p50 | **15.6s** | **17.4s** |
+| p90 | 46.3s | 20.3s |
+
+**778 of them never left the browser** — `blocked` ≈49,000ms, `wait` 0, no
+server IP, no HTTP version — queued client-side and abandoned on navigation.
+Run C was worse: `blocked` p50 **29.3s**.
+
+**The mechanism is request VOLUME saturating two independent queues.** Scrolling
+a large discography emits ~1,600 cover requests to one origin; Firefox's H2
+stream cap queues most of them, and the ones that land wait behind a correctly
+bounded 12-wide CAA gate serving ~800 speculative discovery covers against a
+degraded upstream. Opening the profile puts its tiles at the back of a
+~1,600-deep client queue. This is the 6.1.4 class at a scale 6.1.4 never tested
+— **it measured 37 tiles; this is 1,647**, 45×.
+
+**The tier system is exonerated by its own new instrumentation.** The gate
+warning added the same day (`a144640`) records **zero** interactive waits over
+2s across all three runs. Priority is working; the gate is not the bottleneck.
+Worth keeping: that instrumentation existed only because the *pre-existing*
+warning covered the opposite direction, so "no warnings" had previously been
+evidence of nothing at all.
+
+**Anti-fixes, ruled explicitly:** CAA concurrency and the tier system stay
+untouched. Raising concurrency moves the queue and re-earns the 6.1.1 429s.
+
+#### Next: the cover-volume fix (not started)
+
+1. **IntersectionObserver with a tight `rootMargin`**, replacing reliance on
+   native `loading="lazy"` — which is present and working, but Firefox's eager
+   viewport margin still fires hundreds in a dense grid.
+2. **Hard-cap speculative discovery covers for un-seeded groups.**
+   **Ruled by Blake:** a cap, *not* zero — a mostly-placeholder discography guts
+   browsing, and the cap plus the observer together should kill the storm while
+   keeping visible tiles rich. If the rerun shows the cap insufficient,
+   tightening to zero is one constant.
+3. **Paginate the discography.**
+
+**Verification bar:** a rerun of the Run B protocol showing request count
+collapsed from **~1,600 to double digits**, and the profile's tiles arriving
+mid-storm.
+
+Related but deliberately separate: the pre-warming scope-up costed above would
+make major artists warm and moot item 2 for them — a complement, not a
+substitute, since pre-warming cannot fix a client-side queue.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
