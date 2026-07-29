@@ -108,6 +108,30 @@ interface Waiter {
   queuedAt: number;
 }
 
+/**
+ * How long INTERACTIVE work may wait for a slot before we say so.
+ *
+ * ## Why this exists, and why it is not the same number as starvation
+ *
+ * Both gates already warn when `browse`/`background` work waits too long. That
+ * warning answers a FAIRNESS question — "is the low tier making progress?" — and
+ * its threshold is 30s because background work waiting half a minute is fine.
+ *
+ * It cannot answer the question a performance report actually asks, which is
+ * "was a person waiting?", and the 6.2b performance investigation ran straight
+ * into that: asked whether interactive priority held during a discography burst,
+ * the logs had nothing to say, because the only instrumented direction was the
+ * one nobody was worried about. Zero warnings looked like evidence of health and
+ * was in fact evidence of nothing.
+ *
+ * 2s rather than 30s because the tiers exist to protect a person who is blocked
+ * on a response, and a person blocked for two seconds has already noticed. A
+ * line here means the priority system did not deliver what it promises — either
+ * the tier was assigned wrongly at the call site, or the gate is genuinely
+ * oversubscribed. Both are worth a log line; neither should be silent.
+ */
+const INTERACTIVE_WAIT_WARN_MS = 2_000;
+
 function emptyQueues(): Record<UpstreamTier, Waiter[]> {
   return { interactive: [], browse: [], background: [] };
 }
@@ -128,7 +152,8 @@ export class PriorityRateGate {
   constructor(
     private readonly minGapMs: number,
     private readonly name: string,
-    private readonly starvationWarnMs = 30_000
+    private readonly starvationWarnMs = 30_000,
+    private readonly interactiveWarnMs = INTERACTIVE_WAIT_WARN_MS
   ) {}
 
   /** Wait for this caller's turn. Resolves when it may issue its request. */
@@ -148,6 +173,17 @@ export class PriorityRateGate {
       if (tier !== "interactive" && waited >= this.starvationWarnMs) {
         console.warn(
           `[${this.name}] ${tier} work waited ${waited}ms for a slot — interactive load is starving it`
+        );
+      }
+      // The other direction: a person was blocked on this. Queue depths are in
+      // the line because "interactive waited 4s" and "interactive waited 4s
+      // behind 300 queued browse items" are different diagnoses — the first
+      // suggests a mis-assigned tier, the second an oversubscribed gate.
+      if (tier === "interactive" && waited >= this.interactiveWarnMs) {
+        const d = this.depth();
+        console.warn(
+          `[${this.name}] INTERACTIVE waited ${waited}ms for a slot ` +
+            `(queued: interactive=${d.interactive} browse=${d.browse} background=${d.background})`
         );
       }
       return waiter;
@@ -212,7 +248,8 @@ export class PriorityConcurrencyGate {
   constructor(
     private readonly total: number,
     private readonly reservedForInteractive: number,
-    private readonly name: string
+    private readonly name: string,
+    private readonly interactiveWarnMs = INTERACTIVE_WAIT_WARN_MS
   ) {}
 
   /** How many slots this tier may occupy at once. */
@@ -248,6 +285,23 @@ export class PriorityConcurrencyGate {
       const waiter = this.queues[tier].shift();
       if (!waiter) continue;
       this.active++;
+      // See INTERACTIVE_WAIT_WARN_MS. This is the gate that the discography
+      // burst actually pressures — `reservedForInteractive` is supposed to mean
+      // a person never queues behind a grid, and until now nothing said whether
+      // that held. An `active` count at or above `total` alongside a long
+      // interactive wait means the reservation was not enough; a long wait with
+      // slots free would mean the tier never reached this gate at all.
+      if (tier === "interactive") {
+        const waited = Date.now() - waiter.queuedAt;
+        if (waited >= this.interactiveWarnMs) {
+          const q = this.queues;
+          console.warn(
+            `[${this.name}] INTERACTIVE waited ${waited}ms for a slot ` +
+              `(active=${this.active}/${this.total}, reserved=${this.reservedForInteractive}, ` +
+              `queued: interactive=${q.interactive.length} browse=${q.browse.length} background=${q.background.length})`
+          );
+        }
+      }
       waiter.resolve();
       return;
     }

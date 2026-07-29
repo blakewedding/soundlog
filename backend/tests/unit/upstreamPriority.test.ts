@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ambientTier,
   lowerPriorityOf,
@@ -176,5 +176,70 @@ describe("tier context", () => {
     expect(lowerPriorityOf("interactive", "browse")).toBe("browse");
     expect(lowerPriorityOf("browse", "browse")).toBe("browse");
     expect(lowerPriorityOf("interactive", "interactive")).toBe("interactive");
+  });
+});
+
+// Instrumentation added during the 6.2b performance investigation.
+//
+// Both gates already warned when browse/background work was starved. Asked
+// whether INTERACTIVE priority held during a discography burst, the logs had
+// nothing to say — the only instrumented direction was the one nobody was
+// worried about, so zero warnings looked like evidence of health and was
+// evidence of nothing.
+//
+// These assert both directions deliberately. A warning that fires on every
+// dispatch is as useless as one that never fires, and only the pair of
+// assertions distinguishes "it works" from "it is stuck on".
+describe("interactive wait instrumentation", () => {
+  it("warns when a person waits too long behind a full concurrency gate", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 1 slot, 0 reserved, 20ms threshold: browse takes the slot and holds it
+    // past the threshold, so the interactive caller must queue.
+    const gate = new PriorityConcurrencyGate(1, 0, "test-caa", 20);
+
+    const held = gate.run("browse", () => sleep(60));
+    await sleep(5);
+    await gate.run("interactive", async () => {});
+    await held;
+
+    const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes("INTERACTIVE"));
+    expect(line, "expected an INTERACTIVE wait warning").toBeDefined();
+    // The diagnosis needs the numbers, not just the fact: active/total tells
+    // whether the reservation was insufficient or the tier never arrived.
+    expect(line).toMatch(/waited \d+ms/);
+    expect(line).toMatch(/active=/);
+    warn.mockRestore();
+  });
+
+  it("stays silent when interactive work is served promptly", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const gate = new PriorityConcurrencyGate(4, 1, "test-caa", 20);
+
+    await Promise.all([
+      gate.run("interactive", async () => {}),
+      gate.run("interactive", async () => {}),
+      gate.run("browse", async () => {}),
+    ]);
+
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("INTERACTIVE"))).toEqual([]);
+    warn.mockRestore();
+  });
+
+  it("warns on the rate gate too, where a seed queues behind a discography walk", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 30ms gap, 20ms threshold. Three browse callers are queued first, so the
+    // interactive one cannot be dispatched before ~30ms even though it jumps
+    // the queue — which is exactly the MusicBrainz situation: priority buys
+    // order, never throughput.
+    const gate = new PriorityRateGate(30, "test-mb", 30_000, 20);
+    void gate.acquire("browse");
+    void gate.acquire("browse");
+    void gate.acquire("browse");
+    await gate.acquire("interactive");
+
+    const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes("INTERACTIVE"));
+    expect(line, "expected an INTERACTIVE wait warning from the rate gate").toBeDefined();
+    expect(line).toMatch(/queued:/);
+    warn.mockRestore();
   });
 });
