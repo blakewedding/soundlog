@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { cachedCoverColor, extractCoverColor, mutedTint } from "../../lib/coverColor";
 import { coverSources, type CoverSize } from "../../lib/coverVariant";
 import { useInViewport } from "../../hooks/useInViewport";
+import { acquireCoverSlot } from "../../lib/coverLoadQueue";
 
 interface Props {
   src?: string | null;
@@ -84,10 +85,39 @@ export function CoverImage({
   const imgRef = useRef<HTMLImageElement>(null);
   const { ref: viewportRef, visible } = useInViewport<HTMLDivElement>();
 
+  // Two gates, and they answer different questions. `visible` asks "does anyone
+  // want this?", which is what bounds the TOTAL. `granted` asks "may it start
+  // now?", which is what bounds the BURST. A deferred tile needs both.
+  const [granted, setGranted] = useState(false);
+  const releaseRef = useRef<(() => void) | null>(null);
+  const acquiredRef = useRef(false);
+
+  useEffect(() => {
+    if (!defer || !visible || !src || acquiredRef.current) return;
+    acquiredRef.current = true;
+    const release = acquireCoverSlot(() => setGranted(true));
+    releaseRef.current = release;
+    return () => {
+      release();
+      releaseRef.current = null;
+      acquiredRef.current = false;
+    };
+    // `granted` is deliberately NOT a dependency. Including it would re-run this
+    // on the very state change the grant causes, and the cleanup would hand the
+    // slot back before the image had loaded — the gate releasing itself
+    // instantly and bounding nothing.
+  }, [defer, visible, src]);
+
+  /** Give the slot back so the next tile can start. Safe to call more than once. */
+  const releaseSlot = useCallback(() => {
+    releaseRef.current?.();
+    releaseRef.current = null;
+  }, []);
+
   // The tint still paints immediately — a deferred tile is a coloured tile, not
-  // an empty one, so the grid reads as loading rather than as broken while the
-  // observer waits. That is the same distinction 6.1.1 was about.
-  const withheld = Boolean(defer) && !visible;
+  // an empty one, so the grid reads as loading rather than as broken while it
+  // waits. That is the same distinction 6.1.1 was about.
+  const withheld = Boolean(defer) && !(visible && granted);
   const served = coverSources(withheld ? null : src, size);
 
   useEffect(() => {
@@ -121,13 +151,17 @@ export function CoverImage({
   // Everything that must happen once the pixels are known, from whichever path
   // got us there. It has to be callable without an event, because on the cached
   // path there is no event to be called from.
-  const settle = useCallback((img: HTMLImageElement) => {
-    if (img.naturalWidth && img.naturalHeight) {
-      const ratio = img.naturalWidth / img.naturalHeight;
-      if (ratio > 1.3 || ratio < 0.77) setLetterbox(true);
-    }
-    setLoaded(true);
-  }, []);
+  const settle = useCallback(
+    (img: HTMLImageElement) => {
+      if (img.naturalWidth && img.naturalHeight) {
+        const ratio = img.naturalWidth / img.naturalHeight;
+        if (ratio > 1.3 || ratio < 0.77) setLetterbox(true);
+      }
+      setLoaded(true);
+      releaseSlot();
+    },
+    [releaseSlot]
+  );
 
   function handleLoad(e: React.SyntheticEvent<HTMLImageElement>) {
     settle(e.currentTarget);
@@ -159,6 +193,7 @@ export function CoverImage({
       className={loaded ? undefined : "img-loading"}
       style={letterbox ? { objectFit: "contain" } : undefined}
       onLoad={handleLoad}
+      onError={releaseSlot}
       loading="lazy"
     />
   );

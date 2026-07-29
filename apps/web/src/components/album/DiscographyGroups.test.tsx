@@ -2,17 +2,23 @@
 //
 // The discography grid was the source of the storm: a Cure + Zappa session
 // produced 1,647 cover requests, 778 of which never left the browser before
-// being abandoned. Three bounds now compose — pagination limits the DOM, the
-// observer limits the burst, and a hard budget limits the total.
+// being abandoned.
 //
-// These test the BUDGET and the PAGINATION, which are pure render logic and so
-// are genuinely assertable here. The observer is not: jsdom has no
-// IntersectionObserver, and useInViewport deliberately falls back to
-// "visible immediately" so a missing API can never be a missing image. That
-// fallback is what makes the rest of the suite keep passing, and it is asserted
-// explicitly below so the fallback itself cannot regress silently.
+// FLAGGED TEST-CONTRACT CHANGE (§9). An earlier revision of this file asserted a
+// page-wide lifetime budget of 48 discovery covers. Those assertions are gone
+// because the behaviour they pinned was deliberately removed, not because they
+// became inconvenient: the budget measurably killed the storm and measurably
+// broke browsing, leaving tiles someone was looking at as permanent
+// placeholders. Rationing is now visibility (here) plus in-flight concurrency
+// (lib/coverLoadQueue.test.ts) — so what this file pins is that EVERY shown
+// entry gets artwork, which is the opposite of what it used to assert.
+//
+// The observer itself is not testable here: jsdom has no IntersectionObserver,
+// and useInViewport deliberately falls back to "visible immediately" so a
+// missing API can never be a missing image. That fallback is asserted below so
+// it cannot regress silently.
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -62,32 +68,54 @@ function tilesWithArtwork(): number {
   return document.querySelectorAll(".cover img").length;
 }
 
+/**
+ * Fire `load` on every mounted image until no new ones appear.
+ *
+ * jsdom performs no network, so an <img> never reports and the concurrency gate
+ * never refills on its own — only MAX_IN_FLIGHT tiles would ever have artwork.
+ * Driving the loads is what makes the REFILL observable, and the refill is the
+ * property whose absence made the previous design leave visible tiles blank
+ * forever. Without this the test would assert the bound and miss the bug.
+ */
+function drainCoverQueue(maxRounds = 200): void {
+  const seen = new WeakSet<Element>();
+  for (let round = 0; round < maxRounds; round++) {
+    const fresh = [...document.querySelectorAll(".cover img")].filter((img) => !seen.has(img));
+    if (fresh.length === 0) return;
+    act(() => {
+      for (const img of fresh) {
+        seen.add(img);
+        fireEvent.load(img);
+      }
+    });
+  }
+}
+
 describe("DiscographyGroups — cover volume", () => {
-  it("caps speculative discovery covers across the whole page, not per group", async () => {
-    // 6 groups × 40 un-seeded entries = 240 candidates. Before the fix every one
-    // of them rendered an <img>; the budget is 48 in render order.
+  it("gives every SHOWN entry artwork — no tile is rationed out by count", async () => {
+    // The regression this replaces: with a lifetime budget, expanding groups ran
+    // past the cap and left later tiles permanently blank even while on screen.
     const groups = ["a", "bb", "ccc", "dddd", "eeeee", "ffffff"].map((k, i) =>
       group(k, `Group${i}`, 40)
     );
     renderGroups(groups);
 
-    // Expand everything, so this measures the BUDGET rather than the pagination.
     for (const btn of screen.queryAllByRole("button", { name: /^Show all/ })) {
       await userEvent.click(btn);
     }
+    drainCoverQueue();
 
-    expect(tilesWithArtwork()).toBe(48);
-    // And the point of it being a page-wide budget: it is spent in render order,
-    // so the FIRST group is fully rich rather than every group being equally thin.
+    // 6 × 40, all of them, once expanded. Under the old budget this was 48 and
+    // the remaining 192 stayed blank no matter how long anyone waited.
+    expect(tilesWithArtwork()).toBe(240);
     const first = document.querySelectorAll("section")[0];
     expect(within(first as HTMLElement).getAllByRole("img").length).toBe(40);
   });
 
-  it("never rations a seeded release's own cover", () => {
-    // A seeded cover is a lookup for a row we hold — cheap, retried, and not
-    // part of the storm. Rationing it would blank artwork we already have.
+  it("gives a seeded release its own cover too", () => {
     renderGroups([group("s", "Albums", 80, true)]);
-    // Only the first PAGE_SIZE are mounted, but all of them carry artwork.
+    drainCoverQueue();
+    // Only the first PAGE_SIZE are mounted; all of them carry artwork.
     expect(tilesWithArtwork()).toBe(24);
     expect(screen.queryAllByRole("button", { name: /^Show all/ })).toHaveLength(1);
   });
@@ -116,6 +144,7 @@ describe("DiscographyGroups — cover volume", () => {
     // here — and asserting it means the fallback cannot be dropped silently.
     expect(typeof IntersectionObserver).toBe("undefined");
     renderGroups([group("f", "Albums", 3)]);
+    drainCoverQueue();
     expect(tilesWithArtwork()).toBe(3);
   });
 });

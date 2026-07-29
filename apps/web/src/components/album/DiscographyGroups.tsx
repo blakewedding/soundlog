@@ -31,15 +31,15 @@ const caaThumb = (mbid: string) =>
  * the release on arrival via seed-on-first-access (skeleton first, enrichment
  * behind it — Phase 5.7). Nothing is seeded merely by rendering this list.
  */
-function EntryCard({ entry, artwork }: { entry: DiscographyEntry; artwork: boolean }) {
+function EntryCard({ entry }: { entry: DiscographyEntry }) {
   const prefetch = usePrefetchRelease();
   const ref = entry.seeded && entry.releaseId ? entry.releaseId : `mb:${entry.mbid}`;
   const to = `/release/${encodeURIComponent(ref)}`;
 
-  // A seeded release's cover is a LOOKUP for a row we hold — cheap, retried,
-  // and never part of the storm. Only the speculative discovery thumbnail for an
-  // un-seeded group is rationed (§7 draws exactly this line).
-  const src = entry.seeded ? entry.coverUrl : artwork ? caaThumb(entry.mbid) : null;
+  // Every entry gets its artwork. The rationing is visibility (the tile asks
+  // only when on screen) plus in-flight concurrency (coverLoadQueue) — not a
+  // count, which is what left tiles people were looking at permanently blank.
+  const src = entry.seeded ? entry.coverUrl : caaThumb(entry.mbid);
 
   return (
     <div className={entry.seeded ? undefined : "discog-unseeded"}>
@@ -85,25 +85,32 @@ function EntryCard({ entry, artwork }: { entry: DiscographyEntry; artwork: boole
 }
 
 /**
- * How many speculative discovery thumbnails one artist page may ever request.
+ * ## Why there is no lifetime budget here any more
  *
- * A HARD CAP across the whole page, not per group, and that is the point: it is
- * what bounds the total no matter how far someone scrolls or how many groups
- * they expand. The observer bounds the *burst*; pagination bounds what is in the
- * DOM; only this bounds the sum.
+ * The first 6.2d attempt rationed discovery covers with a page-wide budget of 48
+ * spent in render order. Measured, it killed the storm — 1,647 requests down to
+ * 273, and the 778 abandoned-unsent requests down to zero — and failed the
+ * product: covers loaded through Albums, EPs and the first row of Singles and
+ * then stopped at a clean line, leaving tiles someone was actively looking at
+ * (*Just Like Heaven*, art that plainly exists) as permanent placeholders.
+ * Parking on them changed nothing, because a spent budget never refills.
  *
- * Measured motivation (6.2d): a Cure + Zappa session produced **1,647** cover
- * requests, 778 abandoned unsent, with client queueing at a p50 of 15.6s and
- * server TTFB at 17.4s — and the profile page visited afterwards had its own
- * tiles stuck behind that queue.
+ * It was not even a coherent lifetime cap: the allocation recomputed on every
+ * render, so as groups expanded the granted SET shifted and one artist made 147
+ * requests against a budget of 48.
  *
- * A cap rather than zero, ruled deliberately: dropping discovery art entirely
- * would leave a mostly-placeholder discography, which guts browsing. 48 is
- * budgeted in RENDER ORDER, so the groups people actually look at — Albums
- * first — get real artwork, and the 400-entry Singles tail gets placeholders.
- * If a storm rerun shows 48 still too many, zero is one constant away.
+ * The insight that replaced it: **once visibility gates loading, visibility IS
+ * the rationing mechanism.** A tile only requests artwork if somebody scrolled
+ * it into view, so the total is bounded by what was actually looked at — which
+ * is the bound we wanted, expressed in the only unit that matters. What
+ * visibility does not bound is the burst, and that is now
+ * `lib/coverLoadQueue.ts`: in-flight concurrency, not lifetime count. Everything
+ * visible loads eventually; only a few load at once.
+ *
+ * So this file keeps exactly one bound of its own — pagination, below — and the
+ * other two live where they belong: in the tile that knows whether it is on
+ * screen, and in the queue that knows how many are in flight.
  */
-const DISCOVERY_COVER_BUDGET = 48;
 
 /**
  * Entries rendered per group before "Show all".
@@ -118,41 +125,20 @@ const PAGE_SIZE = 24;
 export function DiscographyGroups({ groups }: { groups: DiscographyGroup[] }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
-  /**
-   * Which entries are shown, and which of those may request artwork.
-   *
-   * Derived in ONE pass from props plus expansion state, rather than by
-   * decrementing a shared counter as each group renders. That earlier shape had
-   * a real bug — caught by the test below rather than in review: expanding a
-   * group re-renders only that group, so the counter was already exhausted and
-   * every tile in it lost its artwork, including tiles that had been showing it
-   * a moment earlier. Mutating during render is also unsafe under StrictMode's
-   * double invocation.
-   *
-   * Expansion state therefore lives HERE, not in each group: the budget spans
-   * groups, so the thing that changes it has to be visible to the thing that
-   * computes it.
-   */
-  const plan = useMemo(() => {
-    let left = DISCOVERY_COVER_BUDGET;
-    return groups.map((group) => {
-      const isOpen = expanded.has(group.key);
-      const shown = isOpen ? group.entries : group.entries.slice(0, PAGE_SIZE);
-      const artwork = shown.map((e) => {
-        // A seeded release's cover is a lookup for a row we hold — never
-        // speculative, so never rationed.
-        if (e.seeded) return true;
-        if (left <= 0) return false;
-        left -= 1;
-        return true;
-      });
-      return { group, shown, artwork, hidden: group.entries.length - shown.length };
-    });
-  }, [groups, expanded]);
+  const plan = useMemo(
+    () =>
+      groups.map((group) => {
+        const shown = expanded.has(group.key)
+          ? group.entries
+          : group.entries.slice(0, PAGE_SIZE);
+        return { group, shown, hidden: group.entries.length - shown.length };
+      }),
+    [groups, expanded]
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-      {plan.map(({ group, shown, artwork, hidden }) => (
+      {plan.map(({ group, shown, hidden }) => (
         // A real heading, not a styled div: screen-reader users navigate a long
         // discography by jumping between headings, and a div is not in that
         // list. h3: these groups sit UNDER the page's "Discography" h2, so the
@@ -162,9 +148,9 @@ export function DiscographyGroups({ groups }: { groups: DiscographyGroup[] }) {
             {group.label} ({group.entries.length})
           </h3>
           <ul className="release-grid" style={{ listStyle: "none" }}>
-            {shown.map((e, i) => (
+            {shown.map((e) => (
               <li key={e.mbid}>
-                <EntryCard entry={e} artwork={artwork[i]} />
+                <EntryCard entry={e} />
               </li>
             ))}
           </ul>
