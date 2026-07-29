@@ -149,7 +149,7 @@ export default function Search() {
           <div className="section-label">Artists</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {artists.map((a) => (
-              <ArtistResultRow key={a.id} artist={a} />
+              <ArtistResultRow key={a.ref} artist={a} />
             ))}
           </div>
         </section>
@@ -204,17 +204,27 @@ export default function Search() {
 }
 
 function ArtistResultRow({ artist }: { artist: ArtistSearchResult }) {
-  const facts = [artist.type, artist.area].filter(Boolean).join(" · ");
+  const facts = [artist.type, artist.area, artist.disambiguation].filter(Boolean).join(" · ");
+  // Null means we hold nothing yet, which is NOT the same as holding zero.
+  // "0 releases" reads as an artist we know and have nothing by — a dead end.
+  // This is an invitation, and it is the only cue distinguishing a cold artist
+  // from an empty one now that search surfaces both (6.2d).
+  const cold = artist.releaseCount === null;
   return (
     <Link
-      to={`/artist/${artist.id}`}
+      // `ref`, never `id` — a cold artist has no id, and navigating by ref is
+      // what materializes them. NOT hover-prefetched: see isPrefetchableRef,
+      // which refuses colon-shaped refs precisely because opening one writes.
+      to={`/artist/${artist.ref}`}
       className="card-link card"
       style={{ display: "flex", alignItems: "baseline", gap: 10, padding: 12 }}
     >
       <strong style={{ fontSize: 15 }}>{artistDisplayName(artist)}</strong>
       {facts && <span className="meta">{facts}</span>}
       <span className="meta" style={{ marginLeft: "auto" }}>
-        {artist.releaseCount} {artist.releaseCount === 1 ? "release" : "releases"}
+        {cold
+          ? "Not in the catalog yet — open to add"
+          : `${artist.releaseCount} ${artist.releaseCount === 1 ? "release" : "releases"}`}
       </span>
     </Link>
   );

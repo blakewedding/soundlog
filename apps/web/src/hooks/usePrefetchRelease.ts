@@ -11,7 +11,7 @@ import { useAuth } from "../contexts/AuthContext";
 const PREFETCH_STALE_MS = 30_000;
 
 /**
- * A release ref is safe to prefetch only if it is already in our catalog.
+ * A ref is safe to prefetch only if it is already in our catalog.
  *
  * `GET /api/releases/<source>:<id>` is seed-on-first-access: it CREATES a
  * Release row and spends a slot on the process-wide 1 req/s MusicBrainz
@@ -20,7 +20,16 @@ const PREFETCH_STALE_MS = 30_000;
  * throttle that first-access lookups depend on — writes and rate-limit spend
  * triggered by an action the user never committed to.
  *
+ * **This now governs ARTISTS too.** 6.2d gave artist search the same cold-entity
+ * contract — `GET /api/artists/mb:<mbid>` materializes an Artist row on open —
+ * so an artist result is exactly as unsafe to speculatively fetch as a release
+ * result, for exactly the same reason. The rule is stated once here rather than
+ * reimplemented per entity, because the failure it prevents is silent: nothing
+ * errors, the catalog simply fills with rows nobody asked for.
+ *
  * Internal ids carry no colon; every unseeded ref is "<source>:<sourceId>".
+ * Anything colon-shaped is refused, which covers both entities and any entity
+ * added later without needing this function to learn about it.
  */
 export function isPrefetchableRef(ref: string): boolean {
   return ref.length > 0 && !ref.includes(":");

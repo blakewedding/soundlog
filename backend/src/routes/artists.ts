@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { HttpError } from "../middleware/errorHandler.js";
-import { getArtistWithReleases } from "../services/catalogService.js";
+import { getArtistWithReleases, materializeArtistByMbid } from "../services/catalogService.js";
 import { prisma } from "../config/database.js";
 import { redis } from "../config/redis.js";
 import { optionalAuth, type AuthedRequest } from "../middleware/auth.js";
@@ -13,6 +13,35 @@ import { bustArtistDiscography, discographyCacheKey } from "../services/musicbra
 import { peekCached } from "../services/cache.js";
 
 export const artistsRouter = Router();
+
+/**
+ * `mb:<mbid>` — an artist from search that we do not hold yet.
+ *
+ * The artist half of the ref contract release seeding has used since 5.7, added
+ * in 6.2d because without it artist search could surface a cold artist and then
+ * have nowhere to send them. Every route below resolves the ref FIRST and then
+ * works on a cuid exactly as before, so nothing downstream knows refs exist.
+ *
+ * Both the detail route and the discography route take it, deliberately: the
+ * first thing anyone does with a newly-materialized artist is browse their
+ * discography, and a ref that opened the page but not the browse would be a
+ * dead end one click deeper.
+ *
+ * Namespaced (§3): a bare id is what seeded *Bodycage* when *Live At The Liquid
+ * Room* was clicked.
+ */
+const MB_REF = /^mb:([0-9a-f-]{36})$/i;
+
+async function resolveArtistRef(ref: string): Promise<string> {
+  const m = MB_REF.exec(ref);
+  if (!m) return ref;
+  const artist = await materializeArtistByMbid(m[1]);
+  // Null is MusicBrainz answering definitively that there is no such artist.
+  // An unreachable MusicBrainz throws instead and becomes a 503 (§1) — never a
+  // 404, which would tell the user the artist does not exist.
+  if (!artist) throw new HttpError(404, "Artist not found");
+  return artist.id;
+}
 
 /** The artist row plus its MusicBrainz id, which the discography browse needs. */
 async function artistWithMbid(id: string) {
@@ -30,7 +59,7 @@ async function artistWithMbid(id: string) {
 //       than spinning silently through several throttled MusicBrainz calls.
 artistsRouter.get("/:id/discography", optionalAuth, async (req: AuthedRequest, res, next) => {
   try {
-    const artist = await artistWithMbid(req.params.id);
+    const artist = await artistWithMbid(await resolveArtistRef(req.params.id));
     if (!artist.musicbrainzId) {
       // Without an MBID there is nothing to browse — and we will NOT guess by
       // name (5.8). Report it plainly instead of silently showing nothing.
@@ -116,7 +145,7 @@ artistsRouter.post(
 // GET /api/artists/:id — artist header + their releases in the catalog.
 artistsRouter.get("/:id", async (req, res, next) => {
   try {
-    const found = await getArtistWithReleases(req.params.id);
+    const found = await getArtistWithReleases(await resolveArtistRef(req.params.id));
     if (!found) throw new HttpError(404, "Artist not found");
     const { artist, releases } = found;
     res.json({

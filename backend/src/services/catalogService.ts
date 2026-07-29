@@ -37,6 +37,7 @@ import {
   getCoverArtUrls,
   lookupReleaseGroup,
   lookupArtist,
+  searchMusicBrainzArtists,
   pickLatinName,
   getReleaseGroupLabel,
   lookupLabel,
@@ -135,19 +136,63 @@ export async function searchCatalog(q: string, type?: string): Promise<CatalogSe
 }
 
 export interface ArtistSearchResult {
-  id: string;
+  /**
+   * What to navigate to. A cuid for an artist we hold; `mb:<mbid>` for one we
+   * do not, which materializes on open — exactly the contract release search
+   * has used since 5.7.
+   */
+  ref: string;
+  /** Present only for a seeded artist. Null on a cold result, which has no row. */
+  id: string | null;
   name: string;
   latinName: string | null;
   type: string | null;
   area: string | null;
-  releaseCount: number;
+  /**
+   * How many of this artist's releases we hold — `null` when the artist is not
+   * seeded at all.
+   *
+   * Null rather than 0, and the distinction is the whole point: 0 means "we
+   * know this artist and hold nothing by them", which is a broken-looking
+   * result. Null means "we have not fetched them yet", which is an invitation.
+   * The client renders different copy for each; collapsing them would make
+   * every cold artist look like an empty one.
+   */
+  releaseCount: number | null;
+  /** Disambiguation from MusicBrainz ("English rock band"), when it has one. */
+  disambiguation?: string | null;
 }
 
-/** Search seeded artists (ES), enriched with how many of their releases we hold. */
+/**
+ * Search artists, fanning out to MusicBrainz when we hold too few.
+ *
+ * ## Why this exists in this shape
+ *
+ * Until 6.2d this queried Elasticsearch and stopped. The index only ever
+ * contains artists we have already seeded, so at launch — when essentially
+ * every artist is cold — searching an artist by name returned nothing, and the
+ * only path to an artist page was to search one of their ALBUMS (which does
+ * fan out), open it, and click the credit through. That is the first thing a
+ * new user tries, and it failed.
+ *
+ * The structure deliberately mirrors `searchCatalog` rather than inventing a
+ * second discovery idiom: same `THIN_RESULTS` threshold, same
+ * suppression-by-id-first rule, same namespaced ref.
+ *
+ * ## Suppression is by MBID first (§3, and 6.2c specifically)
+ *
+ * Collapsing a cold candidate into a seeded artist by NAME is the American
+ * Football bug wearing different clothes: two acts can share a name, and once
+ * one is seeded the other would vanish from search entirely — not mis-linked,
+ * simply unreachable. So a candidate is suppressed only when its MBID matches a
+ * seeded artist's, and the name tier applies only to seeded rows that carry no
+ * MBID of their own, where a name is all either side has.
+ */
 export async function searchArtists(q: string, size = 5): Promise<ArtistSearchResult[]> {
   const hits = await esSearchArtists(q, size);
-  return Promise.all(
+  const seeded: ArtistSearchResult[] = await Promise.all(
     hits.map(async (h) => ({
+      ref: h.id,
       id: h.id,
       name: h.name,
       latinName: h.latinName ?? null,
@@ -156,6 +201,70 @@ export async function searchArtists(q: string, size = 5): Promise<ArtistSearchRe
       releaseCount: await prisma.release.count({ where: { artistId: h.id } }),
     }))
   );
+
+  if (seeded.length >= THIN_RESULTS) return seeded;
+
+  const candidates = await searchMusicBrainzArtists(q);
+  if (candidates.length === 0) return seeded;
+
+  // Seeded MBIDs come from Postgres, not the index — the artist index does not
+  // carry them, and Postgres is truth (§5).
+  const seededIds = hits.map((h) => h.id);
+  const seededRows = seededIds.length
+    ? await prisma.artist.findMany({
+        where: { id: { in: seededIds } },
+        select: { id: true, musicbrainzId: true, name: true },
+      })
+    : [];
+  const seededMbids = new Set(
+    seededRows.map((r) => r.musicbrainzId).filter(Boolean) as string[]
+  );
+  const seededNamesWithoutMbid = new Set(
+    seededRows.filter((r) => !r.musicbrainzId).map((r) => r.name.trim().toLowerCase())
+  );
+
+  const cold: ArtistSearchResult[] = [];
+  for (const c of candidates) {
+    if (seededMbids.has(c.id)) continue;
+    if (seededNamesWithoutMbid.has(c.name.trim().toLowerCase())) continue;
+
+    // An artist we hold under this MBID but which the index missed (ES is a
+    // rebuildable projection, §5) should still navigate to the real row rather
+    // than re-materializing it.
+    const existing = await prisma.artist.findFirst({
+      where: { musicbrainzId: c.id },
+      select: { id: true },
+    });
+    if (existing) {
+      if (seededIds.includes(existing.id)) continue;
+      cold.push({
+        ref: existing.id,
+        id: existing.id,
+        name: c.name,
+        latinName: null,
+        type: c.type ?? null,
+        area: c.area?.name ?? null,
+        releaseCount: await prisma.release.count({ where: { artistId: existing.id } }),
+        disambiguation: c.disambiguation ?? null,
+      });
+      continue;
+    }
+
+    cold.push({
+      // Namespace-qualified (§3): a bare id collided once already and seeded
+      // the wrong record.
+      ref: `mb:${c.id}`,
+      id: null,
+      name: c.name,
+      latinName: null,
+      type: c.type ?? null,
+      area: c.area?.name ?? null,
+      releaseCount: null,
+      disambiguation: c.disambiguation ?? null,
+    });
+  }
+
+  return [...seeded, ...cold];
 }
 
 export interface MemberSearchResult {
@@ -584,6 +693,52 @@ async function resolveLabelId(detail: ReleaseDetail, mbid: string | null): Promi
     }
     console.warn("[catalog] label resolution failed:", (err as Error).message);
     return null;
+  }
+}
+
+/**
+ * Materialize an artist we do not hold, from a `mb:<mbid>` search ref.
+ *
+ * The artist-side counterpart of seeding a release from a ref, and the second
+ * half of the cold-artist fix: search can now SURFACE an unseeded artist, and
+ * this is what makes that result openable.
+ *
+ * Creating a row on a GET is the same trade release seeding already makes, and
+ * it carries the same obligation — no speculative navigation may call it. The
+ * client must not hover-prefetch a `mb:` ref (5.5 learned this for releases;
+ * `apps/web/src/lib/prefetch.ts` now refuses both shapes).
+ *
+ * Returns null when MusicBrainz has no such artist, which is a definitive 404;
+ * an unreachable MusicBrainz throws and surfaces as 503 (§1).
+ */
+export async function materializeArtistByMbid(mbid: string): Promise<Artist | null> {
+  const existing = await prisma.artist.findUnique({ where: { musicbrainzId: mbid } });
+  if (existing) return existing;
+
+  const mb = await lookupArtist(mbid);
+  if (!mb?.name) return null;
+
+  try {
+    const artist = await prisma.artist.create({
+      data: {
+        musicbrainzId: mbid,
+        name: mb.name,
+        latinName: pickLatinName(mb),
+        sortName: mb["sort-name"] ?? null,
+        type: mb.type ?? null,
+        area: mb.area?.name ?? null,
+        beginDate: mb["life-span"]?.begin ?? null,
+      },
+    });
+    await indexArtist(artist);
+    return artist;
+  } catch (err) {
+    // Two people opened the same cold artist at once. Reuse the winner rather
+    // than failing the loser — same race resolveArtistId already handles.
+    if ((err as { code?: string }).code === "P2002") {
+      return prisma.artist.findUnique({ where: { musicbrainzId: mbid } });
+    }
+    throw err;
   }
 }
 

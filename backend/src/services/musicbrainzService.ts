@@ -199,6 +199,45 @@ export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup
   });
 }
 
+interface ArtistSearchResponse {
+  artists?: Array<MBArtist & { score?: number }>;
+}
+
+/**
+ * Free-text ARTIST search. Best-effort; degrades to [] when MB is busy. Cached 7d.
+ *
+ * The counterpart to `searchReleaseGroups`, and it did not exist until 6.2d.
+ * Its absence was the whole of the cold-artist bug: release search fanned out to
+ * MusicBrainz when local results were thin, artist search queried only our own
+ * Elasticsearch index, and that index by definition contains only artists we
+ * have already seeded. So at launch — when every artist is cold — searching an
+ * artist by name returned nothing, and the only route to an artist page was to
+ * search one of their ALBUMS, open it, and click through the credit.
+ *
+ * `DISCOVERY_ATTEMPTS` for the same reason as every other search here (§7):
+ * one attempt, degrade to empty. Retrying discovery burns the throttle slots
+ * whose exhaustion causes first-access failures, and a person waiting on search
+ * is better served by fewer results now.
+ */
+export async function searchMusicBrainzArtists(query: string): Promise<MBArtist[]> {
+  const key = `mb:artist:search:${query.toLowerCase()}`;
+  return cached(key, WEEK, async () => {
+    try {
+      const data = await mbFetch<ArtistSearchResponse>(
+        `/artist/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
+        { maxAttempts: DISCOVERY_ATTEMPTS }
+      );
+      return data?.artists ?? [];
+    } catch (err) {
+      if (err instanceof UpstreamUnavailableError) {
+        console.warn(`[mb] artist search degraded (${err.message})`);
+        return [];
+      }
+      throw err;
+    }
+  });
+}
+
 /** Release-group lookup by MBID, with artist credits. Cached 7d. */
 export async function lookupReleaseGroup(
   mbid: string,

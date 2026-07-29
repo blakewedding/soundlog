@@ -158,12 +158,28 @@ export interface ReleaseListItem {
 
 // An artist hit in search results (seeded catalog only).
 export interface ArtistSearchResult {
-  id: string;
+  /**
+   * Where the result navigates. An internal id for an artist we hold;
+   * `mb:<mbid>` for one we do not, which materializes when opened — the same
+   * contract `CatalogSearchResult.ref` has used since 5.7.
+   */
+  ref: string;
+  /** Null on a cold result: there is no row yet. */
+  id: string | null;
   name: string;
   latinName?: string | null;
   type?: string | null;
   area?: string | null;
-  releaseCount: number;
+  /**
+   * Releases we hold by this artist — `null` when the artist is not seeded.
+   *
+   * Null rather than 0 on purpose. "0 releases" reads as an artist we know and
+   * have nothing by, which looks broken; null means "not fetched yet", which is
+   * an invitation. The two render differently and must not be collapsed.
+   */
+  releaseCount: number | null;
+  /** MusicBrainz disambiguation ("English rock band"), when it has one. */
+  disambiguation?: string | null;
 }
 
 // A unified catalog search hit. `ref` is either an internal Release id (already
