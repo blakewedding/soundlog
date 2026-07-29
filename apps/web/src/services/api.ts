@@ -20,8 +20,21 @@ import type {
 // The access token lives in memory only (never storage); the refresh token is
 // an httpOnly cookie the browser sends to /api/auth/* on our behalf.
 let accessToken: string | null = null;
+
+/**
+ * Bumped whenever the session is deliberately cleared.
+ *
+ * A refresh can be in flight when someone signs out: the request left with the
+ * old cookie, the server may already have accepted it, and its `.then` runs
+ * AFTER logout has set the token to null — quietly restoring a credential for a
+ * session the user just ended. The generation is how a late resolver knows it
+ * has been overtaken.
+ */
+let sessionGeneration = 0;
+
 export function setAccessToken(token: string | null) {
   accessToken = token;
+  if (token === null) sessionGeneration += 1;
 }
 
 export class ApiError extends Error {
@@ -56,11 +69,15 @@ let refreshInFlight: Promise<string | null> | null = null;
 
 function refreshAccessToken(): Promise<string | null> {
   refreshInFlight ??= (async () => {
+    const startedAt = sessionGeneration;
     try {
       const res = await fetch("/api/auth/refresh", { method: "POST", credentials: "include" });
       if (!res.ok) return null; // refresh token gone/expired — a real sign-out
       const body = (await res.json()) as { accessToken?: string };
       if (!body.accessToken) return null;
+      // Someone signed out while this was in flight. Adopting the token now
+      // would hand a live credential back to a session the user ended.
+      if (sessionGeneration !== startedAt) return null;
       setAccessToken(body.accessToken);
       return body.accessToken;
     } catch {

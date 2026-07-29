@@ -12,6 +12,7 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 import VerifyEmail from "./VerifyEmail";
 import { api, ApiError } from "../services/api";
 import { AuthProvider, __resetAuthBootstrapForTests } from "../contexts/AuthContext";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("../services/api", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../services/api")>();
@@ -35,11 +36,13 @@ beforeEach(() => {
 function renderAt(url: string, { strict = false } = {}) {
   const tree = (
     <MemoryRouter initialEntries={[url]}>
-      <AuthProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <AuthProvider>
         <Routes>
           <Route path="/verify-email" element={<VerifyEmail />} />
         </Routes>
       </AuthProvider>
+      </QueryClientProvider>
     </MemoryRouter>
   );
   return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
