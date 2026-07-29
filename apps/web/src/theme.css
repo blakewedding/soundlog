@@ -308,6 +308,31 @@ a:hover .cover,
 .settings-hint { margin: 0; }
 .settings-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .settings-error { color: var(--danger); margin: 0; }
+
+/* ---------- Long-form prose (privacy policy, and anything like it) ----------
+   Narrower than --content-width on purpose: 960px of running text is far past
+   the comfortable measure, and this is the one place in the app with paragraphs
+   long enough for that to matter. */
+.prose { max-width: 680px; }
+.prose h1 { margin: 0 0 var(--space-2); }
+.prose h2 { margin: var(--space-5) 0 var(--space-2); }
+.prose p { margin: 0 0 var(--space-3); line-height: 1.65; }
+.prose ul { margin: 0 0 var(--space-3); padding-left: var(--space-4); }
+.prose li { margin-bottom: var(--space-2); line-height: 1.65; }
+.prose a { color: var(--gold); }
+.prose a:hover { color: var(--gold-bright); }
+.prose-lede { margin-bottom: var(--space-4); }
+
+/* ---------- Site footer ----------
+   Chrome, not navigation. Deliberately quiet: --text-faint clears AA, and the
+   top hairline is decorative (it separates, it does not identify a control), so
+   --line rather than --line-strong is correct here. */
+.site-footer { border-top: 1px solid var(--line); padding: var(--space-4) 0 var(--space-5); margin-top: var(--space-5); }
+.site-footer-inner { display: flex; flex-direction: column; gap: var(--space-2); }
+.site-footer nav { display: flex; gap: var(--space-4); flex-wrap: wrap; }
+.site-footer a { color: var(--text-faint); font-size: 13px; }
+.site-footer a:hover { color: var(--text); }
+.site-footer p { font-size: 12px; margin: 0; }
 /* Plan. The coming-soon block is separated by a rule rather than a coloured
    panel: it is informational, and giving it the visual weight of a call to
    action would make it read as something you can act on, which is exactly what

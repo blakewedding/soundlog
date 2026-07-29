@@ -19,7 +19,9 @@ import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Settings from "./pages/Settings";
 import ConfirmEmail from "./pages/ConfirmEmail";
+import Privacy from "./pages/Privacy";
 import VerifyReminder from "./components/ui/VerifyReminder";
+import { Footer } from "./components/ui/Footer";
 
 export default function App() {
   const location = useLocation();
@@ -64,10 +66,17 @@ export default function App() {
           {/* Landing page for the link sent to a NEW address. Above
               /:username for the same reason as the rest. */}
           <Route path="/confirm-email" element={<ConfirmEmail />} />
+          {/* Static prose, no data dependency. Above /:username by the same
+              rule as everything else here, and "privacy" is reserved. */}
+          <Route path="/privacy" element={<Privacy />} />
           {/* Public member profile — kept last so static routes win the match. */}
           <Route path="/:username" element={<Profile />} />
         </Routes>
       </main>
+      {/* Outside <main> and outside its pathname key: the footer is chrome, and
+          re-keying it on every route change would restart its render for no
+          reason. */}
+      <Footer />
       <BuildStamp />
     </>
   );

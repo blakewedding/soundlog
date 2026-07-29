@@ -1765,9 +1765,9 @@ user-supplied bytes, so they need the same treatment **plus** upload-side limits
 **"Soundlog Pro — coming soon"** row. Groundwork only — no payment integration in
 this phase.
 
-**Kickstarter / App Store prerequisites, ~~gated on email routing~~ — UNBLOCKED
-2026-07-27:** a privacy policy page and a support contact. Inbound routing for
-`hello@soundlog.app` is live and verified, so both are now buildable.
+~~**Kickstarter / App Store prerequisites, gated on email routing.**~~ **DONE
+2026-07-29** — the privacy policy is live at `/privacy` and the support contact
+is linked from a site footer on every page. See the section below.
 
 ### Decisions taken before implementation (Blake, 2026-07-27)
 
@@ -2751,6 +2751,64 @@ a rolling restart. It wants a chosen quiet window, a database dump taken first
 (the nightly runs at 03:17 UTC, so "since the last one" is up to 24 hours of
 writes), and a post-boot check that all six containers came back and
 `/api/health` answers through the full chain rather than just on the loopback.
+
+### Privacy policy and site footer (2026-07-29)
+
+The last Kickstarter / App Store prerequisite. `/privacy` serves the policy Blake
+wrote, and a **site footer** — which did not previously exist — links it from
+every page along with the support address. A policy nobody can find is not
+published, and "discoverable" has to mean from anywhere rather than from the one
+page that happens to link to it.
+
+**A component rather than a fetched document.** Static prose with no data
+dependency: no request, no loading state, no failure mode. More importantly it is
+**versioned in git alongside the behaviour it describes** — every claim in it is
+a claim about code in this repo, and a policy that can drift from the code
+independently is a policy that will.
+
+**The claims are load-bearing, and each one is true of shipped code.** Listed at
+the top of `Privacy.tsx` with the file that implements each, so the next person
+to change one of them finds out that the policy says something about it:
+
+| Claim | Implementation |
+|---|---|
+| EXIF including GPS is stripped from uploads | `avatarService.ts` — the deliberate absence of `withMetadata()` |
+| Private hides discovery, not contributions | `visibilityService.ts` — the field is `profileVisibility`, not `accountPrivacy` |
+| Deletion clears Postgres, ES, disk and the CDN | `accountDeletionService.ts` (5.1.1(v)) |
+| Avatar URLs are unguessable but **not access-controlled** | the avatars route authenticates nothing |
+| Deleted data persists in backups up to 14 days | `backup-db.sh` retention |
+| One cookie, cookieless analytics | the refresh cookie; Cloudflare Web Analytics |
+
+Two of those are there because omitting them would have been the dishonest
+option: the avatar URLs are genuinely readable by anyone holding the URL
+regardless of visibility, and "deletion is immediate and complete" needs the
+backup qualifier or it is not true for 14 days.
+
+**The tests do not snapshot the prose.** A snapshot fails on every wording change
+and asserts nothing about meaning. What is pinned is the small set of claims
+above, the named processors, the effective date, the working contact address, and
+that the Settings links exist — because the policy tells EEA readers that access,
+correction and deletion are self-serve, and that stops being true the moment the
+link does.
+
+**`privacy` was already reserved**, speculatively, under "routes we are likely to
+add" — which is precisely the case that section exists to produce: adding the
+route cost nothing. Moved into "static routes that exist today". The
+`App.reservedRoutes.test.ts` drift guard was **proven to cover it** by removing
+the entry and watching the test fail naming `privacy`, rather than assumed from a
+green run.
+
+**Live demo at 375px:** all ten sections render, no horizontal overflow
+(scrollWidth 375 = clientWidth), prose measure capped at 343px on mobile and
+680px on desktop rather than the 960px container — 960px of running text is well
+past a comfortable measure, and this is the only page in the app with paragraphs
+long enough for that to matter. Contrast measured rather than eyeballed: body
+prose **16.45:1** at 15px/1.65, footer links **5.53:1**, footer text **6.79:1**,
+all clearing AA. Footer confirmed present with a working `/privacy` link on `/`,
+`/explore`, `/search`, `/login` and `/privacy`.
+
+Final: web **34 files / 247 tests**, backend **43 / 428**, typecheck clean in
+both.
 
 ## Then — Phase 7
 

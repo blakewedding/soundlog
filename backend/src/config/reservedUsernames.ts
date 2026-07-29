@@ -52,6 +52,10 @@ export const RESERVED_USERNAMES: readonly string[] = [
   "list",
   "lists",
   "login",
+  // Moved up from "likely to add" when the privacy policy shipped — it was
+  // already reserved speculatively, which is exactly why adding the route cost
+  // nothing. That is the case this list's second section exists to produce.
+  "privacy",
   "release",
   "reset-password",
   "search",
@@ -69,7 +73,6 @@ export const RESERVED_USERNAMES: readonly string[] = [
   "logout",
   "notifications",
   "pricing",
-  "privacy",
   "pro",
   "register",
   "signin",
