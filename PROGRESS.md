@@ -541,6 +541,34 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 - **Ubuntu 24.04 LTS over 26.04** — production runs LTS.
 
 ## Open items
+- **Prefix-capable artist search — pre-Phase-7 fast-follow.** Filed out of 6.2e
+  (2026-07-30) because pre-warming **cannot** deliver "a stranger searches
+  Radiohead and it is instant" on its own, and it is worth being precise about
+  which half it does deliver.
+
+  Three facts compose into the gap. Search is **as-you-type** on a 300ms debounce
+  (`Search.tsx:34`); the default tab fires **both** `searchCatalog` and
+  `searchArtists`, each of which fans out to MusicBrainz when local hits are below
+  `THIN_RESULTS` (5); and `esSearchArtists` is a `multi_match … operator: "and"`
+  over a **standard analyzer with no prefix support**, so "radioh" matches nothing
+  locally and always fans out. Every keystroke-pause on an unwarmed string is
+  therefore **2 MusicBrainz requests, gate-serialized**.
+
+  The MB search cache is keyed on the exact lowercased query string and lives 7
+  days, so pre-warming a canonical name makes the *final* keystroke instant. The
+  prefixes typed on the way there stay cold. Net effect for a stranger: the artist
+  page is fully fixed by warming, the search box is not.
+
+  Two pieces, and **both are needed** — either alone is useless. An edge-ngram (or
+  `search_as_you_type`) analyzer on the artist index so partial names match
+  locally; *and* a fan-out trigger that is **quality-aware rather than a bare count
+  of 5**, because a specific-artist search legitimately returns one excellent hit
+  and would still fan out under the current rule.
+
+  Deliberately NOT folded into 6.2e: it is a search-relevance change to a
+  user-facing path, and it wants its own before/after rather than riding a
+  cache-warming job. The index is rebuildable (§5), so the analyzer half is low
+  risk; the threshold half is the one that needs judgement.
 - ~~**Enable catalog pre-warming in production**~~ — **DONE 2026-07-27**,
   `PREWARM_INTERVAL_MINUTES=60`, backend recreated 05:20:48 UTC. Details in the
   6.1.5 section below, including the two things the procedure as filed got
@@ -2875,9 +2903,246 @@ untouched. Raising concurrency moves the queue and re-earns the 6.1.1 429s.
 collapsed from **~1,600 to double digits**, and the profile's tiles arriving
 mid-storm.
 
-Related but deliberately separate: the pre-warming scope-up costed above would
-make major artists warm and moot item 2 for them — a complement, not a
-substitute, since pre-warming cannot fix a client-side queue.
+Related but deliberately separate: the pre-warming scope-up would make major
+artists warm and moot item 2 for them — a complement, not a substitute, since
+pre-warming cannot fix a client-side queue.
+
+### 6.2d — cover fix verified and closed (2026-07-30)
+
+Blake's re-verification on the deployed revision (`index-CnlPo0ZY.js`): The Cure's
+Singles row filled within ~1s when parked, the boundary gone, Compilations filling
+on scroll with artless tiles correctly staying placeholder; Zappa's Show-all tail
+got art; the profile arrived seamlessly mid-storm; logout instant.
+
+**The split verdict is the diagnostic part.** Warm artists (Cure, Zappa — cached
+from the day's runs) were fluid; a fully cold John Coltrane with a large
+discography loaded everything but visibly lagged the scroll. So the residual
+sluggishness is **concurrency × cold-fetch latency**, not the concurrency constant
+alone — which is what makes pre-warming, not a bigger `MAX_IN_FLIGHT`, the right
+next move. Raising `MAX_IN_FLIGHT` is **deferred until warming lands** and then
+re-evaluated against a cold long-tail artist. Worth recording that it is *not* the
+anti-fix ruled out above: that ruling was about the server-side 12-wide CAA gate;
+`MAX_IN_FLIGHT` is the client's 6-slot LIFO window from `ac5d6dd`.
+
+**LIFO fill order stays.** On slow scrolls the fill order is visible — in
+Coltrane's Live section, early and late albums filled before the middle. Ruled
+acceptable texture: LIFO is what makes the tile under the thumb win, and a
+smoothing heuristic would compete with the visibility signal that just fixed the
+storm. If it ever grates, the cheap version is ordering *within* the visible set
+by document position while keeping LIFO *across* sets.
+
+### 6.2e — artist pre-warming (IN PROGRESS 2026-07-30)
+
+The anticipation half for artists we do **not** hold, and the decision
+`prewarmService.ts` deferred in 6.1.4 ("whether to seed *popular un-seeded*
+entries … belongs to a decision, not to a background job that quietly started
+doing it"). Blake ruled: **hybrid** — a chart-derived mainstream spine plus a
+curated long-tail drawn from the content catalogue, with the list as **data, not
+code**, designed for a succession to user-aggregated measurement once real
+engagement exists.
+
+**The finding that made it cheap: warming creates nothing.** The deferral assumed
+"pre-warm popular artists" meant "bulk-seed their releases" — overturning the
+bulk-seed law and costing ~13 minutes of throttle per artist. It does not have to.
+`discographyService` already renders un-seeded entries straight from MB data, and
+`materializeArtistByMbid` reads `lookupArtist`, which is cached. So a fully warm
+artist is four Redis keys plus disk renditions and **zero rows**:
+
+| layer | key | makes instant |
+|---|---|---|
+| artist search | `mb:artist:search:<name>` | the search box's last keystroke |
+| release search | `mb:rg:search:<name>` | the same query's album hits |
+| artist lookup | `mb:artist:v2:<mbid>` | the click that materializes the row |
+| discography | `mb:artist:discography:<mbid>` | the grid |
+| covers | `caa:rg:urls:<mbid>` + w200 on disk | the tiles |
+
+**Not pre-creating the Artist row is load-bearing, not laziness.**
+`searchArtists` computes `releaseCount` as a live count for *seeded* artists, so
+an Artist row with no releases returns **0**, and `Search.tsx:208` renders 0 as
+`"0 releases"` — which its own comment calls a dead end — where `null` renders
+"Not in the catalog yet — open to add". Materializing the list would convert every
+invitation on it into a row that looks broken.
+
+**Costed on a real sample**, the nine discographies in local Redis (Miles Davis
+794 release-groups → 8 MB pages, Taylor Swift 421 → 5, Guns N' Roses 316 → 4,
+Elliott Smith 124 → 2, Cocteau Twins 66 → 1, The Avalanches 41 → 1): mean **3.5
+pages/artist**. Redis measured at ~165 B/release-group; w200 renditions at 8,118 B
+(6.1's figure).
+
+**Run mechanics — the 7-day TTL governs.** Every MB cache in
+`musicbrainzService` is `WEEK`, so there is no one-off run: tonight's warming is
+cold again in seven days. Rather than a weekly 30-minute cliff, the sweep
+refreshes only what is within 26 hours of expiring (26, not 24, so a drifting
+nightly timer cannot skip a target and leave it cold for an hour). With a 7-day
+TTL that is naturally the expiring seventh per night. Warming is idempotent for
+free — every layer goes through `cached()`, so a warm target costs Redis reads and
+no upstream call — and the TTL selection exists to bound how much *real* work a
+night may start, not to avoid harmless repetition.
+
+Ruled out explicitly: **raising `PREWARM_BATCH_SIZE` cannot do this work.** That
+sweep selects `Release` rows missing a cover or label and never touches an artist,
+a discography or a search string. This is a sibling job, not a bigger dial.
+
+**What shipped**
+
+- `WarmTarget` table + `WarmTargetSource` enum (`CURATED | CHART | AGGREGATED`).
+  `source` + `weight` are the succession seam: `warmService` reads `enabled`
+  ordered by `weight` and never learns which produced a row, so replacing
+  curation with measurement is a **new writer and no consumer change**. In
+  Postgres rather than a file because a file in the image needs a deploy and a
+  file on a volume is outside `backup-db.sh` (§5).
+- `warmService.ts` — per-layer fault isolation, `background` tier throughout,
+  Redis sweep lock, `lastWarmedAt` (attempt) kept separate from `lastResult`
+  (outcome), which is 6.1.5's lesson about `warmed N` written into the schema.
+- `coverPrefetchSet` exported from `discographyService` so the warmer warms
+  **exactly** the set the discography page prefetches. Two copies of that rule
+  would drift invisibly — the symptom would only ever be "warming didn't help".
+- `scripts/warm-resolve.ts` (names → MBIDs, refuses to guess),
+  `scripts/warm-targets.ts` (ingest, dry by default), `scripts/warm-run.ts`
+  (watched foreground sweep, because `setInterval` has no leading call).
+- `ttlOf` in `cache.ts`; `WARM_INTERVAL_MINUTES` / `WARM_BATCH_SIZE`, both off by
+  default for `PREWARM_*`'s reason.
+
+**Ingestion refuses ambiguity, by construction.** Resolution is a separate script
+that writes nothing: a name resolves only when exactly one candidate matches after
+normalization, and normalization decides whether to *ask*, never which candidate
+to *pick*. Two survivors is a question for a human. MusicBrainz's `score` is
+reported and never acted on — it ranks text similarity, which is precisely what §3
+says is not identity. Burzum and Death in June are excluded from warming by
+Blake's ruling: organic seeding stays possible, the catalog stays neutral, the
+warming *list* is editorial.
+
+**Blake's list is 489 names, not the ~290 its own header claims** — the sections
+sum to 199 spine + 291 tail. Flagged rather than silently trimmed; Blake ruled
+**keep all 489**, costs accepted (~3,200 MB requests ≈ 55 min for the cold pass,
+~24 MB Redis, ~95 MB of cover renditions → ~18% of the 1 GiB ceiling).
+
+#### The bug the resolution run found: a degraded discovery search was cached
+
+Resolving 489 names against the real MusicBrainz surfaced a **§1 violation in the
+discovery path**, and it is the expensive shape: a retryable condition turned into
+a permanent answer, then cached so the retry never happened.
+
+`searchMusicBrainzArtists` caught `UpstreamUnavailableError` **inside** the
+`cached()` callback and returned `[]`. A returned value is a written value, so a
+single transient 503 stored "no artist matches this query" **for seven days**.
+
+Measured, not theorised: **18 of 489 names** were left holding `[]` with a full
+week to live — including *The Beatles*, *Stevie Wonder*, *Kate Bush*, *Pavement*,
+*Talking Heads*. At launch, with every artist cold, that is a search box that
+silently stops finding an artist because MusicBrainz hiccuped once. It also made
+this job actively harmful: the nightly sweep calls that function for all 489
+names, so every bad MB night would have poisoned ~10 query strings for a week.
+
+The fix is the placement of a `try` — outside `cached()` rather than inside, so a
+throw prevents the write (§2's mechanism, the same one that keeps a partial
+discography assembly out of the cache). §7's "one attempt, degrade to empty" is a
+policy about how hard we **try**; degrading the *response* is right, persisting
+the degradation is not — the same distinction §7 already draws for cover art
+("the answer is still 503, never 404"). A genuine empty (a 200 with no artists)
+still caches, because that is a real answer.
+
+**A systematic sweep of all 23 `cached()` call sites found one more.**
+`findReleaseGroupMbid` had the identical shape, and a sharper consequence: it
+cached `null` on a 503, which **defeated the recovery its own comment promised**.
+Seeding without an MBID is acceptable only because `enrichExisting` attaches it on
+a later access — but that access called the same function, hit the cached `null`,
+and attached nothing. The row stayed without the canonical identity §3 is built on
+for a week. `getCoverArtUrls` (rethrows), both Last.fm sites and
+`findSpotifyMatch` were already correct.
+
+Both fixed, with `discoveryCaching.test.ts` covering four properties: a degraded
+search is not cached, it recovers on the next call, a genuine empty IS still
+cached, and the release-group match behaves the same. **The regression test was
+verified against the pre-fix code** — 3 of 4 failed, and the one that passed was
+"a genuine empty still caches", confirming the fix is surgical rather than a
+blanket stop-caching.
+
+Poisoned dev keys were purged by explicit list after a read-back of all 18 (§10),
+and those names re-resolved cleanly: **0 no-match**. Final resolution: **339
+resolved, 150 ambiguous, 0 no-match**, with the 150 bounced to Blake as 59
+genuinely contested plus 91 clear-leader cases. **The production instance of this
+bug is unfixed until this ships** — every user search that hits an MB 503 poisons
+that query for seven days.
+
+A method note worth keeping: the first count of degraded names was **11, and it
+was wrong** — it was measured from a log file the command had piped through
+`tail -30`, so it held only the run's last 30 lines. The real figure surfaced only
+because "The Beatles returns no candidates" is obviously false. A count taken from
+a truncated source reads exactly like a complete one.
+
+#### Ingested — 490 targets (2026-07-30)
+
+Blake's rulings on all 150 ambiguous names: Section A candidate 1 throughout
+except **Bedhead** and **Love**, both → candidate 2; Section B accepted as
+suggested; plus **Captain Beefheart & His Magic Band** warmed alongside the Person
+entity, so neither is missed whichever one MusicBrainz hangs the release-groups
+on. 489 names + 1 addition = **490 targets, 199 CHART / 291 CURATED, 490 distinct
+MBIDs**, exclusions absent.
+
+**The two exceptions are the report justifying itself.** Score ranked an impostor
+first in both: `=LOVE`, a Japanese idol group (score 100), above Love the 1965 US
+psych band (97); and `bedhead2001`, 2020s emo pop (100), above Bedhead the Dallas
+slowcore band (97). Ingestion re-derives the report's ordering and **verifies the
+two ruled MBIDs against the ones Blake quoted**, refusing to write if they
+disagree — an off-by-one in the numbering would otherwise have warmed the impostor
+silently, the exact failure the report existed to prevent.
+
+**Two file-format bugs, both found by the ingestion refusing to look right.**
+
+- Python's `csv` writes **CRLF**, so the header key became `mbid\r`, `row.mbid`
+  was `undefined`, and all 150 overrides silently became empty strings. The run
+  reported those names as *unresolved* — a parse bug that degrades to "nothing
+  matched" is indistinguishable from a correct refusal, which is why it took a
+  full pass to see.
+- Python's `csv` also **quotes** any field containing a quote, and the naive
+  split stored the artifacts as the name: `"Bonnie ""Prince"" Billy"` and
+  `"Lee ""Scratch"" Perry"` reached the table. Not a crash, not a mismatch —
+  simply wrong data that looks fine until an operator reads it. Both MBIDs were
+  correct throughout; only the display name was corrupt.
+
+`parseTsv` now strips `\r` and unwraps CSV quoting, and the two rows were repaired
+by re-running ingestion — the dry run showed `0 to CREATE, 2 to UPDATE` with the
+before/after of each, which is §10's read-back for an overwrite: identical filter,
+exact rows, exact change. Verified afterwards: 0 rows carrying quote artifacts.
+
+**Staged, not run.** `warm-run.ts --dry-run` reports **488 of 490 due**; the two
+already warm are Cocteau Twins (156h TTL) and Miles Davis (85h), which is the
+26-hour selection window working. The watched cold pass is Blake's to start.
+
+#### The test poisoned 20 real artists, which is the §2 lesson from the other side
+
+The first full suite run *after* ingestion failed one assertion — and the
+assertion was the least of it. `warmOnce` sweeps the whole enabled list, the
+fixtures carried `weight: 0`, and the ingested rows carry weights up to 1,000,000.
+So the fixtures sorted **below all 490 real targets**, the batch of 5 selected
+*The Beatles, The Rolling Stones, Led Zeppelin…*, and the stubbed `fetch` cached
+**`[]` as their discography and `{}` as their artist lookup, for seven days**.
+
+That is the poisoned-cache failure this very phase had just fixed in
+`searchMusicBrainzArtists`, reintroduced from the test side within the hour. The
+`{}` lookup is the worse half: `materializeArtistByMbid` reads `mb?.name`, so
+The Beatles' artist page would have failed for a week.
+
+**What did not break is worth as much as what did.** The `mb:artist:search` keys
+were untouched, because the resolve run had already cached real answers and
+`cached()` returns a hit without calling `fetch` at all. The cache defended
+itself; the two layers that were cold did not.
+
+Cleaned: 40 keys deleted by explicit list after reading all 40 back (20 `[]`,
+20 `{}`), and the 20 rows' `lastWarmedAt`/`lastResult` reset — §10 throughout.
+
+**The fix is structural, not arithmetic.** `warmOnce` takes an `only?: string[]`
+of artist MBIDs, and every sweep in the test names its own fixtures, so the query
+*cannot select* a row the caller did not name. Scoping by batch size would have
+been a rule that has to be got right every time a test is added; this one cannot
+be got wrong. The option is not a test-only seam either — `warm-run.ts --only
+<mbid>` is the operator path for re-warming an artist whose layer failed, without
+waiting behind the list.
+
+Backstopped anyway: the test's `afterAll` **fails the run** if any non-fixture
+`WarmTarget` has a `lastWarmedAt`, because the damage is otherwise silent — a real
+artist with `[]` cached reads exactly like a real artist with no releases.
 
 ## Then — Phase 7
 

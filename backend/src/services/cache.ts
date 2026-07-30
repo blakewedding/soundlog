@@ -29,3 +29,17 @@ export async function peekCached<T>(key: string): Promise<T | undefined> {
   const hit = await redis.get(key);
   return hit === null ? undefined : (JSON.parse(hit) as T);
 }
+
+/**
+ * Seconds until `key` expires, or `null` if it is absent (or somehow has no
+ * expiry). Distinct from `peekCached` because the pre-warmer cares about how
+ * much LIFE a cached answer has left, not what it says: a discography that is
+ * correct but expires in an hour is work that needs doing tonight.
+ *
+ * Redis returns -2 for "no such key" and -1 for "exists, no TTL"; both collapse
+ * to `null` here, because both mean "cannot be relied on to still be there".
+ */
+export async function ttlOf(key: string): Promise<number | null> {
+  const ttl = await redis.ttl(key);
+  return ttl < 0 ? null : ttl;
+}

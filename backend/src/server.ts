@@ -4,6 +4,7 @@ import { ensureIndices } from "./config/elasticsearch.js";
 import { redis } from "./config/redis.js";
 import { startActivityWorker } from "./jobs/activityQueue.js";
 import { startPrewarming } from "./services/prewarmService.js";
+import { startWarming } from "./services/warmService.js";
 import { assertSingleApiInstance } from "./config/singleInstance.js";
 
 async function main() {
@@ -20,6 +21,7 @@ async function main() {
   }
 
   startPrewarming();
+  startWarming();
 
   const app = createApp();
   app.listen(env.PORT, () => {

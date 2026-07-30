@@ -113,6 +113,16 @@ const schema = z.object({
   // calls at the lowest tier, so this is a politeness budget, not a throughput
   // target — the point is to be finished before anyone asks, not to be fast.
   PREWARM_BATCH_SIZE: z.coerce.number().int().positive().default(5),
+  // Artist pre-warming (6.2e) — the sibling of PREWARM_* for artists we do NOT
+  // hold. Off by default for the same reason: warming is a production behaviour
+  // and must be switched on deliberately. Nightly is the intended setting
+  // (1440), because every MusicBrainz cache has a 7-day TTL and a nightly sweep
+  // refreshes roughly the expiring seventh of the list.
+  WARM_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(0),
+  // Artists warmed per sweep. A bound on how much work a single night may START,
+  // not a throughput target — a warm target costs nothing, so this only ever
+  // bites when a large part of the list has genuinely expired at once.
+  WARM_BATCH_SIZE: z.coerce.number().int().positive().default(50),
   // Cloudflare cache purge (6.2b step 6), used ONLY to evict avatar renditions
   // from the edge when a picture is replaced, removed, or an account is deleted.
   //

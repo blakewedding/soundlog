@@ -224,14 +224,31 @@ export async function getDiscographyState(artistMbid: string): Promise<Discograp
 // open. Failures are ignored — this is a nicety, never a dependency.
 const PREFETCH_LIMIT = 24;
 
-function prefetchCoverArt(entries: MBDiscographyEntry[]): void {
-  const worthwhile = entries
+/**
+ * The entries whose artwork is worth fetching ahead of a click: studio albums
+ * and EPs, no live records, capped.
+ *
+ * Exported because the 6.2e pre-warmer needs the SAME set — "the default view"
+ * is the depth Blake ruled for warming, and that is precisely this rule. Two
+ * copies of it would drift, and the drift would be invisible: the pre-warmer
+ * would warm covers the discography page never asks for, or miss ones it does,
+ * and either way the symptom is only ever "warming didn't seem to help".
+ */
+export function coverPrefetchSet(
+  entries: MBDiscographyEntry[],
+  limit = PREFETCH_LIMIT
+): MBDiscographyEntry[] {
+  return entries
     .filter((e) => {
       const t = (e.primaryType ?? "").toLowerCase();
       const live = e.secondaryTypes.some((s) => s.toLowerCase() === "live");
       return !live && (t === "album" || t === "ep");
     })
-    .slice(0, PREFETCH_LIMIT);
+    .slice(0, limit);
+}
+
+function prefetchCoverArt(entries: MBDiscographyEntry[]): void {
+  const worthwhile = coverPrefetchSet(entries);
 
   // `browse` tier: these are speculative, and before 6.1.4 this line alone put
   // 24 simultaneous requests on the Cover Art Archive — measured — which is what

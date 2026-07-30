@@ -391,3 +391,70 @@ enum ActivityType {
   COMMENT
   FOLLOW
 }
+
+
+// ---------------------------------------------------------------------------
+// Pre-warming targets (6.2e)
+// ---------------------------------------------------------------------------
+
+/// Where a warm target came from, and the whole point of the column.
+///
+/// The succession is already decided: curation is a launch expedient, and once
+/// real engagement exists the list becomes user-aggregated from Soundlog's own
+/// ratings, logs and searches. That change must be a new WRITER and nothing
+/// else — `warmService` reads `enabled` ordered by `weight` and never learns
+/// which of these produced a row, so swapping curation for measurement adds an
+/// aggregation job and touches no consumer.
+///
+/// An enum rather than a string for the Plan reason: adding a provenance is a
+/// migration someone writes, not a typo someone persists.
+enum WarmTargetSource {
+  /// Hand-picked from the content catalogue — the underground depth that is the
+  /// product's identity and that no chart will ever surface.
+  CURATED
+  /// Chart-derived mainstream spine: the artists a stranger tries first.
+  CHART
+  /// Computed from our own engagement. Nothing writes this yet, deliberately.
+  AGGREGATED
+}
+
+/// An artist whose MusicBrainz caches we keep warm ahead of demand.
+///
+/// This table is DATA, not code: the list is edited without a deploy, and it
+/// lives in Postgres rather than a file because a file in the image needs a
+/// rebuild and a file on a volume is invisible to `backup-db.sh` (§5 — Postgres
+/// is truth). It creates no Release and no Artist row; see `warmService`.
+model WarmTarget {
+  id String @id @default(cuid())
+
+  /// MB artist MBID — the ONLY identity here (§3). There is deliberately no
+  /// unique constraint on `name`: two acts share a name far more often than is
+  /// comfortable, and collapsing them is the 6.2c bug. Ingestion refuses an
+  /// ambiguous name rather than guessing an MBID for it.
+  artistMbid String @unique
+
+  /// Display and debug only — never matched on, never used to resolve identity.
+  /// Kept so an operator reading this table sees names instead of 36-char ids.
+  name String
+
+  source  WarmTargetSource
+  /// Ordering only, descending. Higher is warmed first when a sweep is bounded.
+  weight  Float            @default(0)
+  /// A target is disabled rather than deleted, so a decision to stop warming
+  /// something stays visible and reversible.
+  enabled Boolean          @default(true)
+
+  /// When the sweep last ATTEMPTED this target — not when it last succeeded.
+  /// The distinction is 6.1.5's lesson about `warmed N`: attempts and outcomes
+  /// log identically unless you record them separately, so `lastResult` carries
+  /// the outcome and this carries only the attempt.
+  lastWarmedAt DateTime?
+  /// Outcome of the last attempt, for operator diagnosis. Free-form on purpose:
+  /// it is read by humans, never branched on.
+  lastResult   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, weight])
+}
