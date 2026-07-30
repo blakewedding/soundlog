@@ -3144,6 +3144,49 @@ Backstopped anyway: the test's `afterAll` **fails the run** if any non-fixture
 `WarmTarget` has a `lastWarmedAt`, because the damage is otherwise silent — a real
 artist with `[]` cached reads exactly like a real artist with no releases.
 
+#### The §1 fixes deployed alone (2026-07-30, ~01:40)
+
+Shipped on their own the same night, ahead of the warming work, because a live
+seven-day search poisoning is not something to sleep on. Deployed **by SHA**
+(`git checkout 0b72943`, the README's rollback form) rather than by pulling
+`main`, so the warming migration stayed out of production.
+
+> **Production is on a DETACHED HEAD at `0b72943`.** Tomorrow's deploy is
+> `git checkout main && git pull --ff-only origin main`, not a bare `git pull`.
+
+Verified out of the **running image**, not the disk file: `/app/dist/services/
+musicbrainzService.js` shows `try` at 178, `cached()` inside at 182, `catch` at
+187 — outside the callback. Six containers healthy, `verify-prod-stack.sh` exit 0
+with 13 `ok` and no failures, and the boot log carried the correct *silence* — no
+`[warm]` line, because that service is not in this commit.
+
+**Production Redis carried 15 poisoned keys**, the organic equivalents of the 18
+the resolver hit: 2 artist searches (`fiona apple`, `my bloody va`), 9
+release-group searches, and 4 `mb:rg:match:*` nulls. Cleared by explicit list
+after a read-back of all 15 under the identical list (§10) — 11 `[]`, 4 `null`,
+none missing — then verified all 15 absent.
+
+Two things the audit showed that are worth more than the cleanup:
+
+- **`my bloody va` and `my bloo` / `my blood` / `my bloody` are real users' partial
+  keystrokes**, each cached as its own key. That is the as-you-type prefix problem
+  in the Open item above, observed in production rather than reasoned about.
+- **All 4 `rg:match` nulls were blocking real rows.** *Live At The Liquid Room -
+  Tokyo* (Jeff Mills), *Etta James Rocks The House*, *Archie, Marry Me* (Alvvays)
+  and *Selected Ambient Works Volume II (Expanded Edition)* all still carry **no
+  MBID** in the catalog, so the cached null was suppressing the very heal that
+  would attach the canonical identity §3 is built on.
+
+Deleting a legitimately-empty entry costs one re-fetch that re-caches the same
+answer; leaving a poisoned one costs a week of wrong answers. That asymmetry is
+why borderline keys (a test fixture, a prefix that may genuinely match nothing)
+were cleared rather than adjudicated.
+
+**Live demo:** `https://soundlog.app/api/search?q=fiona apple&tab=artists` now
+returns **8 artists** — the seeded *Fiona Apple* plus cold MusicBrainz candidates
+— where the poisoned key had reduced it to the single Elasticsearch hit with no
+fan-out at all. The key re-cached with genuine data (TTL 604,763).
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
