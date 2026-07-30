@@ -115,16 +115,48 @@ function variantPath(upstreamUrl: string, width: CoverWidth): string {
   return path.join(coverCacheDir(), `w${width}`, key.slice(0, 2), `${key}.webp`);
 }
 
+export interface EnsureVariantOptions {
+  /**
+   * The caller knows this artwork is speculative — nobody has asked for it, and
+   * nothing is blocked on it. Forces `DISCOVERY_ATTEMPTS` (§7: one attempt).
+   *
+   * ## Why the URL shape cannot decide this on its own
+   *
+   * `isDiscoveryCoverUrl` keys off `/release-group/<id>/front[-N]`, which is what
+   * a speculative discography TILE looks like. But `getCoverArtUrls` resolves to
+   * the archive's actual image URLs, shaped `/release/<id>/<image>-500.jpg` — so
+   * artwork the 6.2e warm sweep fetches for release-groups we hold **no row for**
+   * was being classified as a lookup and retried three times. Observed live
+   * during the first warm run: `[covers] HTTP 500 … (attempt 1/3) — retrying`.
+   *
+   * Broadening the URL rule to match `/release/…` would be the wrong fix: that is
+   * exactly the shape of a stored `coverUrl` for a release we DO hold, where a
+   * person is looking at the page and retrying is right. The URL genuinely cannot
+   * tell the two apart — only the caller can, so the caller says so.
+   */
+  speculative?: boolean;
+}
+
 /**
  * The cached WebP rendition of `upstreamUrl` at `width`, fetching and rendering
  * it if this is the first ask. See the header for the three outcomes.
  */
-export function ensureVariant(upstreamUrl: string, width: CoverWidth): Promise<CoverVariant | null> {
+export function ensureVariant(
+  upstreamUrl: string,
+  width: CoverWidth,
+  { speculative = false }: EnsureVariantOptions = {}
+): Promise<CoverVariant | null> {
   const file = variantPath(upstreamUrl, width);
+  // Keyed by rendition, so a speculative warm and a real request for the same
+  // cover share one fetch. First caller's effort policy wins, which is the
+  // harmless direction: the sweep runs first and alone, and a person arriving
+  // mid-flight gets the bytes rather than a second request for them.
   const existing = inFlight.get(file);
   if (existing) return existing;
 
-  const job = renderVariant(upstreamUrl, width, file).finally(() => inFlight.delete(file));
+  const job = renderVariant(upstreamUrl, width, file, speculative).finally(() =>
+    inFlight.delete(file)
+  );
   inFlight.set(file, job);
   return job;
 }
@@ -132,7 +164,8 @@ export function ensureVariant(upstreamUrl: string, width: CoverWidth): Promise<C
 async function renderVariant(
   upstreamUrl: string,
   width: CoverWidth,
-  file: string
+  file: string,
+  speculative = false
 ): Promise<CoverVariant | null> {
   const key = cacheKey(upstreamUrl);
   const cached = await stat(file).catch(() => null);
@@ -141,7 +174,7 @@ async function renderVariant(
     return { file, bytes: cached.size, hit: true, etag: etagFor(key, width, cached.size) };
   }
 
-  const source = await fetchUpstreamImage(upstreamUrl);
+  const source = await fetchUpstreamImage(upstreamUrl, speculative);
   if (!source) return null;
 
   let encoded: Buffer;
@@ -190,10 +223,13 @@ type UpstreamImageOutcome =
   | { kind: "absent" }
   | { kind: "retryable"; problem: string };
 
-async function fetchUpstreamImage(url: string): Promise<Buffer | null> {
+async function fetchUpstreamImage(url: string, speculative = false): Promise<Buffer | null> {
   let lastProblem = "unknown";
   const discovery = isDiscoveryCoverUrl(url);
-  const maxAttempts = discovery ? DISCOVERY_ATTEMPTS : MAX_ATTEMPTS;
+  // Either signal is enough to make this one attempt. The URL shape catches a
+  // speculative discography tile; `speculative` catches the case the URL cannot
+  // express — see EnsureVariantOptions.
+  const maxAttempts = discovery || speculative ? DISCOVERY_ATTEMPTS : MAX_ATTEMPTS;
   // The same split 6.1.2 drew for RETRIES now also decides ORDER (6.1.4): a
   // speculative `release-group/<mbid>/front-*` tile for something nobody has
   // seeded is `browse`, while a stored coverUrl for a release we hold is a

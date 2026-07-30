@@ -202,7 +202,15 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
           // Warming the rendition, not just the URL: the URL alone still leaves
           // the visitor's first tile paying a fetch-and-encode. `ensureVariant`
           // returns null rather than throwing when the bytes cannot be had.
-          const variant = await ensureVariant(urls.thumb, COVER_THUMB_WIDTH);
+          //
+          // `speculative`: nobody has asked for this artwork and nothing is
+          // blocked on it, so it gets ONE attempt (§7). The URL cannot say this
+          // for itself — `getCoverArtUrls` returns `/release/<id>/…jpg`, which is
+          // indistinguishable from a stored cover for a release we hold, so the
+          // first warm run retried every failure three times.
+          const variant = await ensureVariant(urls.thumb, COVER_THUMB_WIDTH, {
+            speculative: true,
+          });
           return variant !== null;
         })
       );

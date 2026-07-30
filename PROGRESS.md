@@ -541,6 +541,27 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 - **Ubuntu 24.04 LTS over 26.04** — production runs LTS.
 
 ## Open items
+- **Give `cached()` single-flight, or hoist `lookupReleaseGroup` — required
+  BEFORE any enrichment parallelisation.** Filed out of 6.2f (2026-07-30).
+  `cached()` is a plain read-through with **no in-flight map**, unlike
+  `ensureVariant` and `getDiscographyState`, which both keep one. `resolveArtistId`
+  and `groupLevelReleaseDate` both call `lookupReleaseGroup(mbid)` on the same key.
+  Serially that is one MusicBrainz call and a Redis hit; run concurrently — which
+  is exactly what parallelising the enrichment stages would do — both miss and
+  both take a gate slot, spending two slots on one resource and making the
+  "faster" version slower. Fix either by hoisting that one lookup ahead of the
+  fan-out, or by giving `cached()` a single-flight map (which would benefit every
+  caller). **Parallelisation itself is worth ~40% off time-to-complete for a cold
+  seed and nothing off the response**, so it ranks below the budget change that
+  6.2f actually shipped.
+- **Drop `await indexRelease(release)` from the seed response path.** Filed out of
+  6.2f (2026-07-30). It sits between the skeleton write and the enrichment race in
+  `persistRelease`. Its errors are already swallowed (§5) and Elasticsearch is
+  eventually-consistent, so awaiting it makes the release searchable no sooner —
+  it only delays the response. ~39ms of a warm seed's 52ms falls outside the timed
+  stages, across two ES writes and two DB reads. Small, free, and §5-aligned;
+  deliberately not bundled into the 6.2f commit, which was about one measured
+  constant.
 - **Prefix-capable artist search — pre-Phase-7 fast-follow.** Filed out of 6.2e
   (2026-07-30) because pre-warming **cannot** deliver "a stranger searches
   Radiohead and it is instant" on its own, and it is worth being precise about
@@ -3186,6 +3207,107 @@ were cleared rather than adjudicated.
 returns **8 artists** — the seeded *Fiona Apple* plus cold MusicBrainz candidates
 — where the poisoned key had reduced it to the single Elasticsearch hit with no
 fan-out at all. The key re-cached with genuine data (TTL 604,763).
+
+### 6.2f — the seed-path slack audit (2026-07-30)
+
+The question: does the first-seed path carry recoverable latency **independent of
+MusicBrainz gate physics**? Answer: yes, and it is one constant.
+
+**Method.** Six production seeds captured before the container was recreated
+(Pornography, Faith, Seventeen Seconds, The Head on the Door, A Love Supreme, The
+Olatunji Concert), plus a controlled cold/warm pair run on dev against the real
+MusicBrainz — seed *Spiderland* cold, delete the row via `deleteReleaseEverywhere`
+(§5), re-seed with every upstream cache warm.
+
+| Spiderland (Slint), dev, real upstreams | cold | warm |
+|---|---|---|
+| wall-clock response | **2.72s** | **0.071s** |
+| `persistRelease` totalMs | 1,568 | 52 |
+| `servedAs` | skeleton | enriched |
+| stages completed | `persist.skeleton` **only** (12ms) | **all seven**, 13ms total |
+
+#### Finding 1 — `ENRICH_BUDGET_MS` is ~115× oversized and buys nothing
+
+The warm path completes every stage — covers 1ms, artist 3ms, label 2ms, genres
+1ms, releaseDate 1ms, cover-tint 2ms — in **13ms**. The cold path spends the full
+**1,500ms** and finishes nothing beyond the 12ms skeleton.
+
+So the budget is simultaneously ~115× more than the warm path needs and hopeless
+for the cold path, which needs 4–6s of gate-serialised calls. All six production
+seeds pinned to 1,510–1,523ms and every one returned `skeleton`: **6 of 6 paid the
+full budget and got nothing for it.**
+
+A cold seed's 2.72s decomposes as ~1.15s (one MB gate slot inside
+`lookupRelease`, before `persistRelease` starts) + 12ms of real work + **1,500ms
+of waiting for an answer that was never going to arrive**. That 1.5s is 55% of the
+response and is the recoverable latency the audit was looking for.
+
+**Recommended: `ENRICH_BUDGET_MS` 1500 → 250.** Cold seeds drop from ~2.72s to
+~1.25s (**-54%**) with 4.8× headroom over the measured warm response.
+
+**The trade, stated rather than buried:** a *partially* warm seed — MB cached, CAA
+cold, where `covers` measured 960–1,102ms in production — returns `enriched` today
+and would newly return `skeleton`. That is not a content regression. The client
+already polls `enrichmentState` (6.1.1) and the page fills a second later, instead
+of the response blocking for 1.3s to deliver the same thing. Better for the
+reader, and it is the machinery 6.1.1 exists to provide.
+
+#### Finding 2 — the rest is gate physics, and is not ours
+
+A cold seed makes up to five gated calls: `lookupRelease`, `lookupReleaseGroup`,
+`lookupArtist`, `getReleaseGroupLabel`, `lookupLabel` — each ≥1.1s apart, a ~5.5s
+floor. That is MusicBrainz's policy (§7), not a knob. **Pre-warming is the only
+thing that removes it**, which is precisely why 6.2e is the complement to this
+audit rather than an alternative to it.
+
+#### Finding 3 — the stages are serial but independent (time-to-ready, not time-to-response)
+
+`covers` / `artist` / `label` / `genres` / `releaseDate` are mutually independent;
+only `cover-tint` depends on `covers`. Serial today ≈ 6–7s cold; parallelised ≈
+max(MB chain 4.4s, covers+tint 2.4s, genres 0.3s) ≈ 4.4s, about **40% off
+time-to-complete**. It does **not** speed up the response, which is budget-capped
+either way — so it ranks below Finding 1.
+
+**And it carries a trap.** `cached()` has **no in-flight dedupe**, unlike
+`ensureVariant` and `getDiscographyState`, which both keep in-flight maps.
+`resolveArtistId` and `groupLevelReleaseDate` both call `lookupReleaseGroup(mbid)`
+on the same key; run concurrently they would both miss and both take a gate slot —
+two slots for one resource, making a "parallel" version *slower*. Hoist that one
+lookup ahead of the fan-out, or give `cached()` a single-flight map, before
+parallelising anything.
+
+#### Finding 4 — `await indexRelease(release)` sits on the response critical path
+
+It runs between the skeleton write and the enrichment race. Its errors are already
+swallowed (§5), and Elasticsearch is eventually-consistent, so awaiting it does not
+make the release searchable any sooner — it only delays the response. ~39ms of the
+warm path's 52ms falls outside the timed stages, across two ES writes and two DB
+reads. Small, free, and §5-aligned.
+
+#### Finding 5 — warming retries cover fetches three times (found in the live run)
+
+`isDiscoveryCoverUrl` matches only `/release-group/<id>/front[-N]`, but
+`getCoverArtUrls` returns CAA image URLs shaped `/release/<id>/<image>-500.jpg`.
+So every cover the warm sweep fetches is classified as a **lookup** and retries
+3×. Observed live: `[covers] HTTP 500 … (attempt 1/3) — retrying`, 6 times in the
+first 55 targets.
+
+For artwork attached to release-groups we hold no row for, §7's own reasoning says
+one attempt. It is bounded at 12-concurrent so it is not a storm, but it spends
+CAA capacity on artwork nobody has asked for yet.
+
+**Fixed by the caller declaring intent, not by widening the URL rule.**
+Broadening `isDiscoveryCoverUrl` to match `/release/…` would have been wrong in
+the other direction: that is precisely the shape of a stored `coverUrl` for a
+release we DO hold, where someone is looking at the page and retrying is correct.
+The URL genuinely cannot separate the two cases — only the caller knows — so
+`ensureVariant` takes `{ speculative }`, and the warm sweep sets it. Pinned by a
+test asserting both halves in one place: the same `/release/…` URL retries as a
+lookup and is tried exactly once as speculative.
+
+**Landed after the first warm run finished, not mid-flight** — changing the
+retry policy of a job while it is running would have split the run across two
+behaviours and made its own log unreadable as evidence.
 
 ## Then — Phase 7
 

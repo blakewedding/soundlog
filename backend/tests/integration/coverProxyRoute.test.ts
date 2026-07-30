@@ -199,6 +199,32 @@ describe("ensureVariant", () => {
   it("throws rather than resolving null when it cannot tell", async () => {
     await expect(ensureVariant(FLAKY_URL, 200)).rejects.toBeInstanceOf(UpstreamUnavailableError);
   });
+
+  it("retries a failing LOOKUP, but tries a speculative fetch exactly once", async () => {
+    // §7 in one assertion. `FLAKY_URL` is `/release/<id>/….jpg` — the shape of a
+    // stored cover for a release we hold, so `isDiscoveryCoverUrl` says lookup and
+    // it retries. That classification is right for a person on a release page and
+    // wrong for the 6.2e warm sweep, which fetches exactly this URL shape for
+    // release-groups nobody has seeded. The URL cannot tell them apart; the caller
+    // can, and `speculative` is how it says so.
+    __resetCoverCacheState(await mkdtemp(path.join(tmpdir(), "soundlog-covers-spec-")));
+
+    const beforeLookup = flakyAttempts;
+    await expect(ensureVariant(FLAKY_URL, 200)).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    const lookupAttempts = flakyAttempts - beforeLookup;
+
+    const beforeSpeculative = flakyAttempts;
+    await expect(ensureVariant(FLAKY_URL, 200, { speculative: true })).rejects.toBeInstanceOf(
+      UpstreamUnavailableError
+    );
+    const speculativeAttempts = flakyAttempts - beforeSpeculative;
+
+    expect(lookupAttempts).toBeGreaterThan(1);
+    expect(speculativeAttempts).toBe(1);
+
+    await rm(coverCacheDir(), { recursive: true, force: true });
+    __resetCoverCacheState(cacheDir);
+  });
 });
 
 describe("sweepCache", () => {

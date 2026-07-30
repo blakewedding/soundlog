@@ -367,7 +367,36 @@ async function seedFromSource(name: SourceName, id: string): Promise<Release | n
 // before answering with the canonical skeleton and finishing in the background.
 // Sized so a warm/uncontended seed returns complete, while a seed queued behind
 // a saturated MusicBrainz throttle still answers promptly instead of hanging.
-const ENRICH_BUDGET_MS = 1_500;
+//
+// ## 1,500 → 250, measured (6.2f)
+//
+// The old value was ~115× more than the warm path needs and useless to the cold
+// path, so it was pure latency on exactly the requests that were already slowest.
+// Measured on dev against the real MusicBrainz, seeding *Spiderland* cold, then
+// deleting the row and re-seeding with every upstream cache warm:
+//
+//   warm — 52ms total, `enriched`, ALL SEVEN stages done in 13ms
+//          (covers 1, artist 3, label 2, genres 1, releaseDate 1, tint 2)
+//   cold — 2.72s wall-clock, `skeleton`, nothing finished past the 12ms skeleton
+//
+// A cold seed's 2.72s is ~1.15s of MusicBrainz gate inside `lookupRelease`, 12ms
+// of real work, and 1,500ms spent waiting for an answer that was never going to
+// arrive: 55% of the response. Six production seeds agreed — Pornography, Faith,
+// Seventeen Seconds, The Head on the Door, A Love Supreme and The Olatunji
+// Concert all pinned to 1,510–1,523ms and all returned `skeleton`. Six of six
+// paid the full budget and got nothing for it.
+//
+// 250 still clears the measured warm response 4.8×, and cuts a cold seed to
+// ~1.25s (-54%).
+//
+// The trade, deliberately accepted: a PARTLY warm seed — MusicBrainz cached, the
+// Cover Art Archive cold, where `covers` measured 960–1,102ms in production —
+// used to return `enriched` and now returns `skeleton`. That is not a content
+// regression. `enrichmentState` (6.1.1) already reports progress and the client
+// already polls, so the page fills a second later instead of the response
+// blocking 1.3s to deliver the same thing. Blocking to avoid a poll the client
+// performs anyway is the trade this number was getting backwards.
+const ENRICH_BUDGET_MS = 250;
 
 // In-flight enrichments are tracked per release id in `enrichmentState`, so the
 // API can tell a client "still working" instead of serving a skeleton that looks
