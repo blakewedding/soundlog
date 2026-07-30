@@ -157,8 +157,9 @@ Monorepo, TypeScript backend with health checks, Prisma schema, web + mobile she
 ### Phase 5.5 — Design polish ✅ (one tracked open defect)
 > "Wordmark and identity, micro-interactions, perceived performance, a 380px responsive audit, an accessibility floor, and mobile haptics. No new features — refinement only."
 
-**Complete.** Wordmark system (Groove glyph + Struck letterforms, rule at
-display sizes only, placeholder icons deferred to Phase 7), micro-interactions,
+**Complete.** Wordmark system (Struck letterforms, rule at display sizes only;
+the glyph was a placeholder here and became the v3 mark in the brand phase),
+micro-interactions,
 optimistic follow/list edits, responsive audit at 380px **and** 320px, an
 accessibility floor at WCAG AA, the haptics utility, a touch star input with
 press-and-drag preview and commit-on-release (~29px per half-star on touch), and
@@ -470,31 +471,37 @@ way.
 
 #### Icon set
 
-The wordmark is settled: the Groove glyph leading Struck letterforms, flat gold
-throughout (`apps/web/src/components/ui/Wordmark.tsx`). The **icon set is not**.
+**Settled.** The v3 eighth-note/L mark replaced the placeholder Groove glyph in
+the brand phase. The master kit lives in `brand/`; the subset the web app
+actually serves is copied into `apps/web/public/`.
 
-Everything in `apps/web/public/icons/` is a **placeholder**, generated from the
-glyph's closed cut by `apps/web/scripts/generate-icons.mjs`. The files are
-correct *as files* — right dimensions, opaque, design-system colours, mark
-inside the maskable safe zone — but they are not finished icon design.
+| Served file | Used by |
+|---|---|
+| `Soundlog_Mark_v3.svg` | The nav lockup (`components/ui/Wordmark.tsx`) |
+| `favicon.ico` (16/32/48) | Tab icon, legacy and Windows |
+| `Soundlog_Favicon_32.png`, `_16.png` | Tab icon, modern PNG ladder |
+| `Soundlog_AppleTouchIcon_180.png` | iOS home screen |
+| `Soundlog_AppIcon_v3_512.png`, `_1024.png` | Web app manifest, maskable |
 
-Outstanding:
+Guardrails, from the identity sheet:
 
-- **Small-size optical refinement.** The glyph has two cuts (open arcs above
-  18px, a closed ring below) because two concentric hairlines cannot resolve in
-  16 pixels. The placeholder uses the closed ring at *every* icon size for
-  internal consistency, which leaves the large icons plainer than they should
-  be. A real set wants per-size drawings, not one shape scaled.
-- **iOS squircle fitting.** The PNGs are square and opaque so each platform can
-  apply its own mask. Apple's icon shape is a superellipse, not a rounded rect,
-  and artwork intended to sit inside it is drawn to that curve.
-- **Full platform size ladder.** Currently 16/32/180/192/512. A complete set
-  covers the Windows tile sizes, the macOS `.icns` ladder, watchOS, and Play
-  Store / App Store listing art.
+- **Never recolour the mark.** Use the SVGs as authored. No `currentColor`, no
+  CSS filter, no re-export at a different gold. This is why the nav references
+  the file through an `<img>` instead of inlining the SVG — inline markup puts
+  the gradient stops somewhere a call site can reach them.
+- **The flat cut (`Soundlog_Mark_v3_Flat.svg`) is for ≤24px only.** Above that,
+  the gloss rendition is the mark.
+- **Never place the gloss mark on a mid-gold background** — the gradient has no
+  contrast to work against and the silhouette dissolves.
+
+Still open, and *not* blocked on artwork:
+
 - **A monochrome cut** for Safari pinned tabs and any single-colour context.
-
-Replacement is a **drop-in file swap** — same filenames, same dimensions, no
-code changes. See `apps/web/public/icons/README.md` for the contract.
+- **OG / social share images.** There is no `og:image` or `twitter:image` in the
+  repo at all — never was, and the brand phase did not add one. A link to
+  Soundlog currently unfurls with no artwork anywhere it is pasted. The kit now
+  has the lockups this needs (`brand/Soundlog_Lockup_v3_*`), so this is a
+  composition-and-meta-tags task, not a design one.
 
 #### Mobile nav pattern (disclosure/hamburger or tab bar)
 

@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+  <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="170" y1="80" x2="400" y2="440">
+    <stop offset="0" stop-color="#FFF4C8"></stop><stop offset="0.08" stop-color="#FFDE86"></stop>
+    <stop offset="0.22" stop-color="#F3C557"></stop><stop offset="0.38" stop-color="#DDAF4E"></stop>
+    <stop offset="0.52" stop-color="#C8A24B"></stop><stop offset="0.70" stop-color="#AE8B3E"></stop>
+    <stop offset="0.86" stop-color="#967E39"></stop><stop offset="1" stop-color="#7A6530"></stop>
+  </linearGradient>
+  <linearGradient id="ms" gradientUnits="userSpaceOnUse" x1="120" y1="80" x2="330" y2="440">
+    <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.4"></stop>
+    <stop offset="0.36" stop-color="#FFFFFF" stop-opacity="0"></stop>
+  </linearGradient>
+  <linearGradient id="mt" gradientUnits="userSpaceOnUse" x1="0" y1="90" x2="0" y2="190">
+    <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.38"></stop>
+    <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"></stop>
+  </linearGradient>
+  <linearGradient id="mb" gradientUnits="userSpaceOnUse" x1="0" y1="280" x2="0" y2="436">
+    <stop offset="0" stop-color="#3A3018" stop-opacity="0"></stop>
+    <stop offset="1" stop-color="#2A2214" stop-opacity="0.3"></stop>
+  </linearGradient>
+  <filter id="mf" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="13"></feGaussianBlur></filter>
+  <clipPath id="mc">
+    <path d="M204 112 A20 20 0 0 1 224 92 H268 V300 H204 Z"></path>
+    <rect x="204" y="92" width="172" height="64" rx="20"></rect>
+    <path d="M312 92 H356 A20 20 0 0 1 376 112 V352 A16 16 0 0 0 392 368 H472 A20 20 0 0 1 492 388 V412 A20 20 0 0 1 472 432 H332 A20 20 0 0 1 312 412 Z"></path>
+    <ellipse cx="181.5" cy="318" rx="90" ry="60" transform="rotate(-22 181.5 318)"></ellipse>
+  </clipPath>
+  <mask id="mtop" maskUnits="userSpaceOnUse" x="60" y="70" width="460" height="380">
+    <g fill="#FFFFFF">
+    <path d="M204 112 A20 20 0 0 1 224 92 H268 V300 H204 Z"></path>
+    <rect x="204" y="92" width="172" height="64" rx="20"></rect>
+    <path d="M312 92 H356 A20 20 0 0 1 376 112 V352 A16 16 0 0 0 392 368 H472 A20 20 0 0 1 492 388 V412 A20 20 0 0 1 472 432 H332 A20 20 0 0 1 312 412 Z"></path>
+    <ellipse cx="181.5" cy="318" rx="90" ry="60" transform="rotate(-22 181.5 318)"></ellipse>
+    </g>
+    <g fill="#000000" transform="translate(0 4)">
+    <path d="M204 112 A20 20 0 0 1 224 92 H268 V300 H204 Z"></path>
+    <rect x="204" y="92" width="172" height="64" rx="20"></rect>
+    <path d="M312 92 H356 A20 20 0 0 1 376 112 V352 A16 16 0 0 0 392 368 H472 A20 20 0 0 1 492 388 V412 A20 20 0 0 1 472 432 H332 A20 20 0 0 1 312 412 Z"></path>
+    <ellipse cx="181.5" cy="318" rx="90" ry="60" transform="rotate(-22 181.5 318)"></ellipse>
+    </g>
+  </mask>
+  <mask id="mbot" maskUnits="userSpaceOnUse" x="60" y="70" width="460" height="380">
+    <g fill="#FFFFFF">
+    <path d="M204 112 A20 20 0 0 1 224 92 H268 V300 H204 Z"></path>
+    <rect x="204" y="92" width="172" height="64" rx="20"></rect>
+    <path d="M312 92 H356 A20 20 0 0 1 376 112 V352 A16 16 0 0 0 392 368 H472 A20 20 0 0 1 492 388 V412 A20 20 0 0 1 472 432 H332 A20 20 0 0 1 312 412 Z"></path>
+    <ellipse cx="181.5" cy="318" rx="90" ry="60" transform="rotate(-22 181.5 318)"></ellipse>
+    </g>
+    <g fill="#000000" transform="translate(0 -5)">
+    <path d="M204 112 A20 20 0 0 1 224 92 H268 V300 H204 Z"></path>
+    <rect x="204" y="92" width="172" height="64" rx="20"></rect>
+    <path d="M312 92 H356 A20 20 0 0 1 376 112 V352 A16 16 0 0 0 392 368 H472 A20 20 0 0 1 492 388 V412 A20 20 0 0 1 472 432 H332 A20 20 0 0 1 312 412 Z"></path>
+    <ellipse cx="181.5" cy="318" rx="90" ry="60" transform="rotate(-22 181.5 318)"></ellipse>
+    </g>
+  </mask>
+</defs>
+  <g transform="translate(-37.6 -6)">
+    <g clip-path="url(#mc)">
+      <rect x="60" y="70" width="460" height="380" fill="url(#mg)"></rect>
+      <rect x="60" y="70" width="460" height="380" fill="url(#ms)"></rect>
+      <rect x="60" y="88" width="460" height="102" fill="url(#mt)"></rect>
+      <g filter="url(#mf)">
+        <ellipse cx="150" cy="292" rx="52" ry="19" transform="rotate(-22 150 292)" fill="#FFF8E4" opacity="0.42"></ellipse>
+        <rect x="212" y="104" width="19" height="180" rx="10" fill="#FFFAEC" opacity="0.3"></rect>
+        <rect x="232" y="100" width="126" height="13" rx="7" fill="#FFFFFF" opacity="0.34"></rect>
+        <rect x="322" y="182" width="15" height="196" rx="8" fill="#FFFFFF" opacity="0.2"></rect>
+        <rect x="402" y="378" width="72" height="11" rx="6" fill="#FFFFFF" opacity="0.24"></rect>
+      </g>
+      <rect x="60" y="280" width="460" height="170" fill="url(#mb)"></rect>
+    </g>
+    <rect x="60" y="70" width="460" height="380" fill="#FFF6DF" opacity="0.42" mask="url(#mtop)"></rect>
+    <rect x="60" y="70" width="460" height="380" fill="#6A5628" opacity="0.3" mask="url(#mbot)"></rect>
+  </g>
+</svg>

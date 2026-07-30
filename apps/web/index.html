@@ -4,12 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Soundlog — Log the music that matters</title>
-    <!-- PLACEHOLDER icons (public/icons/README.md). Referenced by fixed name so
-         final artwork is a drop-in file replacement, not a code change. -->
-    <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml" />
-    <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
-    <link rel="icon" href="/icons/favicon-16.png" sizes="16x16" type="image/png" />
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <!-- Brand v3 icon ladder — the finalized eighth-note/L mark. Shipped as
+         authored (brand/); never recoloured, never regenerated from geometry.
+
+         `?v=3` is load-bearing. Vite fingerprints what it bundles, but files in
+         public/ are copied verbatim with their names intact, so a favicon has no
+         content hash to invalidate it. Browsers cache favicons hard and by
+         origin — without the query, a returning visitor keeps the old Groove
+         glyph in the tab indefinitely. Bump this when the artwork changes. -->
+    <link rel="icon" href="/favicon.ico?v=3" sizes="48x48" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/Soundlog_Favicon_32.png?v=3" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/Soundlog_Favicon_16.png?v=3" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/Soundlog_AppleTouchIcon_180.png?v=3" />
     <link rel="manifest" href="/site.webmanifest" />
     <meta name="theme-color" content="#0a0a0c" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

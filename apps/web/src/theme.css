@@ -100,14 +100,17 @@ select:focus-visible {
   border-color: var(--gold);
 }
 
-/* ---------- Wordmark: the Groove glyph + Struck letterforms ----------
-   SOUND in text, LOG in flat gold. The gold is flat everywhere by design — no
-   gradients, no foil — so the mark survives 16px, print, and a sticker.
+/* ---------- Wordmark: the v3 mark + Struck letterforms ----------
+   SOUND in text, LOG in flat gold. The LETTERFORMS stay flat by design — no
+   gradients, no foil — so they survive 16px, print, and a sticker. The mark
+   itself is the shipped gloss artwork and is never restyled from here.
    See components/ui/Wordmark.tsx. */
 .wordmark {
   display: inline-flex;
   align-items: center;
-  gap: 0.42em;
+  /* 8px at the nav's 20px size, per the identity sheet's 84u gap against a
+     336u mark. In em so it tracks `size` at display scales. */
+  gap: 0.4em;
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 20px;
@@ -116,12 +119,15 @@ select:focus-visible {
   line-height: 1;
 }
 .wordmark em { font-style: normal; color: var(--gold); }
-.wordmark-glyph { flex-shrink: 0; overflow: visible; }
+/* No colour, filter, or opacity here — the mark ships as authored (guardrail:
+   never recolour). Sizing lives on the element's width/height attributes so the
+   box is reserved before the SVG loads. */
+.wordmark-glyph { flex-shrink: 0; display: block; }
 
 .wordmark .wordmark-text { letter-spacing: 0.05em; }
 
-/* Optional hairline gold rule — a lead-in groove, inset from both ends so it
-   never reads as an underline. */
+/* Optional hairline gold rule — inset from both ends so it never reads as an
+   underline, and echoing the horizontal bar of the mark's L. */
 .wordmark-ruled .wordmark-text {
   position: relative;
   padding-bottom: 0.18em;

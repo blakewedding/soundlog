@@ -3404,6 +3404,50 @@ lookup and is tried exactly once as speculative.
 retry policy of a job while it is running would have split the run across two
 behaviours and made its own log unreadable as evidence.
 
+## Brand v3 — the eighth-note/L identity (DONE 2026-07-30)
+
+The Groove glyph was always a placeholder, and Phase 7 item 2 said so. The
+finalized mark landed, so the placeholder and **the machinery that generated it**
+are both gone: `scripts/generate-icons.mjs`, its `src/lib/iconGeometry.json`
+input, the `pnpm icons` script, and all seven files in `public/icons/`. The old
+`icons/README.md` had asked for exactly this — *"delete the generator rather than
+re-running it"* — which is the useful shape for a placeholder to have: it named
+its own disposal condition while it was still the thing in use.
+
+**The mark is an `<img>`, not inline SVG, and that is the one real decision
+here.** The v3 artwork is a gloss rendition — an eight-stop gradient plus a
+specular overlay — and the identity sheet's first guardrail is that it is never
+recoloured. Inline SVG puts those stops in JSX, one `currentColor` or CSS
+`filter` away from a call site that means well. Referencing the shipped file
+makes "as authored" the only reachable state, and costs nothing: it is one
+cacheable request already shared with the favicon ladder.
+
+**Sizing was measured, not assumed.** The brief pinned the nav mark at 28px with
+a rule to scale up if the wordmark's cap height exceeded ~16px. The `size` prop
+was *documented* as cap height — it is the font size, and Archivo 800's real cap
+ratio is 0.687, so `size={20}` is a **13.74px** cap, measured against the loaded
+face via canvas `TextMetrics`. Under the threshold, so 28px stands as given. That
+puts the mark at 2.04× cap against the sheet's 336u/200u (1.7×) ratio — reported
+rather than silently reconciled, because the sheet's ratio and the brief's
+concrete number disagree at our actual cap height and only Blake can say which
+one the sheet meant. The prop's docstring is now corrected, and 28 is expressed
+as `size * MARK_SCALE` so display lockups at `size={32}`+ keep the relationship
+instead of growing type around a fixed mark.
+
+`?v=3` on the favicon hrefs is load-bearing: Vite fingerprints what it *bundles*,
+but `public/` is copied verbatim, so a favicon has no content hash and browsers
+cache them hard and per-origin. Without the query a returning visitor keeps the
+Groove glyph in the tab indefinitely.
+
+Two things found while grepping, both reported and neither fixed here: the app
+has **no `og:image` or `twitter:image` at all** — never did, so every pasted link
+unfurls bare — and the 380px nav grew 146px → 151.5px with the larger mark. No
+5.5 invariant moved (no horizontal overflow at 380px, targets unchanged).
+
+Master kit archived at `brand/`; the seven files the web app actually serves are
+copied into `apps/web/public/`. Lockups and the avatar cut are in the kit but
+unreferenced — deliberately not shipped to a static dir that every deploy copies.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
@@ -3416,14 +3460,15 @@ What Phase 7 carries, in the order the work naturally falls:
    is why two 5.5 items are *blocked* rather than pending: no screen fires a
    haptic intent, and there is no release detail screen to host a native star
    input. Both are unblocked the moment those screens exist.
-2. **Real icon design.** The current set is geometrically faithful and correct
-   as files, but it is a placeholder — small-size optical refinement, iOS
-   squircle fitting, the full platform size ladder and a monochrome cut. A
-   drop-in file swap; see `apps/web/public/icons/README.md`.
-3. **Navigation component.** The 380px nav wraps to three rows (~146px, ~18% of
-   the viewport). Blake ruled it **good under a thumb** during the launch
-   journey, so this is a nicety, not a defect — a disclosure menu or tab bar is
-   a new component, not polish.
+2. ~~**Real icon design.**~~ **Done** — see *Brand v3* above. What remains of
+   this item is narrower and not blocked on artwork: a **monochrome cut** for
+   Safari pinned tabs, and **OG / social share images**, which the repo has
+   never had in any form.
+3. **Navigation component.** The 380px nav wraps to three rows (~151px, ~19% of
+   the viewport — the v3 mark added ~5px over the placeholder glyph). Blake
+   ruled it **good under a thumb** during the launch journey, so this is a
+   nicety, not a defect — a disclosure menu or tab bar is a new component, not
+   polish.
 4. **Desktop half-star hit targets** — still 8×24, pre-existing and tight even
    for a mouse. Touch was fixed in 5.5; desktop was out of that brief.
 5. **Sign in with username OR email.** The login form takes an email address
