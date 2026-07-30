@@ -179,24 +179,28 @@ function creditArtistId(rg: MBReleaseGroup): string | undefined {
 // degrade to empty rather than propagating an upstream error.
 const DISCOVERY_ATTEMPTS = 1;
 
-/** Free-text release-group search. Best-effort; degrades to [] when MB is busy. Cached 7d. */
+/**
+ * Free-text release-group search. Best-effort; degrades to [] when MB is busy.
+ * A genuine empty answer is cached 7d; a DEGRADED one is never cached — see
+ * the note on `searchMusicBrainzArtists`.
+ */
 export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup[]> {
   const key = `mb:rg:search:${query.toLowerCase()}`;
-  return cached(key, WEEK, async () => {
-    try {
+  try {
+    return await cached(key, WEEK, async () => {
       const data = await mbFetch<ReleaseGroupSearchResponse>(
         `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
         { maxAttempts: DISCOVERY_ATTEMPTS }
       );
       return data?.["release-groups"] ?? [];
-    } catch (err) {
-      if (err instanceof UpstreamUnavailableError) {
-        console.warn(`[mb] search degraded (${err.message})`);
-        return [];
-      }
-      throw err;
+    });
+  } catch (err) {
+    if (err instanceof UpstreamUnavailableError) {
+      console.warn(`[mb] search degraded (${err.message})`);
+      return [];
     }
-  });
+    throw err;
+  }
 }
 
 interface ArtistSearchResponse {
@@ -218,24 +222,49 @@ interface ArtistSearchResponse {
  * one attempt, degrade to empty. Retrying discovery burns the throttle slots
  * whose exhaustion causes first-access failures, and a person waiting on search
  * is better served by fewer results now.
+ *
+ * ## The degraded answer is NOT cached, and that placement is the whole point
+ *
+ * The `try` sits OUTSIDE `cached()`, not inside it. Inside — where it was until
+ * 6.2e — the catch returned `[]` as the callback's value, `cached()` wrote it,
+ * and a single MusicBrainz 503 became "no artist matches this query" **for seven
+ * days**. That is §1's most expensive bug in the discovery path: a retryable
+ * condition surfaced as a permanent one, then cached so the retry never happened.
+ *
+ * Measured, not theorised: a 489-name warming resolution on 2026-07-30 hit 11
+ * transient 503s, and every one of those query strings was left holding `[]` with
+ * a full week to live — "Elliott Smith", "Mitski", "Sleep" among them. At launch,
+ * with every artist cold, that is a search box that silently stops finding an
+ * artist because MusicBrainz hiccuped once.
+ *
+ * §7's "one attempt, degrade to empty" is a policy about how hard we TRY. It was
+ * never a claim that the artist does not exist — the same distinction §7 already
+ * draws for cover art ("the answer is still 503, never 404"). Degrading the
+ * RESPONSE is right; persisting the degradation is not.
+ *
+ * A genuine empty result — a 200 carrying no artists — still caches, because that
+ * is a real answer (§1).
  */
 export async function searchMusicBrainzArtists(query: string): Promise<MBArtist[]> {
   const key = `mb:artist:search:${query.toLowerCase()}`;
-  return cached(key, WEEK, async () => {
-    try {
+  try {
+    // Throwing out of the callback is what keeps the degraded answer out of
+    // Redis — `cached()` writes only on return (§2, same mechanism that keeps a
+    // partial discography assembly uncached).
+    return await cached(key, WEEK, async () => {
       const data = await mbFetch<ArtistSearchResponse>(
         `/artist/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
         { maxAttempts: DISCOVERY_ATTEMPTS }
       );
       return data?.artists ?? [];
-    } catch (err) {
-      if (err instanceof UpstreamUnavailableError) {
-        console.warn(`[mb] artist search degraded (${err.message})`);
-        return [];
-      }
-      throw err;
+    });
+  } catch (err) {
+    if (err instanceof UpstreamUnavailableError) {
+      console.warn(`[mb] artist search degraded (${err.message})`);
+      return [];
     }
-  });
+    throw err;
+  }
 }
 
 /** Release-group lookup by MBID, with artist credits. Cached 7d. */
@@ -294,7 +323,25 @@ export function pickLatinName(artist: MBArtist | null | undefined): string | nul
 
 /**
  * Best confident release-group MBID for an artist + title, or null. Used to
- * attach the canonical id when a non-MB source seeds a release. Cached 7d.
+ * attach the canonical id when a non-MB source seeds a release. A confident
+ * match, and a definitive "no strong match", are cached 7d; an UNCONFIRMED one
+ * is not cached at all.
+ *
+ * ## Why the `try` is outside `cached()` (6.2e)
+ *
+ * It used to be inside, returning `null` on `UpstreamUnavailableError` — so the
+ * callback returned a value, `cached()` wrote it, and "we could not reach
+ * MusicBrainz just now" was stored as "this release has no MBID" **for a week**.
+ *
+ * That defeated the very recovery its own comment promised. Seeding without the
+ * MBID is fine *because* `enrichExisting` attaches it on a later access — but a
+ * later access calls this function again, hit the cached `null`, and attached
+ * nothing. The row stayed identity-less for seven days, and MBID is the canonical
+ * identity §3 is built on, so dedupe and release↔release-group matching degrade
+ * with it.
+ *
+ * Sibling of the same fix in `searchMusicBrainzArtists`; see the long note there
+ * for the measurement that surfaced the class.
  */
 export async function findReleaseGroupMbid(
   artist: string,
@@ -302,23 +349,25 @@ export async function findReleaseGroupMbid(
   tier: UpstreamTier = ambientTier()
 ): Promise<string | null> {
   const key = `mb:rg:match:${artist}:${title}`.toLowerCase();
-  return cached(key, WEEK, async () => {
-    const query = `artist:"${artist}" AND releasegroup:"${title}"`;
-    try {
+  try {
+    return await cached(key, WEEK, async () => {
+      const query = `artist:"${artist}" AND releasegroup:"${title}"`;
       const data = await mbFetch<ReleaseGroupSearchResponse>(
         `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=1`,
         { maxAttempts: DISCOVERY_ATTEMPTS, tier }
       );
       const top = data?.["release-groups"]?.[0];
       // MB search scores are 0–100; require a strong match to avoid mis-dedupe.
+      // A weak or absent match IS a definitive answer and stays cacheable.
       return top && (top.score === undefined || top.score >= 90) ? top.id : null;
-    } catch (err) {
-      // Couldn't confirm a match right now — seed without the MBID rather than
-      // failing the whole request; enrichExisting attaches it on a later access.
-      if (err instanceof UpstreamUnavailableError) return null;
-      throw err;
-    }
-  });
+    });
+  } catch (err) {
+    // Couldn't confirm a match right now — seed without the MBID rather than
+    // failing the whole request. Nothing was cached, so the next access really
+    // does retry, which is what makes `enrichExisting`'s heal work.
+    if (err instanceof UpstreamUnavailableError) return null;
+    throw err;
+  }
 }
 
 /**
