@@ -15,7 +15,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
 import { warmOnce, warmTarget } from "../../src/services/warmService.js";
-import { discographyCacheKey } from "../../src/services/musicbrainzService.js";
+import {
+  artistLookupCacheKey,
+  artistSearchCacheKey,
+  discographyCacheKey,
+  releaseGroupSearchCacheKey,
+} from "../../src/services/musicbrainzService.js";
 import { runTag } from "../support/runTag.js";
 
 const RUN = runTag("warm");
@@ -46,7 +51,12 @@ async function target(name: string, weight = 0) {
     data: { artistMbid: mbidFor(name), name: `${name} ${RUN}`, source: "CURATED", weight },
   });
   createdTargets.push(row.id);
-  touchedKeys.push(discographyCacheKey(row.artistMbid), `mb:artist:v2:${row.artistMbid}`);
+  touchedKeys.push(
+    discographyCacheKey(row.artistMbid),
+    artistLookupCacheKey(row.artistMbid),
+    artistSearchCacheKey(row.name),
+    releaseGroupSearchCacheKey(row.name)
+  );
   return row;
 }
 
@@ -162,6 +172,28 @@ describe("artist pre-warming", () => {
     expect(second.skipped).toBeGreaterThan(0);
   }, 60_000);
 
+  it("re-warms a target whose discography is fresh but whose search key is gone", async () => {
+    const row = await target("stale-search");
+
+    await warmOnce({ only: [row.artistMbid] });
+    // Everything is warm, so the sweep has nothing to do — the baseline.
+    const quiet = await warmOnce({ only: [row.artistMbid] });
+    expect(quiet.attempted).toEqual([]);
+
+    // Now lose ONE layer while the expensive one stays fresh. This is not
+    // contrived: it is what a targeted cache purge does, and what ordinary
+    // browsing does — a visit warms the discography and never writes the search
+    // key, because nobody searched that exact string.
+    await redis.del(artistSearchCacheKey(row.name));
+
+    // The old bellwether read only the discography, saw it fresh, and skipped —
+    // which on the first production run left 14 of 20 skipped targets with cold
+    // search keys, among them Radiohead, The Beatles and Aphex Twin.
+    const after = await warmOnce({ only: [row.artistMbid] });
+    expect(after.attempted.map((a) => a.artistMbid)).toContain(row.artistMbid);
+    expect(await redis.exists(artistSearchCacheKey(row.name))).toBe(1);
+  }, 60_000);
+
   it("records a failed layer without abandoning the others", async () => {
     // Artist lookup fails; the searches and the discography still succeed.
     vi.stubGlobal(
@@ -183,7 +215,7 @@ describe("artist pre-warming", () => {
     const outcome = await warmTarget(mbidFor("partial-failure"), `Partial ${RUN}`);
     touchedKeys.push(
       discographyCacheKey(mbidFor("partial-failure")),
-      `mb:artist:v2:${mbidFor("partial-failure")}`
+      artistLookupCacheKey(mbidFor("partial-failure"))
     );
 
     expect(outcome.failed).toContain("artist.lookup");

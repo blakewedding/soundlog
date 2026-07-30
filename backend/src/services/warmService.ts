@@ -71,7 +71,10 @@ import {
   lookupArtist,
   searchMusicBrainzArtists,
   searchReleaseGroups,
+  artistLookupCacheKey,
+  artistSearchCacheKey,
   discographyCacheKey,
+  releaseGroupSearchCacheKey,
 } from "./musicbrainzService.js";
 
 /**
@@ -122,16 +125,47 @@ export interface WarmSweepResult {
 }
 
 /**
- * Whether this target needs work tonight.
+ * Whether this target needs work tonight: the SHORTEST-lived of its layers,
+ * not the discography alone.
  *
- * The discography key is the bellwether. It is the expensive layer, and every
- * layer for a given target is written in the same sweep, so they expire together
- * — checking one is checking all of them, and checking the costly one means a
- * cheap layer can never drag a whole artist into an unnecessary refresh.
+ * ## The bellwether assumption was wrong, and it failed on the best artists
+ *
+ * This used to check only the discography, justified as "every layer for a given
+ * target is written in the same sweep, so they expire together — checking one is
+ * checking all of them." That holds only while every layer was written BY a
+ * sweep, and two ordinary things break it:
+ *
+ *  - a layer can be invalidated on its own (the 6.2e cleanup deleted poisoned
+ *    `mb:artist:search:*` keys, and nothing rewrote them);
+ *  - ordinary browsing warms an artist's DISCOGRAPHY without ever writing their
+ *    search keys, because nobody searched that exact string.
+ *
+ * Both leave a target whose discography looks fresh and whose search keys are
+ * cold — and the sweep then skips it, so it stays that way until the discography
+ * itself ages out. Measured on the first production run: **14 of the 20 skipped
+ * targets had cold search keys**, and they were Radiohead, The Beatles, Pink
+ * Floyd, Aphex Twin, Portishead, Burial — the *most browsed* artists, because
+ * being browsed is exactly what warmed their discography in the first place. The
+ * optimisation was selecting against the names it existed to serve.
+ *
+ * Four `TTL` reads per target instead of one. For 490 targets that is under 2,000
+ * Redis reads once a night, which is nothing next to being wrong about the
+ * artists people actually look for.
+ *
+ * Cover renditions are deliberately NOT part of this. They are per-release-group
+ * and live on disk rather than under one key, so there is no cheap TTL to read;
+ * `ensureVariant` is idempotent and re-checks the disk itself, so warming a
+ * target re-verifies them at negligible cost.
  */
-async function needsWarming(artistMbid: string): Promise<boolean> {
-  const ttl = await ttlOf(discographyCacheKey(artistMbid));
-  return ttl === null || ttl < REFRESH_WINDOW_SECONDS;
+async function needsWarming(artistMbid: string, name: string): Promise<boolean> {
+  const ttls = await Promise.all([
+    ttlOf(discographyCacheKey(artistMbid)),
+    ttlOf(artistLookupCacheKey(artistMbid)),
+    ttlOf(artistSearchCacheKey(name)),
+    ttlOf(releaseGroupSearchCacheKey(name)),
+  ]);
+  // `null` is an absent key — the most urgent case, not the least.
+  return ttls.some((ttl) => ttl === null || ttl < REFRESH_WINDOW_SECONDS);
 }
 
 /**
@@ -289,7 +323,7 @@ export async function warmOnce({
     // "3/412" is a job you can wait for, "3 so far" is not.
     const due: typeof targets = [];
     for (const t of targets) {
-      if (await needsWarming(t.artistMbid)) due.push(t);
+      if (await needsWarming(t.artistMbid, t.name)) due.push(t);
       else result.skipped++;
     }
     const plan = due.slice(0, batchSize);

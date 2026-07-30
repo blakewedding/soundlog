@@ -541,6 +541,25 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 - **Ubuntu 24.04 LTS over 26.04** — production runs LTS.
 
 ## Open items
+- **Intermittent cross-file test failures, surfaced (not caused) by 6.2f.**
+  Observed 2026-07-30 while adding the `needsWarming` regression test: **2 of 6**
+  full-suite runs failed, in files the change does not touch and with a *different*
+  failure each time — `profileVisibility` (`/api/users/<name>` answering 500 where
+  200 was expected) and a `review.create` / `listItem.create` pair. Not
+  reproducible on demand; the same tree then ran clean three times consecutively,
+  and the parent commit ran clean twice.
+
+  **Most likely surfaced rather than introduced**, and this repo has the precedent
+  in writing: `prewarm.test.ts` records that "adding two unrelated test files in
+  6.2 changed the scheduling and it began failing deterministically". The new test
+  adds ~5.5s and three more sweeps, which reshuffles a parallel suite sharing one
+  database. Nothing in the change itself can reach `/api/users` — it is four Redis
+  `TTL` reads and a set of cache-key builders that produce byte-identical strings.
+
+  Worth ruling out properly rather than living with: the honest next step is to
+  run the two suspect files in isolation under repetition, and if they are clean
+  alone, look for the shared-state coupling the way 6.2a's `runTag` investigation
+  did. **Not** to relax an assertion.
 - **Give `cached()` single-flight, or hoist `lookupReleaseGroup` — required
   BEFORE any enrichment parallelisation.** Filed out of 6.2f (2026-07-30).
   `cached()` is a plain read-through with **no in-flight map**, unlike
@@ -3164,6 +3183,55 @@ waiting behind the list.
 Backstopped anyway: the test's `afterAll` **fails the run** if any non-fixture
 `WarmTarget` has a `lastWarmedAt`, because the damage is otherwise silent — a real
 artist with `[]` cached reads exactly like a real artist with no releases.
+
+#### The first warm run, and the bellwether it disproved (2026-07-30)
+
+**470 warmed, 20 already warm, 490 considered, 115m55s, zero failures** — and zero
+rows carrying a `failed` `lastResult`, which is the independent check, since the
+log reports attempts and only the column reports outcomes. **71,229
+release-groups** cached, **7,609 cover renditions** on disk.
+
+The 55-minute estimate was wrong: the spine is far deeper than the six-artist
+sample used to cost it (mean **397** release-groups per artist against an
+estimated 294, **4.5** MB pages against 3.5, deepest **2,141**). The rate improved
+from 19s to ~14.8s per target as the run crossed from CHART into CURATED, exactly
+as the spine/tail split predicts.
+
+**The spot-check is what earned its keep.** Slint (tail) had all four layers warm.
+The Beatles (spine) had a warm discography — 1,041 groups, 142h — and **both
+search keys absent**, `lastWarmedAt` NULL, zero appearances in the run log.
+
+`needsWarming` checked only the discography, on the stated ground that "every
+layer is written in the same sweep, so they expire together — checking one is
+checking all of them." That holds only while every layer was written *by* a sweep.
+Two ordinary things break it: a layer invalidated on its own (the §1 cleanup
+deleted `mb:artist:search:the beatles` hours earlier), and ordinary browsing,
+which warms a DISCOGRAPHY without ever writing the search keys because nobody
+searched that exact string.
+
+**14 of the 20 skipped targets had cold search keys** — Radiohead, The Beatles,
+Pink Floyd, Aphex Twin, Portishead, Burial. The optimisation was selecting
+*against* the names it existed to serve, because being browsed is precisely what
+warmed those discographies in the first place.
+
+Worth recording: **the `--only` escape hatch could not fix it**, because `only`
+narrows selection and `needsWarming` still gates afterwards. The operator path
+built for exactly this case did not reach it.
+
+Fixed by taking the **minimum TTL across all four keyed layers** rather than
+flagging around it. Four `TTL` reads per target instead of one — under 2,000 Redis
+reads a night. Cover renditions stay out: they are per-release-group on disk with
+no single TTL, and `ensureVariant` re-checks the disk itself.
+
+The cache keys are now built in **one place each** and exported
+(`artistSearchCacheKey`, `releaseGroupSearchCacheKey`, `artistLookupCacheKey`,
+beside the existing `discographyCacheKey`), because the sweep would otherwise
+re-type them. The `v2` in the artist key is the standing proof of why: that key has
+been versioned once already, and a hand-copied duplicate would not have moved with
+it — it would silently have read a key nothing writes.
+
+Regression test verified against the old logic: it fails with `expected [] to
+include …`, the target skipped, and passes with the fix.
 
 #### The §1 fixes deployed alone (2026-07-30, ~01:40)
 

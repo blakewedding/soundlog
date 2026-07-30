@@ -179,13 +179,30 @@ function creditArtistId(rg: MBReleaseGroup): string | undefined {
 // degrade to empty rather than propagating an upstream error.
 const DISCOVERY_ATTEMPTS = 1;
 
+// ---------------------------------------------------------------------------
+// Cache keys.
+//
+// Exported and built in ONE place each, because the pre-warmer needs to ask how
+// much life a cached answer has left (`ttlOf`) and would otherwise re-type these
+// strings. The `v2` below is the standing proof that matters: this key has been
+// versioned once already, and a hand-copied duplicate would not have moved with
+// it — it would simply have started reading a key nothing writes.
+// ---------------------------------------------------------------------------
+
+/** Free-text artist search, keyed by the exact lowercased query. */
+export const artistSearchCacheKey = (query: string) => `mb:artist:search:${query.toLowerCase()}`;
+/** Free-text release-group search, keyed by the exact lowercased query. */
+export const releaseGroupSearchCacheKey = (query: string) => `mb:rg:search:${query.toLowerCase()}`;
+/** Artist lookup by MBID. v2: aliases were added to the payload. */
+export const artistLookupCacheKey = (mbid: string) => `mb:artist:v2:${mbid}`;
+
 /**
  * Free-text release-group search. Best-effort; degrades to [] when MB is busy.
  * A genuine empty answer is cached 7d; a DEGRADED one is never cached — see
  * the note on `searchMusicBrainzArtists`.
  */
 export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup[]> {
-  const key = `mb:rg:search:${query.toLowerCase()}`;
+  const key = releaseGroupSearchCacheKey(query);
   try {
     return await cached(key, WEEK, async () => {
       const data = await mbFetch<ReleaseGroupSearchResponse>(
@@ -246,7 +263,7 @@ interface ArtistSearchResponse {
  * is a real answer (§1).
  */
 export async function searchMusicBrainzArtists(query: string): Promise<MBArtist[]> {
-  const key = `mb:artist:search:${query.toLowerCase()}`;
+  const key = artistSearchCacheKey(query);
   try {
     // Throwing out of the callback is what keeps the degraded answer out of
     // Redis — `cached()` writes only on return (§2, same mechanism that keeps a
@@ -280,8 +297,7 @@ export async function lookupReleaseGroup(
 
 /** Artist lookup by MBID. Cached 7d. */
 export async function lookupArtist(mbid: string, tier: UpstreamTier = ambientTier()) {
-  // v2 key: aliases were added to the payload, so old cached entries lack them.
-  const key = `mb:artist:v2:${mbid}`;
+  const key = artistLookupCacheKey(mbid);
   return cached(key, WEEK, () => mbFetch<MBArtist>(`/artist/${mbid}?inc=aliases&fmt=json`, { tier }));
 }
 
