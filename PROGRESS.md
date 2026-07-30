@@ -3439,14 +3439,51 @@ but `public/` is copied verbatim, so a favicon has no content hash and browsers
 cache them hard and per-origin. Without the query a returning visitor keeps the
 Groove glyph in the tab indefinitely.
 
-Two things found while grepping, both reported and neither fixed here: the app
-has **no `og:image` or `twitter:image` at all** — never did, so every pasted link
-unfurls bare — and the 380px nav grew 146px → 151.5px with the larger mark. No
-5.5 invariant moved (no horizontal overflow at 380px, targets unchanged).
+Two things found while grepping: the app had **no `og:image` or `twitter:image`
+at all** — never did, so every pasted link unfurled bare — and the 380px nav grew
+146px → 151.5px with the larger mark. No 5.5 invariant moved (no horizontal
+overflow at 380px, targets unchanged). The first of those was closed immediately
+after; see *Social share cards* below.
 
 Master kit archived at `brand/`; the seven files the web app actually serves are
 copied into `apps/web/public/`. Lockups and the avatar cut are in the kit but
 unreferenced — deliberately not shipped to a static dir that every deploy copies.
+
+## Social share cards (DONE 2026-07-30)
+
+A pasted soundlog.app link had unfurled bare since launch — no `og:image`, no
+`twitter:image`, never any, in any form. Now: the full Open Graph + Twitter card
+set in `index.html`, and `og.png` (1200×630, opaque RGB, 55KB) served from
+`apps/web/public/` with its master at `brand/Soundlog_OG_1200x630.png`.
+
+**Static markup, and that is not a style preference.** Slack, iMessage,
+Twitter/X, Discord and Facebook fetch the HTML and parse it; not one of them runs
+our JavaScript. A `<meta>` injected by React after hydration is invisible to
+every unfurler there is, so a per-route head library would look correct in
+devtools and change nothing in a paste. Verified rather than assumed that none
+exists: no react-helmet, no unhead, no `document.title` manipulation anywhere in
+the app — `index.html` is the only head there is.
+
+**Absolute URLs throughout.** Unfurlers resolve `og:image` against nothing, so a
+relative path is dropped and the card degrades to text with no error surfaced
+anywhere. `og:*` uses `property`, `twitter:*` uses `name`, per each spec.
+
+**The near-miss worth recording.** The tags were committed one step ahead of the
+artwork, and the gap would not have announced itself. nginx serves
+`try_files $uri /index.html`, so a missing `/og.png` is **not a 404** — it is a
+`200` carrying `text/html`. A crawler asks for an image, gets a web page, and
+drops it silently; the tags look present in View Source and the card is bare
+anyway. Nothing in the build, the typecheck or 707 tests observes this. The
+check that catches it is the one that fetches the URL and asserts on the
+*content-type*, which is now the receipt for any future artwork swap.
+
+Two live consequences, filed rather than defects:
+
+- **The card is identical for every route.** `/release/…` and `/user/…` unfurl as
+  Soundlog, not as the album or the person. Per-route cards need the server to
+  render per-route HTML for crawler paths — a backend change, not a tag.
+- **`og:image:width`/`height` are a contract**, declared 1200×630. Replacement
+  artwork must be exactly that or the card crops wrong.
 
 ## Then — Phase 7
 
@@ -3460,10 +3497,9 @@ What Phase 7 carries, in the order the work naturally falls:
    is why two 5.5 items are *blocked* rather than pending: no screen fires a
    haptic intent, and there is no release detail screen to host a native star
    input. Both are unblocked the moment those screens exist.
-2. ~~**Real icon design.**~~ **Done** — see *Brand v3* above. What remains of
-   this item is narrower and not blocked on artwork: a **monochrome cut** for
-   Safari pinned tabs, and **OG / social share images**, which the repo has
-   never had in any form.
+2. ~~**Real icon design.**~~ **Done** — see *Brand v3* and *Social share cards*
+   above. All that remains of this item is a **monochrome cut** for Safari
+   pinned tabs.
 3. **Navigation component.** The 380px nav wraps to three rows (~151px, ~19% of
    the viewport — the v3 mark added ~5px over the placeholder glyph). Blake
    ruled it **good under a thumb** during the launch journey, so this is a

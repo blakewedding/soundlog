@@ -4,6 +4,39 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Soundlog — Log the music that matters</title>
+
+    <!-- Social share (Open Graph + Twitter cards).
+
+         THESE LIVE IN STATIC MARKUP AND MUST STAY THERE. Slack, iMessage,
+         Twitter/X, Discord and Facebook fetch the HTML and parse it; not one of
+         them runs our JavaScript. A <meta> injected by React after hydration is
+         invisible to every unfurler on earth, so a per-route head library would
+         look like it worked in devtools and change nothing in a paste. The app
+         has no such library today — this file is the only head there is.
+
+         Consequence worth knowing before anyone files it as a bug: the card is
+         therefore the SAME for every route. /release/… and /user/… unfurl as
+         "Soundlog", not as the album or the person. Per-route cards need the
+         server to render per-route HTML (an Express route that serves index.html
+         with substituted tags for crawler paths, or prerendering); that is a
+         backend change, not a tag.
+
+         URLs are ABSOLUTE and must remain so. Unfurlers resolve og:image
+         against nothing — a relative path is simply dropped, and the card
+         silently degrades to text with no error anywhere. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://soundlog.app" />
+    <meta property="og:title" content="Soundlog — Log every listen" />
+    <meta
+      property="og:description"
+      content="A listening diary for people who live in music. Log albums, write reviews, build lists, track your collection."
+    />
+    <meta property="og:image" content="https://soundlog.app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://soundlog.app/og.png" />
+
     <!-- Brand v3 icon ladder — the finalized eighth-note/L mark. Shipped as
          authored (brand/); never recoloured, never regenerated from geometry.
 

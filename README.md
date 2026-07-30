@@ -494,14 +494,25 @@ Guardrails, from the identity sheet:
 - **Never place the gloss mark on a mid-gold background** — the gradient has no
   contrast to work against and the silhouette dissolves.
 
+**Social share cards.** `og.png` (1200×630, opaque RGB) is served from
+`apps/web/public/`, with its master at `brand/Soundlog_OG_1200x630.png`. The
+Open Graph and Twitter tags live in `index.html` as **static markup**, and must
+stay there: unfurlers fetch and parse the HTML, and none of them run our
+JavaScript, so a `<meta>` injected by React after hydration is invisible to
+every one of them. All URLs are absolute — a relative `og:image` is dropped
+silently, with no error anywhere.
+
+Two consequences to know before filing either as a bug:
+
+- **The card is the same for every route.** `/release/…` and `/user/…` unfurl as
+  Soundlog, not as the album or the person. Per-route cards need the server to
+  render per-route HTML for crawler paths — a backend change, not a tag.
+- **`og:image:width`/`height` are a contract.** They are declared 1200×630, so
+  replacement artwork must be exactly that or the card crops wrong.
+
 Still open, and *not* blocked on artwork:
 
 - **A monochrome cut** for Safari pinned tabs and any single-colour context.
-- **OG / social share images.** There is no `og:image` or `twitter:image` in the
-  repo at all — never was, and the brand phase did not add one. A link to
-  Soundlog currently unfurls with no artwork anywhere it is pasted. The kit now
-  has the lockups this needs (`brand/Soundlog_Lockup_v3_*`), so this is a
-  composition-and-meta-tags task, not a design one.
 
 #### Mobile nav pattern (disclosure/hamburger or tab bar)
 
