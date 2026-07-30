@@ -20,19 +20,34 @@ interface Props {
 const RULE_MIN_SIZE = 32;
 
 /**
- * Mark box edge, as a multiple of `size`.
+ * Mark box edge, as a multiple of `size`. SETTLED — do not relitigate without
+ * reading this through; it was gotten wrong once already.
  *
- * The identity sheet specifies the mark against CAP HEIGHT (336u mark to 200u
- * cap), and the brand phase pinned the nav at a 28px mark. Archivo's measured
- * cap ratio is 0.687, so the nav's cap is 13.7px — under the ~16px threshold
- * where the sheet's ratio would have required scaling up, which is why 28 is
- * used as given rather than derived. 28/20 is the 1.4 here.
+ * The identity sheet gives 336u mark : 200u cap : 84u gap. The trap is that
+ * **336u is the artwork's INK, not the SVG's box.** `Soundlog_Mark_v3.svg` is a
+ * 512 viewBox whose content bbox is ~340u tall — ink fills only 66.4% of the
+ * box height, the rest being the whitespace the mark is drawn with. Sizing the
+ * *box* to 1.68× cap therefore renders the *ink* at 1.68 × 0.664 = 1.12× cap,
+ * a third smaller than the sheet asks for, while looking arithmetically correct
+ * in the code. The first pass here shipped 1.4 for exactly that reason.
  *
- * Expressed as a multiple rather than a hardcoded 28 so display lockups
+ * Solving for the box instead:
+ *
+ *   cap    = 0.687 × size          (Archivo 800, measured against the loaded
+ *                                   face via canvas TextMetrics — not assumed;
+ *                                   `size` is the FONT SIZE, not the cap height)
+ *   box    = 1.68 × cap / 0.664    (sheet ratio, corrected for the ink inset)
+ *          = 1.75 × size           → 35px at the nav's size={20}
+ *
+ * Gap follows the same correction: 84u/336u = 0.25 of the INK height, so
+ * 0.25 × (35 × 0.664) ≈ 6px, which is `gap: 0.3em` in theme.css — NOT the 0.25
+ * of the box that the ratio reads like at a glance.
+ *
+ * Expressed as a multiple rather than a hardcoded 35 so display lockups
  * (`size={32}` and up) keep the same mark-to-letterform relationship instead of
  * silently shrinking the mark as the type grows.
  */
-const MARK_SCALE = 1.4;
+const MARK_SCALE = 1.75;
 
 /**
  * The Soundlog wordmark — the only place the mark is drawn.

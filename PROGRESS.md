@@ -3422,17 +3422,27 @@ recoloured. Inline SVG puts those stops in JSX, one `currentColor` or CSS
 makes "as authored" the only reachable state, and costs nothing: it is one
 cacheable request already shared with the favicon ladder.
 
-**Sizing was measured, not assumed.** The brief pinned the nav mark at 28px with
-a rule to scale up if the wordmark's cap height exceeded ~16px. The `size` prop
-was *documented* as cap height — it is the font size, and Archivo 800's real cap
-ratio is 0.687, so `size={20}` is a **13.74px** cap, measured against the loaded
-face via canvas `TextMetrics`. Under the threshold, so 28px stands as given. That
-puts the mark at 2.04× cap against the sheet's 336u/200u (1.7×) ratio — reported
-rather than silently reconciled, because the sheet's ratio and the brief's
-concrete number disagree at our actual cap height and only Blake can say which
-one the sheet meant. The prop's docstring is now corrected, and 28 is expressed
-as `size * MARK_SCALE` so display lockups at `size={32}`+ keep the relationship
-instead of growing type around a fixed mark.
+**Sizing was measured, not assumed — and the first answer was still wrong.** The
+`size` prop was *documented* as cap height; it is the font size, and Archivo
+800's real cap ratio is 0.687, so `size={20}` is a **13.74px** cap (measured
+against the loaded face via canvas `TextMetrics`). That much the first pass got
+right, and it shipped 28px on the strength of it.
+
+The part it missed: **the sheet's "336u mark" is the artwork's INK, not the SVG
+box.** `Soundlog_Mark_v3.svg` is a 512 viewBox whose content bbox is ~340u — ink
+fills only 66.4% of the box height. Sizing the *box* against cap height
+therefore renders the *ink* a third smaller than the sheet asks, while looking
+arithmetically correct in the code, which is exactly why it survived a review.
+Solving for the box instead — `1.68 × cap / 0.664` — gives **35px**, with the
+gap likewise 0.25 of *ink* (≈6px, not 8). Verified after the change: ink sits at
+**1.691× cap** against the sheet's 1.68.
+
+Blake settled this rather than the code guessing: 28px was defensible optically,
+35px is sheet-faithful, and the two readings of "336u" cannot both be right. The
+derivation now lives in the `MARK_SCALE` docstring so the next person does not
+re-derive it from the wrong end. Expressed as `size * MARK_SCALE` so display
+lockups at `size={32}`+ keep the relationship instead of growing type around a
+fixed mark.
 
 `?v=3` on the favicon hrefs is load-bearing: Vite fingerprints what it *bundles*,
 but `public/` is copied verbatim, so a favicon has no content hash and browsers
@@ -3441,7 +3451,7 @@ Groove glyph in the tab indefinitely.
 
 Two things found while grepping: the app had **no `og:image` or `twitter:image`
 at all** — never did, so every pasted link unfurled bare — and the 380px nav grew
-146px → 151.5px with the larger mark. No 5.5 invariant moved (no horizontal
+146px → 158.5px with the larger mark. No 5.5 invariant moved (no horizontal
 overflow at 380px, targets unchanged). The first of those was closed immediately
 after; see *Social share cards* below.
 
@@ -3500,8 +3510,10 @@ What Phase 7 carries, in the order the work naturally falls:
 2. ~~**Real icon design.**~~ **Done** — see *Brand v3* and *Social share cards*
    above. All that remains of this item is a **monochrome cut** for Safari
    pinned tabs.
-3. **Navigation component.** The 380px nav wraps to three rows (~151px, ~19% of
-   the viewport — the v3 mark added ~5px over the placeholder glyph). Blake
+3. **Navigation component.** The 380px nav wraps to three rows (~158px, ~20% of
+   the viewport — the v3 mark added ~12px over the placeholder glyph). The
+   wordmark home link is 41.5px tall, still under the 44px touch floor the rest
+   of the nav clears; pre-existing, and the larger mark moved it closer. Blake
    ruled it **good under a thumb** during the launch journey, so this is a
    nicety, not a defect — a disclosure menu or tab bar is a new component, not
    polish.

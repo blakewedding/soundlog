@@ -108,9 +108,10 @@ select:focus-visible {
 .wordmark {
   display: inline-flex;
   align-items: center;
-  /* 8px at the nav's 20px size, per the identity sheet's 84u gap against a
-     336u mark. In em so it tracks `size` at display scales. */
-  gap: 0.4em;
+  /* 6px at the nav's 20px size. The sheet's 84u/336u is 0.25 of the mark's INK
+     height, not of its SVG box — see MARK_SCALE in Wordmark.tsx, which carries
+     the full derivation. In em so it tracks `size` at display scales. */
+  gap: 0.3em;
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 20px;
