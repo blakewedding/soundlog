@@ -157,7 +157,7 @@ export interface WarmSweepResult {
  * `ensureVariant` is idempotent and re-checks the disk itself, so warming a
  * target re-verifies them at negligible cost.
  */
-async function needsWarming(artistMbid: string, name: string): Promise<boolean> {
+export async function needsWarming(artistMbid: string, name: string): Promise<boolean> {
   const ttls = await Promise.all([
     ttlOf(discographyCacheKey(artistMbid)),
     ttlOf(artistLookupCacheKey(artistMbid)),
