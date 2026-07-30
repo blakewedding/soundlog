@@ -3233,6 +3233,33 @@ it — it would silently have read a key nothing writes.
 Regression test verified against the old logic: it fails with `expected [] to
 include …`, the target skipped, and passes with the fix.
 
+**The preview had the same bug, and it lied about the fix.** `warm-run.ts
+--dry-run` re-implemented the selection rule inline rather than calling it, so
+after `needsWarming` was corrected the dry run silently kept the old single-key
+check and reported **2 targets due where the real sweep would take 61** — while
+being the exact command an operator runs to decide whether to start a two-hour
+job. It now calls `needsWarming` directly and honours `--only`. Same class as the
+cache keys: a rule written down twice is a rule that gets fixed once.
+
+**The re-run found 61, not the 14 predicted.** The extra 47 were targets warmed
+during the first run whose *search* layer hit an MB 503 and — correctly, under the
+§1 fix shipped hours earlier — cached nothing. The old bellwether saw a fresh
+discography and hid every one of them. So the two fixes compose: not caching a
+degraded answer is what leaves the hole, and checking every layer is what finds
+it.
+
+61 warmed in **7m58s**, 429 already warm, zero failures. Verified afterwards: The
+Beatles (1,041 groups), Radiohead (583), Aphex Twin (119) and Slint (18) all carry
+**all four layers**. Live through the edge, signed out: `radiohead` 722ms,
+`the beatles` 605ms, `slint` 633ms, each returning 8/8/3 artists with the right
+act on top.
+
+The cover fix confirmed itself in the same log — `(attempt 1/1) — giving up`,
+where the first run read `attempt 1/3 — retrying`.
+
+A residue of 4 remains due, being targets whose layers degraded during *this* run.
+That is the steady state working, not a defect: the nightly sweep collects them.
+
 #### The §1 fixes deployed alone (2026-07-30, ~01:40)
 
 Shipped on their own the same night, ahead of the warming work, because a live
