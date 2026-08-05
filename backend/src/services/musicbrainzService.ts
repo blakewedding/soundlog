@@ -6,7 +6,7 @@
 // Cover art comes from the Cover Art Archive (coverartarchive.org), a separate
 // host keyed by MBID with no auth and no MB rate limit.
 import { env } from "../config/env.js";
-import { cached, invalidateCached } from "./cache.js";
+import { cached, invalidateCached, type CacheOptions } from "./cache.js";
 import {
   ambientTier,
   coverArtGate,
@@ -201,16 +201,24 @@ export const artistLookupCacheKey = (mbid: string) => `mb:artist:v2:${mbid}`;
  * A genuine empty answer is cached 7d; a DEGRADED one is never cached — see
  * the note on `searchMusicBrainzArtists`.
  */
-export async function searchReleaseGroups(query: string): Promise<MBReleaseGroup[]> {
+export async function searchReleaseGroups(
+  query: string,
+  cacheOpts: CacheOptions = {}
+): Promise<MBReleaseGroup[]> {
   const key = releaseGroupSearchCacheKey(query);
   try {
-    return await cached(key, WEEK, async () => {
-      const data = await mbFetch<ReleaseGroupSearchResponse>(
-        `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
-        { maxAttempts: DISCOVERY_ATTEMPTS }
-      );
-      return data?.["release-groups"] ?? [];
-    });
+    return await cached(
+      key,
+      WEEK,
+      async () => {
+        const data = await mbFetch<ReleaseGroupSearchResponse>(
+          `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
+          { maxAttempts: DISCOVERY_ATTEMPTS }
+        );
+        return data?.["release-groups"] ?? [];
+      },
+      cacheOpts
+    );
   } catch (err) {
     if (err instanceof UpstreamUnavailableError) {
       console.warn(`[mb] search degraded (${err.message})`);
@@ -262,19 +270,29 @@ interface ArtistSearchResponse {
  * A genuine empty result — a 200 carrying no artists — still caches, because that
  * is a real answer (§1).
  */
-export async function searchMusicBrainzArtists(query: string): Promise<MBArtist[]> {
+export async function searchMusicBrainzArtists(
+  query: string,
+  cacheOpts: CacheOptions = {}
+): Promise<MBArtist[]> {
   const key = artistSearchCacheKey(query);
   try {
     // Throwing out of the callback is what keeps the degraded answer out of
     // Redis — `cached()` writes only on return (§2, same mechanism that keeps a
-    // partial discography assembly uncached).
-    return await cached(key, WEEK, async () => {
-      const data = await mbFetch<ArtistSearchResponse>(
-        `/artist/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
-        { maxAttempts: DISCOVERY_ATTEMPTS }
-      );
-      return data?.artists ?? [];
-    });
+    // partial discography assembly uncached). Unchanged under `refresh`: a
+    // refresh that degrades throws before the write, so the existing entry
+    // survives rather than being replaced by an empty one.
+    return await cached(
+      key,
+      WEEK,
+      async () => {
+        const data = await mbFetch<ArtistSearchResponse>(
+          `/artist/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
+          { maxAttempts: DISCOVERY_ATTEMPTS }
+        );
+        return data?.artists ?? [];
+      },
+      cacheOpts
+    );
   } catch (err) {
     if (err instanceof UpstreamUnavailableError) {
       console.warn(`[mb] artist search degraded (${err.message})`);
@@ -296,9 +314,18 @@ export async function lookupReleaseGroup(
 }
 
 /** Artist lookup by MBID. Cached 7d. */
-export async function lookupArtist(mbid: string, tier: UpstreamTier = ambientTier()) {
+export async function lookupArtist(
+  mbid: string,
+  tier: UpstreamTier = ambientTier(),
+  cacheOpts: CacheOptions = {}
+) {
   const key = artistLookupCacheKey(mbid);
-  return cached(key, WEEK, () => mbFetch<MBArtist>(`/artist/${mbid}?inc=aliases&fmt=json`, { tier }));
+  return cached(
+    key,
+    WEEK,
+    () => mbFetch<MBArtist>(`/artist/${mbid}?inc=aliases&fmt=json`, { tier }),
+    cacheOpts
+  );
 }
 
 // Scripts whose presence means a name won't be readable to a Latin-script
@@ -399,7 +426,8 @@ const CAA_TIMEOUT_MS = 2500;
 
 export async function getCoverArtUrls(
   releaseGroupMbid: string,
-  tier: UpstreamTier = ambientTier()
+  tier: UpstreamTier = ambientTier(),
+  cacheOpts: CacheOptions = {}
 ): Promise<CoverArtUrls | null> {
   const key = `caa:rg:urls:${releaseGroupMbid}`;
   return cached(key, WEEK, async () => {
@@ -433,7 +461,7 @@ export async function getCoverArtUrls(
     const large = front.image ?? front.thumbnails?.["1200"] ?? front.thumbnails?.["500"];
     const thumb = front.thumbnails?.["500"] ?? large;
     return thumb && large ? { thumb, large } : null;
-  });
+  }, cacheOpts);
 }
 
 // ---- Labels ----
@@ -606,10 +634,14 @@ export const discographyCacheKey = (artistMbid: string) => `mb:artist:discograph
  */
 export function getArtistDiscography(
   artistMbid: string,
-  onProgress?: (p: DiscographyProgress) => void
+  onProgress?: (p: DiscographyProgress) => void,
+  cacheOpts: CacheOptions = {}
 ): Promise<MBDiscographyEntry[]> {
-  return cached(discographyCacheKey(artistMbid), WEEK, () =>
-    assembleDiscography(artistMbid, onProgress)
+  return cached(
+    discographyCacheKey(artistMbid),
+    WEEK,
+    () => assembleDiscography(artistMbid, onProgress),
+    cacheOpts
   );
 }
 

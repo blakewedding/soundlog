@@ -45,10 +45,35 @@
  * that is naturally about a seventh of the list per night, a few minutes of
  * `background`-tier gate time instead of half an hour.
  *
- * Warming is idempotent for free: every layer goes through `cached()`, so a
- * target that is already warm costs Redis GETs and no upstream call at all. The
- * TTL selection exists to bound how much REAL work a night can start, not to
- * avoid harmless repetition.
+ * ## Warming REFRESHES; it does not merely read (6.2g)
+ *
+ * This block used to say that warming was "idempotent for free" because every
+ * layer goes through `cached()`, so an already-warm target cost Redis GETs and
+ * no upstream call. That was true, and it was the bug: a plain `cached()` read
+ * returns the hit and never touches the expiry, so a target selected BECAUSE it
+ * was inside the refresh window was "warmed" by a call that extended nothing and
+ * expired on its original schedule regardless.
+ *
+ * Six nightly sweeps reported `0 with failures` while doing almost no work.
+ * Measured 2026-08-05: 1,890 of 1,960 warmed layers sat inside the 26-hour
+ * window simultaneously, and the only 65 with healthy TTLs were the ones that
+ * had genuinely expired and so were genuinely re-fetched. 97% of the fleet was
+ * due to expire inside a single 12-hour window.
+ *
+ * So every layer here passes `WARM_CACHE_OPTS`, which sets `refresh` — the read
+ * is skipped, upstream is asked again, and the TTL is re-dated on the write.
+ * A warm sweep therefore costs real gate time, which is the point: the TTL
+ * selection bounds how much of it a night may start.
+ *
+ * ## And the TTL is jittered, so the fleet cannot re-synchronize
+ *
+ * A bulk run writes hundreds of keys minutes apart with an identical TTL, so
+ * they expire together a week later — and refreshing them together keeps them
+ * together forever. That is how one 4-hour cold pass on 2026-07-30 became a
+ * fleet-wide cliff on 08-06. `WARM_TTL_JITTER_SECONDS` subtracts a uniform
+ * random slice on every warm write, so a synchronized fleet spreads out over its
+ * first refreshed cycle and stays spread. Subtracted, never added: a TTL must
+ * remain a bound on staleness.
  *
  * ## Failure is always the next night's problem
  *
@@ -84,6 +109,50 @@ import {
  * tomorrow before the sweep reaches it.
  */
 const REFRESH_WINDOW_SECONDS = 26 * 60 * 60;
+
+/**
+ * Width of the random slice subtracted from a warmed layer's TTL.
+ *
+ * Four days against a 7-day TTL puts every warm write uniformly in [3d, 7d].
+ * Chosen so a fully synchronized fleet — which is what a cold pass produces, and
+ * what production actually had — spreads across most of a week on its FIRST
+ * refreshed cycle rather than shuffling within a narrow band for weeks.
+ *
+ * The standing cost is the mean lifetime falling from 7 days to 5, so about a
+ * fifth of the list comes due per night instead of a seventh: ~98 of 490 targets,
+ * ~25 minutes of `background`-tier gate time. That is the price of never having
+ * a cliff again, and it is paid at the tier that yields to every real visitor.
+ */
+const WARM_TTL_JITTER_SECONDS = 4 * 24 * 60 * 60;
+
+/**
+ * What every layer in `warmTarget` passes to `cached()`. Named once rather than
+ * repeated at six call sites for `discographyCacheKey`'s reason: a rule written
+ * down six times is a rule that gets fixed five times.
+ */
+const WARM_CACHE_OPTS = {
+  refresh: true,
+  jitterSeconds: WARM_TTL_JITTER_SECONDS,
+} as const;
+
+/**
+ * Covers get the jitter but NOT the refresh, and the asymmetry is deliberate.
+ *
+ * `needsWarming` gates on the four metadata layers, never on cover URLs, so a
+ * refreshing covers layer would re-fetch the whole `coverPrefetchSet` for every
+ * selected target on every sweep — roughly 2,000 Cover Art Archive requests a
+ * night in steady state, and ~9,800 on a full pass. §7 records what happens when
+ * this project is casual with CAA volume: we manufactured the upstream failure
+ * we then blamed upstream for.
+ *
+ * The asymmetry costs little, because a cover URL is not what a reader waits on.
+ * The RENDITIONS live on disk with no TTL and `ensureVariant` re-checks the disk
+ * itself, so an expired `caa:rg:urls` costs one bounded, single-attempt
+ * discovery lookup (§7) and never the image bytes. Jitter still applies, so when
+ * these keys do roll over naturally they roll over spread out instead of
+ * together.
+ */
+const WARM_COVER_CACHE_OPTS = { jitterSeconds: WARM_TTL_JITTER_SECONDS } as const;
 
 /** Guards against two overlapping sweeps in one process. */
 let sweeping = false;
@@ -200,13 +269,13 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
   // as-you-type will still fan out for it. That is a known and deliberate limit
   // of this job; the fix is a prefix-capable artist index, filed separately.
   await layer("search.artist", async () => {
-    await searchMusicBrainzArtists(name);
+    await searchMusicBrainzArtists(name, WARM_CACHE_OPTS);
   });
   await layer("search.releaseGroup", async () => {
-    await searchReleaseGroups(name);
+    await searchReleaseGroups(name, WARM_CACHE_OPTS);
   });
   await layer("artist.lookup", async () => {
-    await lookupArtist(artistMbid);
+    await lookupArtist(artistMbid, "background", WARM_CACHE_OPTS);
   });
 
   // The expensive layer, and the one that makes a cold Coltrane feel like a warm
@@ -214,7 +283,7 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
   // on a hit.
   let entries: Awaited<ReturnType<typeof getArtistDiscography>> = [];
   await layer("discography", async () => {
-    entries = await getArtistDiscography(artistMbid);
+    entries = await getArtistDiscography(artistMbid, undefined, WARM_CACHE_OPTS);
     result.releaseGroups = entries.length;
   });
 
@@ -229,7 +298,7 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
       const worthwhile = coverPrefetchSet(entries);
       const settled = await Promise.allSettled(
         worthwhile.map(async (e) => {
-          const urls = await getCoverArtUrls(e.mbid, "background");
+          const urls = await getCoverArtUrls(e.mbid, "background", WARM_COVER_CACHE_OPTS);
           // `null` is a legitimate answer — plenty of release-groups genuinely
           // have no artwork on file (§1) — and is not a failure to record.
           if (!urls?.thumb) return false;
