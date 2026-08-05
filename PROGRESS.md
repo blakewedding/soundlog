@@ -3404,6 +3404,115 @@ lookup and is tried exactly once as speculative.
 retry policy of a job while it is running would have split the run across two
 behaviours and made its own log unreadable as evidence.
 
+### 6.2g — the warm sweep was a no-op for six nights (2026-08-05)
+
+Found during a routine pre-launch health pass, not by a symptom. Everything
+reported healthy: six containers up, backups current, five nightly sweeps each
+logging `0 with failures`, and **zero** targets carrying a `failed` `lastResult`.
+The table said the job was working. It was not.
+
+**`cached()` returns a hit without touching the expiry.** So `warmTarget`'s
+layers — all plain `cached()` calls — read the cache and extended nothing. A
+target selected *because* it was inside the 26-hour refresh window was "warmed"
+and expired on its original schedule anyway. Only a genuinely ABSENT key was
+ever re-fetched.
+
+The measurement, six days after the cold pass:
+
+| layer | absent | inside 26h window | healthy |
+|---|---|---|---|
+| discography | 2 | 477 | 11 |
+| artist:v2 | 2 | 471 | 17 |
+| search.artist | 0 | 473 | 17 |
+| search.rg | 1 | 469 | 20 |
+| **total** | **5** | **1,890** | **65** |
+
+**1,890 of 1,960 layers inside the window at once**, and the only 65 with healthy
+TTLs were the ones that had genuinely expired and so were genuinely re-fetched —
+the mechanism confirming itself. A TTL histogram dated the cliff: **1,898 of
+1,960 keys expiring in one 12-hour block on 08-06**, median 14:57 UTC. At
+`WARM_BATCH_SIZE=100` that is a five-night recovery ending 08-10, the day before
+the Kickstarter launch.
+
+Two causes compound. The fleet was written in a single 4-hour pass on 07-30, so
+it was born synchronized; and because a warm hit never rewrites, **it could never
+desynchronize on its own**.
+
+**The fix is two things, and one of them is not the obvious one.**
+
+- `cached()` takes `{ refresh, jitterSeconds }`. `refresh` skips the read and
+  re-fetches. An `EXPIRE` on the existing value was **rejected deliberately** —
+  it would keep week-old data alive forever on the strength of having looked at
+  it. A TTL exists for freshness, so the only honest way to re-date one is to ask
+  upstream again. Throwing still prevents the write, so §1/§2 are untouched.
+- Warm writes **jitter** the TTL by up to 4 days, subtracted never added, so a
+  TTL stays a bound on staleness. Without this the refresh fix alone would have
+  re-synchronized the fleet into an identical cliff on ~08-13, two days into the
+  live campaign. Blake caught that; the first proposal had it as optional.
+
+**Covers get the jitter but NOT the refresh.** `needsWarming` does not gate on
+cover URLs, so refreshing them would put ~2,000 Cover Art Archive requests a
+night on the one upstream §7 records us having overloaded. The renditions live on
+disk with no TTL and `ensureVariant` re-checks the disk, so an expired
+`caa:rg:urls` costs one bounded, single-attempt discovery lookup — never the
+image bytes.
+
+**The regression test was verified against the pre-fix code**, and the first
+draft of it was worthless. The jitter assertion originally counted *distinct*
+TTLs and **passed** against the old code, because `redis.ttl` ticks down by a
+second or two while a sweep runs. Rewritten to measure spread: the old code
+produced **25 seconds** against a 3,600s threshold; the fix produces days. The
+re-fetch assertion failed with `expected 0 to be greater than 0`. A third test —
+a freshly warmed target must still be *skipped* — passes both before and after,
+which is what makes the change surgical rather than "re-fetch everything nightly".
+
+**The deploy reset the sweep timer, which nearly undid the point.**
+`startWarming` uses `setInterval` with no leading call (recorded in 6.1.4 and
+true again here), so recreating the backend at 18:47 UTC moved the first sweep
+from 08-05 19:52 to **08-06 18:47** — roughly four hours *after* the fleet's
+median expiry. The fix would have shipped correctly and still let the cliff
+happen. Corrected by running the operator path immediately:
+`warm-run.ts` detached via the `migrate` maintenance image. Its `--dry-run`
+reported **490 of 490 due**, which is both the cliff and the 6.2e dry-run fix
+still holding.
+
+**What this says about the logs is the part worth keeping.** `lastResult`
+recorded the outcome of an *attempt* and was honest about it; what nothing
+recorded was whether the attempt did any work. Six nights of `0 with failures`
+described a job that was almost entirely no-ops. The check that would have caught
+it is the one the fix's test now encodes — *did upstream actually get asked, and
+did the TTL actually move* — and neither is visible in a success count. Same
+class as 6.1.5's `warmed N`: a number that counts intentions reads exactly like
+one that counts results.
+
+**Verified live, from production Redis, mid-run.** Before: every layer bunched at
+22–26h. After the first six targets: TTLs spread across **74h–162h** (3.1–6.7
+days), a different value for every layer of every artist — jitter doing exactly
+what it exists to do.
+
+#### The one key that did NOT move, and why that is the fix working
+
+`mb:artist:search:the beatles` stayed at 22.1h while The Beatles' other three
+layers re-dated. The run log has the reason: `HTTP 503 on /artist/?query=The
+Beatles` → `artist search degraded`. Under §1 a degraded discovery answer is not
+cached, so the callback threw, `cached()` never reached its write, and **the
+existing entry was left alone rather than replaced by an empty one**. That is the
+documented contract for `refresh` and it held on its first night in production.
+`needsWarming` will select the target again tomorrow, since 22.1h is inside the
+window.
+
+**But `lastResult` says `ok: 1042 release-groups, 19 covers`.** A degraded search
+layer is invisible in the outcome column, because `searchMusicBrainzArtists`
+catches `UpstreamUnavailableError` internally and degrades to `[]` per §7 — so
+`warmTarget`'s `layer()` wrapper sees no throw and records the layer as warmed.
+The row reports a clean sweep for a target where one layer of four did nothing.
+
+Filed rather than fixed, deliberately: changing the reporting mid-run would split
+this run's log across two behaviours and make it unreadable as evidence — the
+same reasoning 6.1.5 applied to the cover retry policy. It is a smaller sibling
+of the bug above and belongs with it: **`ok` is once again describing an intention
+rather than a result.**
+
 ## Brand v3 — the eighth-note/L identity (DONE 2026-07-30)
 
 The Groove glyph was always a placeholder, and Phase 7 item 2 said so. The
