@@ -45,10 +45,23 @@ echo "════════════════════════�
 
 echo
 echo "── 1. last sweep ───────────────────────────────────────────────"
-docker logs "$API" --timestamps --since 48h 2>&1 |
-  grep -E '\[warm\] (warmed|artist pre-warming)' | tail -3 ||
-  echo "  (no [warm] lines in the last 48h — the timer resets on every container"
-echo "   recreate, so a recent deploy delays the first sweep by up to 24h)"
+sweeps=$(docker logs "$API" --timestamps --since 48h 2>&1 |
+  grep -E '\[warm\] (warmed|artist pre-warming)' | tail -3)
+if [ -n "$sweeps" ]; then
+  echo "$sweeps" | sed 's/^/  /'
+else
+  echo "  (no [warm] lines in the last 48h)"
+fi
+# A boot line is not a sweep. `startWarming` uses setInterval with no leading
+# call and the timer restarts on every container recreate, so a deploy postpones
+# the first sweep by up to WARM_INTERVAL_MINUTES — worth saying out loud, but
+# only when it is actually true.
+if ! printf '%s' "$sweeps" | grep -q '\[warm\] warmed'; then
+  echo
+  echo "  NOTE: no COMPLETED sweep in the window — only a boot line, or nothing."
+  echo "  The interval timer has no leading call and restarts on every container"
+  echo "  recreate, so a recent deploy postpones the first sweep by up to 24h."
+fi
 
 echo
 echo "── 2. lastResult ───────────────────────────────────────────────"
