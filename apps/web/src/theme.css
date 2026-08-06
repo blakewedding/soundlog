@@ -927,3 +927,68 @@ input::placeholder { color: var(--text-faint); }
   cursor: pointer;
 }
 .settings-check input { width: 18px; height: 18px; accent-color: var(--gold); flex: none; }
+
+/* ---------- Kickstarter campaign banner (TEMPORARY) ----------
+   Deleted wholesale when the campaign ends — this block, CampaignBanner.tsx,
+   and the one usage in App.tsx. Tokens only, no new colours.
+
+   Gold ground with ink text, deliberately the inverse of the app's dark chrome:
+   a strip that reads as the SAME material as the nav is not an announcement,
+   it is just more nav. --ink-0 on --gold measures 8.22:1, comfortably AAA. */
+.ks-banner {
+  display: flex;
+  align-items: stretch;
+  background: var(--gold);
+  min-height: 40px;
+}
+/* Sits ABOVE the sticky nav in normal flow, so it scrolls away and the nav
+   still pins to top: 0 behind it. Nothing here touches .nav. */
+.ks-banner-link {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--ink-0);
+  text-decoration: none;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.ks-banner-link:hover,
+.ks-banner-link:focus-visible {
+  background: var(--gold-bright);
+  color: var(--ink-0);
+}
+/* Its own hit target, ≥44px wide, so a thumb aiming at the × never opens the
+   campaign page instead. */
+.ks-banner-dismiss {
+  flex: none;
+  min-width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink-0);
+  opacity: 0.7;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+.ks-banner-dismiss:hover,
+.ks-banner-dismiss:focus-visible {
+  opacity: 1;
+}
+@media (max-width: 560px) {
+  /* Taller on a phone so the whole strip is a comfortable tap target and the
+     copy has room to wrap to two lines without crowding the ×. */
+  .ks-banner { min-height: 48px; }
+  .ks-banner-link { font-size: 12px; }
+}

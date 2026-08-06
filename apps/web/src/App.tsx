@@ -1,5 +1,6 @@
 import { Routes, Route, useLocation } from "react-router-dom";
 import { Nav } from "./components/ui/Nav";
+import { CampaignBanner } from "./components/ui/CampaignBanner";
 import { BuildStamp } from "./components/ui/BuildStamp";
 import Home from "./pages/Home";
 import Search from "./pages/Search";
@@ -28,6 +29,10 @@ export default function App() {
 
   return (
     <>
+      {/* Campaign-duration only. Removing it is deleting this line and
+          CampaignBanner.tsx — nothing else references it. Above <Nav> in normal
+          flow so the nav keeps pinning to top: 0 once the strip scrolls away. */}
+      <CampaignBanner />
       <Nav />
       {/* Keying <main> on the path restarts the fade on every route change.
           Without the key React reuses the element and the animation, having
