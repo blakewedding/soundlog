@@ -3711,6 +3711,31 @@ validated by reproducing every figure already published in `theme.css`.
 places, all Job A. Those screens are rebuilt in Phase 7 and pick up the decision
 then; swapping them now buys a divergence with no surface to show it on.
 
+**Deployed and verified** at `8e7b6bf`. `verify-prod-stack.sh` green end to end;
+the live hashed asset `/assets/index-3QDKkTBS.css` carries the three tokens and
+the `.artist-link` pair, and all 29 `.meta` elements on soundlog.app compute to
+one colour. Suites: web 264, backend 469.
+
+**The deploy reset the warm timer again, and the operator path was run** — the
+same correction 6.2g needed, and now filed as Phase 7 item 6. The dry run is the
+useful number: **16 of 490 due**, against **490 of 490** at the cliff on 08-05.
+The 6.2g recovery is done and the jitter is visibly holding — TTLs spread
+26h–127h rather than bunched at 22–26h. The sweep warmed all 16 in 04m12s
+(4,909 release-groups cached, 273 cover renditions on disk).
+
+**Verified by re-running the dry run rather than by trusting the tally**, which
+is 6.2g's own lesson — `warmed N` counts attempts, not outcomes. After: **6 of
+490 due**. The TTLs demonstrably moved (Drake 37h→120h, Townes Van Zandt
+57h→126h, Darkthrone 113h→86h, Prince 100h→83h — every one rewritten with a
+fresh jitter). Two of the residual six are newly crossing the threshold; the
+other four had just been warmed, which is consistent with §1 doing its job: a
+layer whose discovery call 503'd is not cached, so it stays due rather than
+caching a degraded answer — the same mechanism 6.2g recorded for
+`mb:artist:search:the beatles`. Not chased: 6 of 490, self-correcting on the
+next sweep. **MusicBrainz 503'd nearly every discovery call during this run**
+while lookups succeeded on retry; discovery gets one attempt by §7 and degraded
+harmlessly, but the rate is worth watching if it persists into launch week.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
@@ -3743,7 +3768,36 @@ What Phase 7 carries, in the order the work naturally falls:
    `verifyCredentials` looks up by email today; accepting either means one
    lookup that tries both, with the same uniform "invalid email or password"
    answer so it cannot be used to probe which usernames exist.
-6. **The post-launch checklist above**, which is dated rather than blocked.
+6. **The warm sweep's schedule must survive a restart.** `startWarming`
+   (`warmService.ts`) is a `setInterval` with **no leading call**, so the first
+   sweep is one full interval — 1440m in production — after boot, and **every
+   deploy resets it**. This has now bitten three times: recorded in 6.1.4, again
+   in 6.1.5 as the thing that made a pre-warming verification plan
+   unfalsifiable, and again in 6.2g, where recreating the backend at 18:47 UTC
+   moved the first sweep to four hours *after* the fleet's median expiry and
+   nearly undid the fix being deployed. On 2026-08-07 two deploys in one day
+   deferred it twice. **Deploys landing more often than every 24h mean the sweep
+   never runs at all** — 6.2g's failure mode (a job that silently accomplishes
+   nothing) reached through deployment cadence instead of through `cached()`.
+
+   Filed as a fix rather than a known nuisance, and **deliberately not done in
+   launch week**. Two candidate shapes, and the cheap one is not obviously right:
+
+   - **A leading call on boot** is nearly one line, but it makes every deploy
+     start a full sweep — half an hour of upstream work against a cold list,
+     repeatedly, exactly during a deploy-heavy period. That cost is why the
+     current shape exists; it is not an oversight.
+   - **A persisted last-sweep timestamp** (Postgres, beside `WarmTarget`) with
+     the interval computed against it, so a restart resumes the schedule rather
+     than restarting it. More work, and the correct answer: it fixes the reset
+     without converting every deploy into an upstream burst, and it makes "when
+     did the sweep last actually run" answerable — which it currently is not,
+     because container recreation resets the logs.
+
+   Whichever ships, `warm-run.ts` stays: an operator path that runs in the
+   foreground and reports what it did is worth having regardless of the timer.
+
+7. **The post-launch checklist above**, which is dated rather than blocked.
 
 Before starting **either phase**, read the **Production operations** section of
 the README — everything from here on ships to a live site with real users' data
