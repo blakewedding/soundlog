@@ -3568,6 +3568,55 @@ Master kit archived at `brand/`; the seven files the web app actually serves are
 copied into `apps/web/public/`. Lockups and the avatar cut are in the kit but
 unreferenced — deliberately not shipped to a static dir that every deploy copies.
 
+### Small renditions use the FLAT build — resource-dependent geometry is not safe (2026-08-07)
+
+**Rule: at small sizes the mark is `Soundlog_Mark_v3_Flat.svg`. The gloss build
+is for renditions where the emboss actually reads — `og.png`, the app icons, the
+favicon ladder.**
+
+Blake reported the nav mark rendering in Safari as a solid gold gradient TILE
+with no glyph, wordmark correct beside it. Intermittent: two consecutive loads,
+first wrong, second right.
+
+**The mechanism is in how the gloss build draws.** It does not fill a glyph path.
+It defines the glyph as `clipPath#mc` and paints gradient-filled `<rect>`s
+*through* that clip — the shape exists only as a clip reference. An unresolvable
+`clip-path` renders **unclipped**, and unclipped here is literally
+`rect x=60 y=70 w=460 h=380 fill="url(#mg)"`: a gold gradient rectangle. The
+reported symptom is not a corrupted file, it is the correct file painted one step
+too early.
+
+**Everything else was eliminated first**, and the elimination is the useful part:
+
+- the file — glyph present, in-bounds (ink x 91–492, y 92–432 in a 0–512
+  viewBox), not flattened; renders correctly in Chromium and in WebKit at 512,
+  140, 70 and **35px**, the nav size;
+- the DOM/CSS — `<img>`, not inline, so ID collision and bundler rewriting of
+  `url(#mc)` are both impossible; `.wordmark-glyph` applies no filter or mask;
+- nginx — `/Soundlog_Mark_v3.svg` resolves via `try_files $uri` and the file
+  exists, so the SPA fallback is unreachable. It could not explain the symptom
+  anyway: index.html would be a **broken image**, not a tile;
+- Varnish — never sees the path (only `/api/`, `/covers/`, `/avatars/` proxy);
+- the origin — 60 forced fetches returned one cluster: `200`, 4,991 bytes, one
+  sha256, `image/svg+xml`. Origin logs show only `304`s. No second cluster.
+
+So the server is deterministic and the race is in WebKit's SVG-as-`<img>` paint
+path. **We cannot fix the race. What we can fix is the blast radius**, and that
+is the actual defect: the gloss build makes the glyph's EXISTENCE depend on a
+resolvable reference, so a resolution hiccup costs the entire shape rather than
+the sheen. `_Flat.svg` is the same path data and the same `translate(-37.6 -6)`
+with a flat `--gold` fill: **8 `url(#…)` references become 0**. The failure mode
+is unreachable by construction rather than unlikely.
+
+Sizing did not move — identical geometry means the ink bbox `MARK_SCALE` is
+derived from is unchanged, and the nav measures 61px as before.
+
+The general lesson, worth applying beyond this mark: **an asset whose geometry
+depends on an internal reference fails catastrophically, not cosmetically.** A
+gradient that fails to resolve costs you a colour; a clip that fails to resolve
+costs you the drawing. Prefer builds where the shape is a filled path wherever a
+failure would be visible and you are not there to see it.
+
 ## Social share cards (DONE 2026-07-30)
 
 A pasted soundlog.app link had unfurled bare since launch — no `og:image`, no

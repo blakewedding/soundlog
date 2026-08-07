@@ -57,13 +57,35 @@ const MARK_SCALE = 1.75;
  * inset beneath.
  *
  * The mark is an <img> pointing at the shipped SVG, NOT inline SVG, and that is
- * deliberate. The artwork is a gloss rendition — an eight-stop gradient plus a
- * specular overlay — and the brand guardrail is that it is never recoloured and
- * never redrawn. Inlining it would put those stops in JSX where a call site
- * could reach them with a `currentColor` or a CSS filter; referencing the file
- * makes "as shipped" the only thing that can happen. It also means the mark is
- * one cacheable request shared with the favicon ladder rather than markup
+ * deliberate. The brand guardrail is that the mark is never recoloured and never
+ * redrawn. Inlining would put the artwork in JSX where a call site could reach
+ * it with a `currentColor` or a CSS filter; referencing the file makes "as
+ * shipped" the only thing that can happen. It also means the mark is one
+ * cacheable request shared with the favicon ladder rather than markup
  * re-serialized into every HTML response.
+ *
+ * ## Why this points at the FLAT build and not the gloss one
+ *
+ * `Soundlog_Mark_v3.svg` is a gloss rendition, and it draws the glyph by
+ * painting gradient-filled rects THROUGH `clipPath#mc` — the shape exists only
+ * as a clip. Safari intermittently painted before that reference resolved, and
+ * an unresolvable `clip-path` renders unclipped, so the nav showed a solid gold
+ * gradient TILE instead of the mark. Intermittent, byte-identical responses,
+ * correct on the next repaint.
+ *
+ * The defect is not the race, which we cannot fix. It is that the gloss build
+ * makes the glyph's EXISTENCE depend on a resolvable reference, so a resolution
+ * hiccup costs the whole shape rather than the sheen. `_Flat.svg` is the same
+ * geometry with a flat `--gold` fill and no clipPath, mask, filter or gradient —
+ * nothing to resolve, so the failure mode is unreachable by construction.
+ *
+ * Sizing is unaffected: the flat build carries the identical path data and the
+ * same `translate(-37.6 -6)`, so the ink bbox MARK_SCALE is derived from is
+ * unchanged.
+ *
+ * The gloss build stays everywhere the emboss actually reads — og.png, the app
+ * icons, the favicon ladder. At 35px the sheen is imperceptible and the
+ * guarantee is worth more.
  *
  * The rule is size-dependent, not a per-call-site choice. At nav scale it sits
  * within ~20px of the nav's own bottom border and the two read as a mistake;
@@ -87,7 +109,7 @@ export function Wordmark({ size = 20, rule = size >= RULE_MIN_SIZE }: Props) {
       */}
       <img
         className="wordmark-glyph"
-        src="/Soundlog_Mark_v3.svg"
+        src="/Soundlog_Mark_v3_Flat.svg"
         alt=""
         aria-hidden="true"
         width={mark}
