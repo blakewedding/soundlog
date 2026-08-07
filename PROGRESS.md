@@ -5,12 +5,15 @@ Execution state. `CLAUDE.md` holds the binding patterns (read it first);
 we, what's live, what's next" for a session starting cold.
 
 **Repo:** https://github.com/blakewedding/soundlog · `main`
-**Last updated:** 2026-07-29 — **Phase 6.2b is CLOSED**, all six steps deployed
+**Last updated:** 2026-08-07 — **Phase 6.2b is CLOSED**, all six steps deployed
 and verified on production (settings page · reserved usernames · password and
 email change · visibility across both stores · the Pro row · account deletion to
 App Store 5.1.1(v)), plus 6.2c. The server housekeeping task is **done**: 18
 updates applied, rebooted into kernel `6.8.0-136`, ~60s downtime, full chain
-re-verified. Next: **Phase 7**.
+re-verified. Since then: social share cards (07-30), **6.2g — the warm sweep
+no-op** (08-05, and its TTL-cliff recovery runs through ~08-10), brand v3 in the
+nav, the genre canonicalization heals, and the **muted text tier going warm**
+(08-07, section below). Next: **Phase 7**. Kickstarter launch **2026-08-11**.
 
 ## Status
 
@@ -3652,6 +3655,61 @@ Two live consequences, filed rather than defects:
   render per-route HTML for crawler paths — a backend change, not a tag.
 - **`og:image:width`/`height` are a contract**, declared 1200×630. Replacement
   artwork must be exactly that or the card crops wrong.
+
+## The muted text tier goes warm (DONE 2026-08-07)
+
+`--text-muted` was `#9c978b`, a near-neutral grey, and is now **`#E3CDA6`**. A
+design change, not a fix — but it could not be made as a value change, and the
+reason is the part worth keeping.
+
+**One token was doing two jobs.** Thirteen call sites, and they split cleanly:
+
+- **Secondary CONTENT** — `.meta` (162 uses), `.section-label` (21),
+  `.settings-label`, page ledes, bios, list descriptions. Quiet because the
+  information is secondary.
+- **The RESTING state of a control** — `.nav-links a`, `.tab`, `.btn-ghost`, the
+  Profile tab button. Quiet *relative to something else*, which is the whole job.
+
+Warm gold breaks the second kind, and the measurement says why: **`#E3CDA6` is
+12.76:1 on ink-0, brighter than `--gold-bright` (11.66) and `--gold` (8.22).** It
+would have become the second most luminous thing in the system, above every
+accent. A control resting in it outshines its own active state. Hence
+`--text-inactive`, holding the old `#9c978b` for those four sites, and
+`--text-faint` picking up the avatar fallback glyph (a placeholder, not a rest
+state, and a non-text graphic answering to 1.4.11's 3:1 — 4.74 clears it).
+
+**The first split was drawn in the wrong place, and the app said so.**
+`.artist-link` went to the grey tier on the strength of its hover inverting
+(rest 12.76 → hover `--gold` 8.22 is a link that *darkens* when you point at it).
+But `.artist-link` is not artist links — it is the class for **any metadata
+link**; `ArtistCredit` defaults to `className="artist-link meta"`, and
+`Release.tsx` puts it on the year and the label too. So the split landed on
+**markup rather than meaning**, and it showed immediately: "Slint" rendered grey
+directly above "1991" in cream inside one caption, and the *same* year rendered
+warm in a grid tile but grey on the release page. Measured on the live page: 13
+grey / 14 warm across 27 `.meta` elements, in one view.
+
+The sharper criterion, which is what the token comment now carries: **grey is for
+a control with a SIMULTANEOUSLY VISIBLE active sibling.** You must tell at a
+glance which tab is active. A hover link has no such sibling — its resting state
+is never on screen beside its own hover — so metadata links are content and stay
+warm, with hover moving to `--gold-bright`: 12.76 → 11.66 barely moves contrast
+while saturation jumps 52% → 71%, so the link lights up instead of dimming.
+Confirmed by eye on the running app, and by computed colour: hovered
+`rgb(230,195,106)` against a resting sibling at `rgb(227,205,166)`.
+
+Final: `--text-muted` 8 sites, `--text-inactive` 4, `--text-faint` gains the
+avatar glyph. All 27 `.meta` elements now compute to one colour.
+
+**Contrast.** 12.76 / 11.96 / 10.95 on ink-0 / ink-1 / ink-2. Every site is
+normal-size text — the largest is 15px, and WCAG's large-text allowance needs
+18.66px bold or 24px regular — so 4.5:1 is the bar at all of them. Worst case is
+`.meta` on a raised surface at 10.95, past AAA's 7:1. The ratio method was
+validated by reproducing every figure already published in `theme.css`.
+
+**Mobile is deliberately untouched.** `apps/mobile` hardcodes `#9c978b` in four
+places, all Job A. Those screens are rebuilt in Phase 7 and pick up the decision
+then; swapping them now buys a divergence with no surface to show it on.
 
 ## Then — Phase 7
 

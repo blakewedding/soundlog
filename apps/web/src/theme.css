@@ -23,8 +23,29 @@
   --gold-dim:    #967e39;  /* pressed, secondary accents — 5.03 / 4.72 */
 
   /* Text. Ratios on ink-0 / ink-1 / ink-2; all clear AA for normal text. */
-  --text:       #edeae2;  /* 16.45 */
-  --text-muted: #9c978b;  /* 6.79 */
+  --text:       #edeae2;  /* 16.45 / 15.43 / 14.12 */
+  /* Secondary CONTENT — metadata lines, section labels, ledes, bios, and the
+     metadata LINKS (artist, year, label). Quiet because the information is
+     secondary, not because something else is louder.
+     Warm by design: it sits on the gold hue (38°) at the gold's own saturation,
+     so it reads as the same material as the accents rather than as neutral grey.
+     12.76 / 11.96 / 10.95 — AAA at every size it appears at, the smallest being
+     .meta and .section-label at 12px. */
+  --text-muted: #E3CDA6;
+  /* The resting state of a control that has a SIMULTANEOUSLY VISIBLE active
+     sibling — nav links, tabs, ghost buttons. That criterion is what separates
+     this from --text-muted, and it is deliberately not "is it a link": you have
+     to tell at a glance WHICH tab is active, so a resting control cannot
+     outshine the active one, and --text-muted at 12.76 outranks both --gold
+     (8.22) and --gold-bright (11.66).
+
+     A hover link has no such sibling — its resting state is never on screen
+     beside its own hover — so .artist-link is content and stays warm. Splitting
+     on link-ness instead is what put "Slint" in grey directly above "1991" in
+     cream inside one caption, and rendered the year warm in a grid tile but grey
+     on the release page: the same datum in two colours, decided by markup rather
+     than by meaning. 6.79 / 6.37 / 5.83. */
+  --text-inactive: #9c978b;
   --text-faint: #8c877b;  /* 5.53 / 5.18 / 4.74 */
 
   /* Semantic */
@@ -158,7 +179,7 @@ select:focus-visible {
 }
 .nav-links { display: flex; gap: var(--space-4); align-items: center; }
 .nav-links a {
-  color: var(--text-muted);
+  color: var(--text-inactive);
   font-size: 13px; font-weight: 500;
   letter-spacing: 0.06em; text-transform: uppercase;
 }
@@ -200,7 +221,7 @@ h2 { font-size: 18px; }
 .btn-primary:hover { background: var(--gold-bright); }
 /* The outline IS the button — nothing else marks its bounds — so it uses the
    3:1 line rather than the decorative one. */
-.btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--line-strong); }
+.btn-ghost { background: transparent; color: var(--text-inactive); border-color: var(--line-strong); }
 .btn-ghost:hover { color: var(--text); border-color: var(--text-faint); }
 /* Destructive. Outlined rather than solid, and that is a deliberate restraint
    rather than a missing fill: this button's job is to be unmistakable when you
@@ -260,7 +281,11 @@ a:hover .cover,
   background: var(--ink-2);
   border: 1px solid var(--line);
   overflow: hidden;
-  color: var(--text-muted);
+  /* currentColor for the fallback person glyph. --text-faint rather than the
+     content or the control-rest token: it is a placeholder standing in for an
+     image, not secondary prose and not a control at rest. As a non-text graphic
+     it answers to WCAG 1.4.11's 3:1, which 4.74 on ink-2 clears. */
+  color: var(--text-faint);
   line-height: 0;
 }
 .avatar img,
@@ -581,8 +606,16 @@ input::placeholder { color: var(--text-faint); }
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
+/* Metadata links — artist, year and label; see ArtistCredit, whose default
+   className is "artist-link meta". Content that happens to be clickable, not a
+   control at rest, so it takes the warm content tier.
+
+   Hover goes to --gold-bright, not --gold. From 12.76 to 11.66 the contrast
+   barely moves while saturation jumps 52% → 71%, so the link lights up. --gold
+   at 8.22 would have made hovering visibly DIM it, which reads as pressed or
+   disabled — the affordance backwards. */
 .artist-link { color: var(--text-muted); }
-.artist-link:hover { color: var(--gold); }
+.artist-link:hover { color: var(--gold-bright); }
 
 /* ---------- Lightbox ---------- */
 .cover-zoom { cursor: zoom-in; }
@@ -620,7 +653,7 @@ input::placeholder { color: var(--text-faint); }
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: var(--text-muted);
+  color: var(--text-inactive);
   font-family: var(--font-data);
   font-size: 12px;
   letter-spacing: 0.08em;

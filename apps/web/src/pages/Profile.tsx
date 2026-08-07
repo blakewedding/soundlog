@@ -146,7 +146,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
         border: "none",
         borderBottom: active ? "2px solid var(--gold)" : "2px solid transparent",
         borderRadius: 0,
-        color: active ? "var(--text)" : "var(--text-muted)",
+        color: active ? "var(--text)" : "var(--text-inactive)",
       }}
     >
       {children}
