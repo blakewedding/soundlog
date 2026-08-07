@@ -24,12 +24,14 @@ import {
 } from "../../src/services/genre/genreSupplement.js";
 import { hasInformativeWeights } from "../../src/services/lastfmService.js";
 
-/** The snapshot allow-set, built the same way the service builds it. */
-const ALLOW = new Set<string>([
-  ...MB_GENRE_SNAPSHOT.map(normalizeGenre),
-  ...GENRE_SUPPLEMENT.map(normalizeGenre),
-  ...Object.values(GENRE_ALIASES).map(normalizeGenre),
-]);
+/** The snapshot map, built the same way the service builds it. */
+const ALLOW = new Map<string, string>();
+for (const n of MB_GENRE_SNAPSHOT) ALLOW.set(normalizeGenre(n), n.toLowerCase());
+for (const n of GENRE_SUPPLEMENT) ALLOW.set(normalizeGenre(n), n);
+for (const c of Object.values(GENRE_ALIASES)) {
+  const k = normalizeGenre(c);
+  if (!ALLOW.has(k)) ALLOW.set(k, c);
+}
 
 const keep = (t: string) => canonicalGenre(t, ALLOW);
 
@@ -60,6 +62,30 @@ describe("genre allowlist", () => {
     for (const variant of ["post rock", "post-rock", "synthpop", "synth-pop", "darkwave"]) {
       expect(keep(variant), variant).not.toBeNull();
     }
+  });
+
+  it("stores the VOCABULARY spelling, not the tagger's", () => {
+    // 6.3b. Matching was already separator-insensitive, so these were always
+    // recognised as one genre — but the old code stored whichever spelling
+    // arrived, which is how production ended up with `post-rock` (103 uses) and
+    // `post rock` (55) as two genres on two separate /genre/ pages, and a Mogwai
+    // row rendering both at once.
+    expect(keep("post rock")).toBe("post-rock");
+    expect(keep("post-rock")).toBe("post-rock");
+    expect(keep("synthpop")).toBe("synth-pop");
+    expect(keep("synth pop")).toBe("synth-pop");
+    expect(keep("hip-hop")).toBe("hip hop");
+    expect(keep("trip-hop")).toBe("trip hop");
+    expect(keep("singer songwriter")).toBe("singer-songwriter");
+    expect(keep("neo-soul")).toBe("neo soul");
+    expect(keep("darkwave")).toBe("dark wave");
+  });
+
+  it("collapses spelling variants to ONE chip in a row", () => {
+    // The Mogwai row, exactly as the backfill preview produced it.
+    expect(
+      canonicalGenres(["post-rock", "instrumental", "indie", "alternative", "post rock"], ALLOW)
+    ).toEqual(["post-rock", "instrumental", "indie", "alternative"]);
   });
 
   it("resolves variant spellings to their canonical MusicBrainz term", () => {

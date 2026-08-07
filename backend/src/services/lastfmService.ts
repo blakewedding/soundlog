@@ -2,7 +2,7 @@
 // release after it is seeded. Cached in Redis for 7 days.
 import { env } from "../config/env.js";
 import { cached } from "./cache.js";
-import { canonicalGenres, genreAllowSet } from "./genreVocabulary.js";
+import { canonicalGenres, genreCanonicalMap } from "./genreVocabulary.js";
 
 const BASE = "https://ws.audioscrobbler.com/2.0/";
 const WEEK = 60 * 60 * 24 * 7;
@@ -140,7 +140,7 @@ export function hasInformativeWeights(weights: readonly number[]): boolean {
 function cleanTags(
   raw: LastfmTag[],
   artist: string,
-  allow: Set<string>,
+  allow: Map<string, string>,
   album?: string
 ): string[] {
   const scored = raw
@@ -162,7 +162,7 @@ function cleanTags(
 export async function getAlbumGenres(artist: string, album: string): Promise<string[]> {
   if (!lastfmConfigured()) return [];
   try {
-    const [data, allow] = await Promise.all([getAlbumTags(artist, album), genreAllowSet()]);
+    const [data, allow] = await Promise.all([getAlbumTags(artist, album), genreCanonicalMap()]);
     return cleanTags(
       asArray(data?.toptags?.tag).slice(0, CANDIDATE_POOL),
       artist,
@@ -184,7 +184,7 @@ export async function getArtistGenres(artist: string): Promise<string[]> {
       cached(key, WEEK, () =>
         lastfmFetch<ArtistTopTagsResponse>("artist.gettoptags", { artist: a })
       ),
-      genreAllowSet(),
+      genreCanonicalMap(),
     ]);
     return cleanTags(asArray(data?.toptags?.tag).slice(0, CANDIDATE_POOL), artist, allow).slice(
       0,

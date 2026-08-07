@@ -56,17 +56,36 @@ const ALIAS_BY_NORM = new Map(
   Object.entries(GENRE_ALIASES).map(([variant, canonical]) => [normalizeGenre(variant), canonical])
 );
 
-function buildAllowSet(names: readonly string[]): Set<string> {
-  const set = new Set<string>();
-  for (const n of names) set.add(normalizeGenre(n));
-  for (const n of GENRE_SUPPLEMENT) set.add(normalizeGenre(n));
+/**
+ * normalized form -> the spelling we STORE.
+ *
+ * A Map rather than a Set, and that is the whole of 6.3b. Matching was already
+ * separator-insensitive, so `post rock` and `post-rock` were recognised as one
+ * genre — but the old code then stored whichever spelling the tagger happened to
+ * use, so they lived on as two. Measured on production: 8 genres under multiple
+ * spellings across 308 chip occurrences, `post-rock` alone split 103/55 over two
+ * separate /genre/ pages, and one Mogwai row about to render `post-rock` and
+ * `post rock` side by side.
+ *
+ * Resolving to the VOCABULARY's spelling collapses both problems at once: one
+ * chip per genre in a row, and one page per genre in the catalog.
+ */
+function buildAllowMap(names: readonly string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  // MusicBrainz first — its spelling wins wherever it has an opinion.
+  for (const n of names) map.set(normalizeGenre(n), n.toLowerCase());
+  // Supplement terms are ones MB does not carry, so they cannot collide.
+  for (const n of GENRE_SUPPLEMENT) map.set(normalizeGenre(n), n);
   // An alias's TARGET must be allowed even if the variant is what we saw.
-  for (const canonical of Object.values(GENRE_ALIASES)) set.add(normalizeGenre(canonical));
-  return set;
+  for (const canonical of Object.values(GENRE_ALIASES)) {
+    const norm = normalizeGenre(canonical);
+    if (!map.has(norm)) map.set(norm, canonical);
+  }
+  return map;
 }
 
 /** The floor: always available, never depends on an upstream being reachable. */
-const SNAPSHOT_ALLOW = buildAllowSet(MB_GENRE_SNAPSHOT);
+const SNAPSHOT_ALLOW = buildAllowMap(MB_GENRE_SNAPSHOT);
 
 /**
  * Populate the live vocabulary. EXPLICIT, never a side effect of reading.
@@ -98,7 +117,7 @@ export async function primeGenreVocabulary(): Promise<void> {
  * live list is cached, from the bundled snapshot otherwise. It never fetches,
  * so it can be called from any hot path without surprising anyone.
  */
-export async function genreAllowSet(): Promise<Set<string>> {
+export async function genreCanonicalMap(): Promise<Map<string, string>> {
   let live: string[] | undefined;
   try {
     live = await peekCached<string[]>(GENRE_VOCAB_KEY);
@@ -108,7 +127,7 @@ export async function genreAllowSet(): Promise<Set<string>> {
   if (live === undefined) return SNAPSHOT_ALLOW;
   // Union, never replacement: a live list that came back short must not shrink
   // the vocabulary below what shipped.
-  return buildAllowSet([...MB_GENRE_SNAPSHOT, ...live]);
+  return buildAllowMap([...MB_GENRE_SNAPSHOT, ...live]);
 }
 
 /**
@@ -117,7 +136,7 @@ export async function genreAllowSet(): Promise<Set<string>> {
  * Order matters: decades are rejected before aliasing, and aliasing happens
  * before the allow check so a variant spelling is judged by its target.
  */
-export function canonicalGenre(raw: string, allow: Set<string>): string | null {
+export function canonicalGenre(raw: string, allow: Map<string, string>): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   if (DECADE_TAG.test(trimmed.toLowerCase())) return null;
@@ -125,14 +144,19 @@ export function canonicalGenre(raw: string, allow: Set<string>): string | null {
   const norm = normalizeGenre(trimmed);
   if (!norm) return null;
 
+  // An alias resolves to its target, and the target is then looked up too — so
+  // a variant lands on MusicBrainz's spelling rather than on whatever the alias
+  // table happened to write.
   const aliased = ALIAS_BY_NORM.get(norm);
-  if (aliased) return aliased;
+  if (aliased) return allow.get(normalizeGenre(aliased)) ?? aliased;
 
-  return allow.has(norm) ? trimmed.toLowerCase() : null;
+  // The vocabulary's spelling, NOT the tagger's. This is what stops `post rock`
+  // and `post-rock` becoming two genres.
+  return allow.get(norm) ?? null;
 }
 
 /** Filter and canonicalize a list of raw tags, preserving order, de-duped. */
-export function canonicalGenres(raw: readonly string[], allow: Set<string>): string[] {
+export function canonicalGenres(raw: readonly string[], allow: Map<string, string>): string[] {
   const out: string[] = [];
   for (const tag of raw) {
     const g = canonicalGenre(tag, allow);

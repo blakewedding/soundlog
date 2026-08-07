@@ -33,7 +33,7 @@
 import { prisma } from "../src/config/database.js";
 import { redis } from "../src/config/redis.js";
 import {
-  genreAllowSet,
+  genreCanonicalMap,
   canonicalGenres,
   primeGenreVocabulary,
 } from "../src/services/genreVocabulary.js";
@@ -62,7 +62,7 @@ async function main() {
   // page-walk would be killed in flight, populate nothing, and make the next
   // run re-fetch all 22 pages again.
   await primeGenreVocabulary();
-  const allow = await genreAllowSet();
+  const allow = await genreCanonicalMap();
   console.log(`[heal-genres] allow-set: ${allow.size} normalized forms`);
 
   const releases = await prisma.release.findMany({
