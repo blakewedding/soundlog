@@ -156,7 +156,15 @@ describe("a release seeded on first access", () => {
     expect(res.body.release.enrichment).toBe("ready");
     // The data the first response could not include has arrived, and nothing
     // was written, rated or invalidated to get it.
-    expect(res.body.release.genres).toContain("alt-country");
+    //
+    // CONTRACT CHANGED IN 6.3, deliberately. The stub tags this release
+    // `alt-country`; the genre allowlist now resolves variant spellings to their
+    // canonical MusicBrainz term, and MB files this one as `alternative
+    // country`. The assertion still tests exactly what it always tested — that
+    // the genre survived the enrichment round-trip — under the name it is now
+    // stored with. Asserting the raw tag verbatim would be asserting that
+    // canonicalization does NOT happen, which is the opposite of the fix.
+    expect(res.body.release.genres).toContain("alternative country");
     expect(res.body.release.artist?.name).toBe(ARTIST);
   });
 

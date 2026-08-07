@@ -2,6 +2,7 @@
 // release after it is seeded. Cached in Redis for 7 days.
 import { env } from "../config/env.js";
 import { cached } from "./cache.js";
+import { canonicalGenres, genreAllowSet } from "./genreVocabulary.js";
 
 const BASE = "https://ws.audioscrobbler.com/2.0/";
 const WEEK = 60 * 60 * 24 * 7;
@@ -111,32 +112,63 @@ function isUsableTag(tag: string, artist: string, album?: string): boolean {
   return !JUNK_TAG_PATTERNS.some((re) => re.test(tag));
 }
 
-function cleanTags(raw: LastfmTag[], artist: string, album?: string): string[] {
+/**
+ * Whether a weight spread carries any information.
+ *
+ * Last.fm's `count` is relative to the top tag, so a handful of taggers yields a
+ * few simple fractions — *Transaction de Novo* returned 100/100/66/66/33/33,
+ * which is three people, and is indistinguishable by threshold from an album
+ * tagged by thousands. When the spread is this coarse the weight tells us
+ * nothing about popularity and must not be treated as if it did.
+ */
+export function hasInformativeWeights(weights: readonly number[]): boolean {
+  const positive = weights.filter((w) => w > 0);
+  if (positive.length < 3) return false;
+  return new Set(positive).size > 4;
+}
+
+/**
+ * Filter raw tags down to canonical genres.
+ *
+ * The allowlist is what actually does the work (see `genreVocabulary.ts`); the
+ * junk patterns and the weight floor are cheap pre-filters that survive because
+ * they cost nothing, not because they are sufficient. The floor is applied ONLY
+ * when the weights are informative — previously it was applied whenever any
+ * weight was non-zero, which is how a three-tagger album passed a floor of 5
+ * with everything scoring 33.
+ */
+function cleanTags(
+  raw: LastfmTag[],
+  artist: string,
+  allow: Set<string>,
+  album?: string
+): string[] {
   const scored = raw
     .map((t) => ({ name: t.name?.trim().toLowerCase(), weight: tagWeight(t) }))
     .filter((t): t is { name: string; weight: number } => Boolean(t.name));
 
-  // Only apply the popularity floor when Last.fm actually gave us weights.
-  // Some responses omit `count` entirely; treating every tag as weight 0 there
-  // would discard the whole set rather than filtering noise out of it.
-  const hasWeights = scored.some((t) => t.weight > 0);
+  const informative = hasInformativeWeights(scored.map((t) => t.weight));
 
-  return scored
-    .filter((t) => !hasWeights || t.weight >= MIN_TAG_WEIGHT)
+  const surviving = scored
+    .filter((t) => !informative || t.weight >= MIN_TAG_WEIGHT)
     .filter((t) => isUsableTag(t.name, artist, album))
     .sort((x, y) => y.weight - x.weight)
     .map((t) => t.name);
+
+  return canonicalGenres(surviving, allow);
 }
 
 /** Quality-filtered album tags, most popular first. Best-effort. */
 export async function getAlbumGenres(artist: string, album: string): Promise<string[]> {
   if (!lastfmConfigured()) return [];
   try {
-    const data = await getAlbumTags(artist, album);
-    return cleanTags(asArray(data?.toptags?.tag).slice(0, CANDIDATE_POOL), artist, album).slice(
-      0,
-      MAX_GENRES
-    );
+    const [data, allow] = await Promise.all([getAlbumTags(artist, album), genreAllowSet()]);
+    return cleanTags(
+      asArray(data?.toptags?.tag).slice(0, CANDIDATE_POOL),
+      artist,
+      allow,
+      album
+    ).slice(0, MAX_GENRES);
   } catch {
     return [];
   }
@@ -148,10 +180,13 @@ export async function getArtistGenres(artist: string): Promise<string[]> {
   const a = normalizeForLastfm(artist);
   const key = `lastfm:artisttags:${a}`.toLowerCase();
   try {
-    const data = await cached(key, WEEK, () =>
-      lastfmFetch<ArtistTopTagsResponse>("artist.gettoptags", { artist: a })
-    );
-    return cleanTags(asArray(data?.toptags?.tag).slice(0, CANDIDATE_POOL), artist).slice(
+    const [data, allow] = await Promise.all([
+      cached(key, WEEK, () =>
+        lastfmFetch<ArtistTopTagsResponse>("artist.gettoptags", { artist: a })
+      ),
+      genreAllowSet(),
+    ]);
+    return cleanTags(asArray(data?.toptags?.tag).slice(0, CANDIDATE_POOL), artist, allow).slice(
       0,
       MAX_GENRES
     );

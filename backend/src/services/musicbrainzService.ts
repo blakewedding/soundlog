@@ -626,6 +626,52 @@ async function assembleDiscography(
   return entries;
 }
 
+interface GenreAllResponse {
+  genres?: Array<{ name?: string }>;
+  "genre-count"?: number;
+}
+
+/**
+ * MusicBrainz's published genre vocabulary (~2,200 entries), walked in pages of
+ * 100 through the shared gate at `background` tier — nobody is blocked on this,
+ * and it is the only caller that makes ~22 requests in a row.
+ *
+ * Completeness is checked against upstream's own `genre-count` and a short read
+ * THROWS (§2). A truncated vocabulary is worse than none: it would silently
+ * reclassify real genres as junk, and `cached()` would then keep that answer for
+ * a month. Throwing is what keeps the partial list out of Redis.
+ */
+export async function fetchGenreVocabulary(): Promise<string[]> {
+  const PAGE = 100;
+  const names: string[] = [];
+  let offset = 0;
+  let total: number | null = null;
+
+  do {
+    const data = await mbFetch<GenreAllResponse>(
+      `/genre/all?fmt=json&limit=${PAGE}&offset=${offset}`,
+      { tier: "background" }
+    );
+    if (!data?.genres) {
+      throw new UpstreamUnavailableError(
+        "musicbrainz",
+        `genre vocabulary page at offset ${offset} returned no genres`
+      );
+    }
+    if (total === null) total = data["genre-count"] ?? 0;
+    for (const g of data.genres) if (g.name) names.push(g.name);
+    offset += PAGE;
+  } while (total !== null && offset < total);
+
+  if (total === null || names.length < total) {
+    throw new UpstreamUnavailableError(
+      "musicbrainz",
+      `genre vocabulary short read (${names.length}/${total ?? "unknown"})`
+    );
+  }
+  return names;
+}
+
 export const discographyCacheKey = (artistMbid: string) => `mb:artist:discography:${artistMbid}`;
 
 /**

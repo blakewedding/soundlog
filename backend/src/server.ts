@@ -5,6 +5,7 @@ import { redis } from "./config/redis.js";
 import { startActivityWorker } from "./jobs/activityQueue.js";
 import { startPrewarming } from "./services/prewarmService.js";
 import { startWarming } from "./services/warmService.js";
+import { primeGenreVocabulary } from "./services/genreVocabulary.js";
 import { assertSingleApiInstance } from "./config/singleInstance.js";
 
 async function main() {
@@ -22,6 +23,10 @@ async function main() {
 
   startPrewarming();
   startWarming();
+  // Fire-and-forget: the bundled snapshot already serves, so nothing waits on
+  // this. Explicit at boot rather than lazily from the read path, so enriching
+  // one release can never quietly become a 22-page walk.
+  void primeGenreVocabulary();
 
   const app = createApp();
   app.listen(env.PORT, () => {
