@@ -5,6 +5,7 @@
 // require a floor of ratings once the catalog is dense enough.
 import type { Prisma, ReleaseType } from "@prisma/client";
 import { prisma } from "../config/database.js";
+import { genreCanonicalMap, normalizeGenre } from "./genreVocabulary.js";
 
 // Bayesian prior strength: how many "phantom" votes at the global mean each
 // release starts with. Higher = more skeptical of thinly-rated releases.
@@ -33,9 +34,48 @@ export interface ChartOptions {
   limit?: number;
 }
 
-/** A URL slug ("detroit-techno") to the stored genre tag ("detroit techno"). */
+/**
+ * A URL slug to the stored genre tag, by the historical rule: every hyphen is a
+ * word break. Kept only as the fallback inside `resolveGenreSlug` — see there
+ * for why it cannot be the whole answer.
+ */
 export function slugToTag(slug: string): string {
   return slug.toLowerCase().replace(/-/g, " ").trim();
+}
+
+/**
+ * Resolve a URL slug to the genre tag we actually store.
+ *
+ * `slugToTag` alone turns EVERY hyphen into a space, which round-trips only for
+ * genres that contain no hyphen of their own. `detroit techno` -> slug
+ * `detroit-techno` -> `detroit techno` works; `post-rock` -> slug `post-rock` ->
+ * `post rock` does not, and `{ genres: { has: "post rock" } }` matches nothing.
+ * So every hyphenated genre — post-rock, singer-songwriter, post-hardcore,
+ * synth-pop, lo-fi, alt-country — had a dead page.
+ *
+ * That was survivable while the catalog stored BOTH spellings, because the
+ * space-form absorbed the traffic. 6.3b canonicalized on MusicBrainz's spelling
+ * and moved 109 releases behind the broken half of the round-trip, which is how
+ * a latent bug became `/genre/post-rock` returning nothing for the most common
+ * genre we have.
+ *
+ * The vocabulary map is the fix: it is keyed on the same separator-insensitive
+ * normal form the slug reduces to, so it answers "which stored tag is this
+ * slug?" exactly, for both shapes. Anything outside the vocabulary falls back to
+ * the old rule rather than 404ing.
+ */
+export async function resolveGenreSlug(slug: string): Promise<string> {
+  const raw = slug.toLowerCase().trim();
+  if (!raw) return "";
+  try {
+    const vocabulary = await genreCanonicalMap();
+    const canonical = vocabulary.get(normalizeGenre(raw));
+    if (canonical) return canonical;
+  } catch {
+    // Vocabulary unavailable — degrade to the historical rule rather than
+    // failing a page that used to work.
+  }
+  return slugToTag(raw);
 }
 
 async function rankReleases(

@@ -4,7 +4,7 @@ import {
   getGenreChart,
   getYearChart,
   getActiveGenres,
-  slugToTag,
+  resolveGenreSlug,
 } from "../services/chartService.js";
 
 export const chartsRouter = Router();
@@ -24,7 +24,7 @@ chartsRouter.get("/genres", async (req, res, next) => {
 // "detroit-techno"), ranked by weighted rating. ?minRatings= gates thin data.
 chartsRouter.get("/genre/:tag", async (req, res, next) => {
   try {
-    const tag = slugToTag(req.params.tag);
+    const tag = await resolveGenreSlug(req.params.tag);
     if (!tag) throw new HttpError(400, "Missing genre");
     const minRatings = Number(req.query.minRatings ?? 0) || 0;
     const releases = await getGenreChart(tag, { minRatings });
