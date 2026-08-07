@@ -856,6 +856,28 @@ async function healExisting(
     if (labelId) data.labelId = labelId;
   });
 
+  // Genres, for rows that hold NONE. Added in 6.3a, and the gap it closes was
+  // found the hard way: the 6.3 heal correctly emptied *Transaction de Novo* of
+  // five junk chips, and the release then stayed chip-less through every later
+  // access, because this function had stages for date/artist/label/covers/tint
+  // and none for genres. The artist-level fallback that would have supplied
+  // `slowcore, indie rock, post-rock` lives only in `enrichNewRelease`, so it
+  // could never reach a release we already held.
+  //
+  // Guarded on EMPTY, not on "thin": a release with two real genres is not
+  // improved by re-asking Last.fm on every page view, and re-fetching a row we
+  // already filled would make this stage cost an upstream call forever instead
+  // of once. Empty is also what makes it idempotent — the first success closes
+  // the guard.
+  await attempt("genres", async () => {
+    if (existing.genres.length) return;
+    // The row's own identity, not `detail`'s: by this point `artistName` may
+    // have been replaced with the canonical MusicBrainz spelling, which is the
+    // one Last.fm's catalog keys on.
+    const genres = await getGenresWithFallback(existing.artistName, existing.title);
+    if (genres.length) data.genres = genres;
+  });
+
   // Self-heal missing artwork on access, through the full fallback chain.
   // Artwork is supplemental: a Cover Art Archive blip must never fail the
   // request for a release we already hold (it used to surface as a 500 and the

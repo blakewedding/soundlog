@@ -4,6 +4,8 @@
 //     npx tsx scripts/heal-genres.ts              # DRY RUN — reports, writes nothing
 //     npx tsx scripts/heal-genres.ts --apply      # writes, after printing the same report
 //     npx tsx scripts/heal-genres.ts --apply --limit 20
+//     npx tsx scripts/heal-genres.ts --backfill           # + preview empty-genre fills
+//     npx tsx scripts/heal-genres.ts --backfill --apply   # + commit them
 //
 // Why a heal at all: the filter fix only governs NEW enrichment, and the
 // catalog is warm. Every junk chip already stored — `favorito`, `totec radio`,
@@ -36,12 +38,18 @@ import {
   primeGenreVocabulary,
 } from "../src/services/genreVocabulary.js";
 import { indexRelease } from "../src/services/searchService.js";
+import { getGenresWithFallback } from "../src/services/lastfmService.js";
 import { es, RELEASE_INDEX } from "../src/config/elasticsearch.js";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
 const limitIdx = args.indexOf("--limit");
 const LIMIT = limitIdx !== -1 ? Number(args[limitIdx + 1]) : undefined;
+// Opt-in, and separate from the filter pass on purpose. Filtering is pure string
+// work over rows we already hold; BACKFILL makes upstream Last.fm calls, and the
+// dry run has to make them too in order to show you what it would write. Two
+// operations with different costs should not share one switch.
+const BACKFILL = args.includes("--backfill");
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
@@ -86,11 +94,13 @@ async function main() {
 
   if (!changes.length) {
     console.log("\n[heal-genres] nothing to do — already clean.");
+    if (BACKFILL) await backfill();
     return;
   }
 
   if (!APPLY) {
     console.log(`\n[heal-genres] DRY RUN — no writes. Re-run with --apply to commit.`);
+    if (BACKFILL) await backfill();
     return;
   }
 
@@ -134,11 +144,98 @@ async function main() {
   }
 
   console.log(`\n[heal-genres] wrote ${written} row(s), reindexed ${reindexed}`);
+  if (BACKFILL) await backfill();
   if (reindexFailed) {
     console.log(
       `[heal-genres] ${reindexFailed} REINDEX FAILURE(S) — Postgres and Elasticsearch now ` +
         `disagree. Re-run this script (it is idempotent) once Elasticsearch is healthy.`
     );
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * Fill releases that hold NO genres, using the same album-then-artist fallback
+ * `healExisting` now runs on access.
+ *
+ * This exists because on-access healing only reaches releases somebody opens.
+ * The 6.3 filter emptied one row and 17 more were already empty; waiting for
+ * organic traffic to find them is not a plan during launch week.
+ *
+ * Idempotent by the same guard as the stage it mirrors: a row with genres is
+ * never selected, so a second run has nothing to do.
+ */
+async function backfill(): Promise<void> {
+  const empty = await prisma.release.findMany({
+    where: { genres: { isEmpty: true } },
+    select: { id: true, title: true, artistName: true },
+    orderBy: { id: "asc" },
+    ...(LIMIT ? { take: LIMIT } : {}),
+  });
+
+  console.log(`\n[backfill] ${empty.length} release(s) hold no genres`);
+  if (!empty.length) return;
+
+  // ---- The read-back (§10) ------------------------------------------------
+  // Every candidate is resolved and PRINTED before anything is written, and the
+  // write below runs against these exact ids. The upstream calls happen in the
+  // dry run too — that is the only way a preview can be honest about what it
+  // would store.
+  const proposed: Array<{ id: string; label: string; genres: string[] }> = [];
+  for (const r of empty) {
+    const genres = await getGenresWithFallback(r.artistName, r.title);
+    const label = `${r.artistName} — ${r.title}`;
+    proposed.push({ id: r.id, label, genres });
+    console.log(`  ${label}`);
+    console.log(`      would set: ${genres.length ? genres.join(", ") : "(nothing found — leaving empty)"}`);
+  }
+
+  const writable = proposed.filter((p) => p.genres.length);
+  console.log(
+    `\n[backfill] ${writable.length} of ${empty.length} would be filled, ` +
+      `${empty.length - writable.length} have nothing to fill from`
+  );
+
+  if (!APPLY) {
+    console.log("[backfill] DRY RUN — no writes. Re-run with --apply to commit.");
+    return;
+  }
+
+  let written = 0;
+  let reindexed = 0;
+  let reindexFailed = 0;
+
+  for (const p of writable) {
+    const updated = await prisma.release.update({
+      where: { id: p.id },
+      data: { genres: p.genres },
+    });
+    written++;
+
+    // Same reasoning as the filter pass: `indexRelease` swallows its own errors
+    // under §5, so the only honest confirmation is reading the document back.
+    await indexRelease(updated);
+    try {
+      const doc = await es.get<{ genres?: string[] }>({ index: RELEASE_INDEX, id: p.id });
+      const indexed = doc._source?.genres ?? [];
+      if (sameList(indexed, p.genres)) {
+        reindexed++;
+      } else {
+        reindexFailed++;
+        console.warn(
+          `  [es] STALE for ${p.id}: index holds [${indexed.join(", ")}], ` +
+            `expected [${p.genres.join(", ")}]`
+        );
+      }
+    } catch (err) {
+      reindexFailed++;
+      console.warn(`  [es] read-back FAILED for ${p.id}: ${(err as Error).message}`);
+    }
+  }
+
+  console.log(`[backfill] wrote ${written} row(s), reindexed ${reindexed}`);
+  if (reindexFailed) {
+    console.log(`[backfill] ${reindexFailed} REINDEX FAILURE(S) — stores disagree; re-run.`);
     process.exitCode = 1;
   }
 }
