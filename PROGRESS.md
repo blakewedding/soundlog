@@ -3736,6 +3736,39 @@ next sweep. **MusicBrainz 503'd nearly every discovery call during this run**
 while lookups succeeded on retry; discovery gets one attempt by §7 and degraded
 harmlessly, but the rate is worth watching if it persists into launch week.
 
+## One-off — Kickstarter announcement recipient export (2026-08-12)
+
+Not a phase. A read-only export of eligible recipients from production Postgres,
+for a one-time Kickstarter campaign announcement sent via Resend Broadcasts.
+
+**4 recipients.** Written outside the repo, to a file that is not under version
+control and is not committed here; the addresses are deliberately not recorded
+in this log. Eligibility was every verified account: `emailVerifiedAt IS NOT
+NULL`, deduped case-insensitively on `lower(email)`, structurally-invalid
+addresses dropped, `email` and `displayName`/`username` selected and nothing
+else.
+
+Read-only was enforced by the session, not by the role — the only login role on
+the box is `soundlog`, which is superuser, so the query ran under
+`PGOPTIONS=-c default_transaction_read_only=on`. No writes, no migrations, no
+application-code change.
+
+**Two schema facts the export turned up, both worth keeping:**
+
+- **There is no soft-delete on `User`.** `deleteUserEverywhere` hard-deletes the
+  row (`accountDeletionService.ts`), so "not deleted" needs no filter — a
+  deleted account is absent, not flagged. Any future export that assumes a
+  `deletedAt` column is wrong about this table.
+- **There is no marketing-consent or opt-out column, and no unsubscribe path in
+  our own code.** `emailVerifiedAt` proves an address is real; it does not
+  record that anyone agreed to hear from us about anything but their account.
+  Every send to date has been transactional (`emailService.ts`). A campaign
+  announcement is the first non-transactional use of these addresses, and the
+  only unsubscribe mechanism in play is the one Resend Broadcasts adds — theirs,
+  not ours, so a suppression recorded there is invisible to Postgres and the
+  next export would re-add anyone who opted out. If we send campaign mail again,
+  a stored preference column comes first.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
