@@ -3920,9 +3920,63 @@ identity-safe. Not built yet; it is the first thing the widening needs.
 **Tom Waits is unaffected by that limit:** 83 rows, **0 without an MBID**, 35
 blank and 12 Discogs-sourced, so the scoped run covers 100% of its population.
 
-**Not yet done:** deploy of the repair tooling, the Tom Waits run itself, the
-scoped Varnish ban, and the spot-checks. Widening is a separate go and needs the
-`discogsId` path first.
+### 6.3b — the Tom Waits repair run (DONE 2026-08-15)
+
+Deployed `4cefdcf`. Before/after snapshots of all 83 rows, diffed:
+
+    rows before=83 after=83   changed=25
+      21  BLANK   -> CAA
+       4  DISCOGS -> CAA
+      stale tints cleared: 4
+      rows that went blank: 0
+      untouched rows: 58, of which changed anyway: 0
+
+**25 repaired, not the 22 the dry run projected** — three of the six
+`unavailable` resolved on the second attempt. That is the §1 fix paying for
+itself in the most literal way available: under the old code those three would
+have been written down as "no artwork" and cached for a week.
+
+Residual, as accepted: **14 still blank** (19 `no-art` less the ones that
+resolved) and **8 still Discogs-sourced**, of which three are perfect squares —
+*God's Away on Business (live)*, *Romeo Is Bleeding*, *Shadows of Intolerance*.
+I pulled the stored bytes for *Romeo Is Bleeding*: a **CD disc scan**, the same
+defect as the vinyl label with a different disc shape. The archive has nothing
+for those groups, so only the `discogsId` re-pick path can fix them.
+
+**The tint bug the dry-run table caught, before the write.** `coverColor` is
+server-sampled and `CoverImage` PREFERS it over browser extraction whenever it
+is set. Repairing `coverUrl` alone would have painted *Small Change*'s true
+sleeve on the blue of the Asylum label — permanently, on the exact row being
+fixed, since the client only extracts when the column is null. Nulled on repair
+(`4cefdcf`). Reading the table rather than trusting the tally is what found it.
+
+**No Varnish ban was needed, and none was issued.** `cache-policy.vcl` PASSes
+`^/covers/` outright (Varnish's store is memory; image bytes would evict the
+JSON the cache exists for), and `^/api/(releases|search)` carries
+`beresp.ttl = 60s`. Every affected object had expired long before the run
+finished. Verified rather than assumed: the live API answered `x-cache: MISS`,
+`age: 0` with the new cover. Cloudflare needed no purge either — a repaired row
+gets a NEW proxied path, because the URL encodes its upstream (§7), so there is
+no stale object to invalidate, only a cold one to populate.
+
+**Spot-checks, all on the live site:**
+
+- *Small Change* — true front on its detail page AND in the discography grid.
+- Former blanks — *Blue Valentine*, *Heartattack and Vine*, *One From the
+  Heart*, *Swordfishtrombones* all render in the grid.
+- **Boris** (160 releases, 1 in catalog — the UN-SEEDED `caaThumb` path) renders
+  normally. Tiles are slow on first paint because discovery fetches and encodes
+  on demand; they populate.
+- **Swans** (73 releases, 72 seeded — the STORED-cover path) renders normally.
+  Its remaining blanks are its own 19 NULL covers, the same defect B, untouched
+  by this run and repairable by the same script.
+- Regression: the 58 untouched Waits rows are byte-identical before and after —
+  stronger evidence than a screenshot, and *Rain Dogs* et al. render unchanged.
+
+**Still open:** the `discogsId` re-pick path (path 2), which the catalog-wide
+sweep needs before it can claim to fix label scans; and widening itself —
+7,918 blanks and 4,468 archive-reachable Discogs rows, plus the 5,236 that only
+path 2 can reach.
 
 ## Then — Phase 7
 
