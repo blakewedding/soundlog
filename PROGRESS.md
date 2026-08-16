@@ -3869,8 +3869,60 @@ Backend 483 tests / web 264 tests / both typechecks green. Three new suites:
 `coverImageSelection` (pins the label-scan bug by asserting the OLD function
 still picks the label), `coverFrontSelection`, `warmCoverRepair`.
 
-**Not yet done:** deploy, and the scoped Tom Waits repair run that follows it.
-Widening to the full 17.5k affected rows is a separate go.
+### 6.3a — the warm sweep is not a repair tool (2026-08-15)
+
+Deployed `dda5d39`, cleared the 25 live `caa:rg:urls` keys for Tom Waits (83
+read back, 25 removed, 58 already absent, all 83 absent afterwards) — and then
+the **dry run refused to do anything**: `0 of 1 target(s) due`.
+
+Two independent reasons, both of which would have made a repair run report
+success while accomplishing nothing — 6.2g's failure mode exactly, reached
+through a different door:
+
+- **`needsWarming` gates on the four METADATA layers**, never on covers. Tom
+  Waits had been swept the day before, so its layers sat ~6 days from expiry and
+  the target was skipped no matter how broken its artwork was.
+- **`coverPrefetchSet` is studio albums/EPs capped at 24**, and Tom Waits has
+  213 release-groups. It excludes SINGLES outright — so *Downtown Train*,
+  *Goin' Out West*, *Hold On* and *Bottom of the World*, four of the reported
+  blanks, are unreachable by a sweep at any TTL.
+
+Neither is a bug. `WARM_COVER_CACHE_OPTS` deliberately omits `refresh` (§7: a
+refreshing covers layer is ~2,000 archive requests a night, ~9,800 on a full
+pass), and the prefetch cap is "the default view", which is the depth warming
+was scoped to. **The sweep is the self-maintaining half; it was never the
+repair half.** Asking it to be both is what the dry run caught.
+
+So the shared rule moved to `coverRepair.ts` — `isRepairableCover`,
+`persistResolvedCover`, `repairCover` — and `scripts/repair-covers.ts` is the
+scoped operator path. It refuses to run without `--artist` or `--all`, prints
+the selection with counts before writing, and `--dry-run` resolves upstream and
+shows every before/after without touching a row. Demonstrated end to end on dev
+against the live archive: the *Small Change* label scan → the true front, then
+re-run to confirm it is **idempotent** (the repaired row is no longer a
+candidate).
+
+**A scope limit that matters for the catalog-wide pass, not for Waits.** Repair
+resolves by release-group MBID, and not every row has one:
+
+| population | count | reachable by MBID repair |
+|---|---:|---|
+| blank covers | 7,918 | **all** — 0 lack an MBID |
+| Discogs-sourced | 9,704 | **4,468** — 5,236 (54%) have no `musicbrainzId` |
+
+Those 5,236 were seeded from Discogs and never matched to MusicBrainz. They
+cannot be repaired through the archive, and inventing an MBID for them by
+title/artist search is precisely the identity-by-name that §3 forbids. The
+honest second path is to re-run the FIXED `pickCoverImage` against their
+existing `discogsId` — same record, same id, better image choice — which is
+identity-safe. Not built yet; it is the first thing the widening needs.
+
+**Tom Waits is unaffected by that limit:** 83 rows, **0 without an MBID**, 35
+blank and 12 Discogs-sourced, so the scoped run covers 100% of its population.
+
+**Not yet done:** deploy of the repair tooling, the Tom Waits run itself, the
+scoped Varnish ban, and the spot-checks. Widening is a separate go and needs the
+`discogsId` path first.
 
 ## Then — Phase 7
 

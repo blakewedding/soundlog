@@ -20,7 +20,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../../src/config/database.js";
 import { redis } from "../../src/config/redis.js";
-import { warmOnce, isDiscogsSourcedCover } from "../../src/services/warmService.js";
+import { warmOnce } from "../../src/services/warmService.js";
+import { isDiscogsSourcedCover } from "../../src/services/coverRepair.js";
 import { toProxiedUrl, COVER_THUMB_WIDTH } from "../../src/services/coverProxy.js";
 import { deleteReleaseEverywhere } from "../../src/services/catalogService.js";
 import { discographyCacheKey } from "../../src/services/musicbrainzService.js";
