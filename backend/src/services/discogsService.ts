@@ -73,10 +73,42 @@ export interface DiscogsRelease {
 }
 
 /**
- * The image most likely to be an actual front cover: closest to square.
- * Cassette/vinyl entries often lead with a full unfolded sleeve scan (e.g.
- * 600×368 J-card spreads) which crop to an unrecognizable smear in square
- * cover tiles — a squarer image is nearly always the better choice.
+ * The image most likely to be an actual front cover.
+ *
+ * Discogs declares the front itself as `type: "primary"`, and that declaration
+ * is the strongest signal available — so it wins unless we can positively see
+ * it is a sleeve SPREAD (measurably non-square, e.g. a 600×368 J-card), which
+ * is the case squareness was introduced to handle.
+ *
+ * Squareness alone is not safe as the primary rule, and Tom Waits' *Small
+ * Change* is why. A vinyl LABEL scan is a circle cropped to a perfect square,
+ * so it scores 0.0000 and beats a real front cover sleeve at 550×545 (0.0091).
+ * The stored cover for that release was Discogs image R-725926-1415564276-3493
+ * — the Asylum Records "SIDE ONE" label — served as the album's artwork on
+ * every surface in the app. Any vinyl release whose Discogs entry includes
+ * label scans could produce the same thing.
+ *
+ * So: trust the declaration, and fall back to squareness only to disprove it or
+ * when there is no declaration to trust.
+ */
+export function pickCoverImage(images: DiscogsImage[] = []): DiscogsImage | null {
+  const primary = images.find((i) => i.uri && i.type === "primary");
+  // Unmeasurable dimensions can't disprove anything — `isSquareish` is false for
+  // them, and falling through on that would hand the choice to a measurable
+  // label scan. An undeclared shape is not evidence of a spread.
+  if (primary && (!hasDimensions(primary) || isSquareish(primary))) return primary;
+  return pickSquarestImage(images);
+}
+
+function hasDimensions(image: DiscogsImage): boolean {
+  return Boolean(image.width && image.height);
+}
+
+/**
+ * Closest to square. The tie-break within {@link pickCoverImage}, and the whole
+ * rule for entries that declare no primary: cassette/vinyl entries often lead
+ * with a full unfolded sleeve scan (e.g. 600×368 J-card spreads) which crop to
+ * an unrecognizable smear in square cover tiles.
  */
 export function pickSquarestImage(images: DiscogsImage[] = []): DiscogsImage | null {
   let best: DiscogsImage | null = null;
@@ -212,7 +244,7 @@ export async function findDiscogsCover(artist: string, title: string): Promise<s
     // one has no images at all.
     for (const hit of hits.slice(0, 3)) {
       const detail = await getDiscogsRelease(`${hit.type}:${hit.id}`);
-      const best = pickSquarestImage(detail?.images); // squarest within this pressing
+      const best = pickCoverImage(detail?.images); // this pressing's own front
       if (best) return best.uri;
       // Detail lookup failed or had no images — the search thumbnail is still
       // this same pressing's art.

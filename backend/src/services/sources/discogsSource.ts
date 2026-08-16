@@ -3,7 +3,7 @@ import {
   searchDiscogs,
   getDiscogsRelease,
   discogsConfigured,
-  pickSquarestImage,
+  pickCoverImage,
   type DiscogsSearchResult,
   type DiscogsRelease,
 } from "../discogsService.js";
@@ -38,9 +38,10 @@ function searchResultToCandidate(r: DiscogsSearchResult): SourceCandidate {
 }
 
 function primaryCover(rel: DiscogsRelease): string | undefined {
-  // Squarest image ≈ the actual front cover; "primary" is often a full sleeve
-  // spread that crops badly in square tiles.
-  return pickSquarestImage(rel.images)?.uri ?? undefined;
+  // Discogs's own "primary" declaration, unless it is measurably a sleeve
+  // spread — see pickCoverImage. Ranking purely on squareness (as this did)
+  // picks vinyl LABEL scans, which are perfect squares.
+  return pickCoverImage(rel.images)?.uri ?? undefined;
 }
 
 export const discogsSource: MetadataSource = {

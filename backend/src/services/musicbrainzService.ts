@@ -150,12 +150,15 @@ export interface MBArtist {
   area?: { name?: string };
   "life-span"?: { begin?: string };
 }
+interface CoverArtImage {
+  front?: boolean;
+  approved?: boolean;
+  types?: string[];
+  image?: string;
+  thumbnails?: Record<string, string>;
+}
 interface CoverArtResponse {
-  images?: Array<{
-    front?: boolean;
-    image?: string;
-    thumbnails?: Record<string, string>;
-  }>;
+  images?: CoverArtImage[];
 }
 
 export interface CoverArtUrls {
@@ -424,6 +427,109 @@ export async function findReleaseGroupMbid(
 // worse than moving on: bound it and let the next source answer.
 const CAA_TIMEOUT_MS = 2500;
 
+/** How many releases inside a group we will probe when the group itself has no
+ *  usable front. Earliest-dated first, so the original pressing is tried before
+ *  a 2018 reissue. Bounded because a group can hold dozens of pressings and
+ *  every probe is a Cover Art Archive slot. */
+const CAA_RELEASE_PROBE_LIMIT = 5;
+
+/**
+ * The release-level probe gets longer than {@link CAA_TIMEOUT_MS}.
+ *
+ * 2,500ms is right for the GROUP lookup, where the archive is only one source
+ * in a chain (CAA → source cover → Discogs) and moving on is cheap. It is wrong
+ * here, where this probe only runs BECAUSE the chain already came up empty, and
+ * abandoning it means returning nothing at all.
+ *
+ * Measured against the live archive, per-release lookups for Tom Waits' *Blue
+ * Valentine* took 1.64–1.98s — close enough to 2,500ms that they tripped it
+ * under load, and the walk skipped the 1978 original (whose art is intact) to
+ * land on a 2018 reissue whose bytes 500. Bailing early cost us the good
+ * pressing, not the wait.
+ */
+const CAA_RELEASE_TIMEOUT_MS = 6000;
+
+/** Thrown-vs-null bookkeeping for one resolution attempt. */
+interface CaaOutcome {
+  payload: CoverArtResponse | null;
+  /** True when we could not TELL (5xx/429/timeout/socket) — never cacheable. */
+  unavailable: boolean;
+  problem?: string;
+}
+
+/**
+ * One Cover Art Archive JSON read, mapped onto the three outcomes of §1.
+ *
+ * The status split is the whole point. This used to be `if (!res.ok) return
+ * null`, with the comment "404 = no art on file" — but that branch also caught
+ * every 5xx, and `cached()` then wrote the resulting `null` under a SEVEN-DAY
+ * TTL. The Cover Art Archive's release-group endpoint answers a persistent 500
+ * for a number of real groups (Tom Waits' *Blue Valentine*, *Swordfishtrombones*
+ * and *Downtown Train* among them) while the releases inside those groups serve
+ * approved front covers perfectly well. Every one of those albums rendered blank
+ * across the entire app because a server error had been written down as "this
+ * record has no artwork".
+ *
+ * That is exactly the retryable-treated-as-permanent bug §1 exists to prevent,
+ * one layer below the MusicBrainz call it was written for.
+ */
+async function fetchCoverArtJson(
+  path: string,
+  tier: UpstreamTier,
+  timeoutMs = CAA_TIMEOUT_MS
+): Promise<CaaOutcome> {
+  // Bounded concurrency (6.1.4), the slot held across the body read for the
+  // same reason as the image bytes. The 2.5s timeout was tripping on
+  // congestion WE created — 37 simultaneous requests during one discography
+  // browse — and a timeout here fails the covers stage, which is how a
+  // release ends up reporting `failed` with no artwork.
+  try {
+    return await coverArtGate.run(tier, async () => {
+      const res = await fetch(`${CAA_BASE}${path}`, {
+        headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      // A definitive answer: this resource genuinely has no art on file.
+      if (res.status === 404) return { payload: null, unavailable: false };
+      if (RETRYABLE_STATUS.has(res.status)) {
+        return { payload: null, unavailable: true, problem: `HTTP ${res.status}` };
+      }
+      if (!res.ok) return { payload: null, unavailable: false }; // other 4xx: definitive
+      return { payload: (await res.json()) as CoverArtResponse, unavailable: false };
+    });
+  } catch (err) {
+    // A dropped connection tells us NOTHING about whether art exists, so it
+    // must not be cached as "no art" for a week.
+    return { payload: null, unavailable: true, problem: (err as Error).message };
+  }
+}
+
+/**
+ * The APPROVED FRONT image, or null.
+ *
+ * Both qualifiers are load-bearing. The previous rule fell back to
+ * `images[0]` when nothing was flagged front, which hands the cover slot to
+ * whatever happened to be uploaded first — commonly a `Medium` label or disc
+ * scan. `Small Change`'s group carries exactly that shape: an approved Front,
+ * then an Asylum side-one label typed `Medium`. Picking an arbitrary image is
+ * never better than showing the placeholder, because a wrong cover reads as our
+ * data being wrong rather than absent.
+ */
+function selectApprovedFront(payload: CoverArtResponse | null): CoverArtImage | null {
+  return (
+    payload?.images?.find(
+      (i) => (i.front === true || i.types?.includes("Front")) && i.approved !== false
+    ) ?? null
+  );
+}
+
+function toCoverArtUrls(front: CoverArtImage | null): CoverArtUrls | null {
+  if (!front) return null;
+  const large = front.image ?? front.thumbnails?.["1200"] ?? front.thumbnails?.["500"];
+  const thumb = front.thumbnails?.["500"] ?? large;
+  return thumb && large ? { thumb, large } : null;
+}
+
 export async function getCoverArtUrls(
   releaseGroupMbid: string,
   tier: UpstreamTier = ambientTier(),
@@ -431,37 +537,77 @@ export async function getCoverArtUrls(
 ): Promise<CoverArtUrls | null> {
   const key = `caa:rg:urls:${releaseGroupMbid}`;
   return cached(key, WEEK, async () => {
-    // Bounded concurrency (6.1.4), the slot held across the body read for the
-    // same reason as the image bytes. The 2.5s timeout was tripping on
-    // congestion WE created — 37 simultaneous requests during one discography
-    // browse — and a timeout here fails the covers stage, which is how a
-    // release ends up reporting `failed` with no artwork.
-    let payload: CoverArtResponse | null;
-    try {
-      payload = await coverArtGate.run(tier, async () => {
-        const res = await fetch(`${CAA_BASE}/release-group/${releaseGroupMbid}`, {
-          headers: { "User-Agent": env.MUSICBRAINZ_USER_AGENT, Accept: "application/json" },
-          signal: AbortSignal.timeout(CAA_TIMEOUT_MS),
-        });
-        if (!res.ok) return null; // 404 = no art on file
-        return (await res.json()) as CoverArtResponse;
-      });
-    } catch (err) {
-      // A dropped connection tells us NOTHING about whether art exists, so it
-      // must not be cached as "no art" for a week. Raise it as retry-able and
-      // let the caller decide (cover art is supplemental — callers swallow it).
+    const group = await fetchCoverArtJson(`/release-group/${releaseGroupMbid}`, tier);
+    const groupFront = toCoverArtUrls(selectApprovedFront(group.payload));
+    if (groupFront) return groupFront;
+
+    // The group endpoint had no usable front. It may be broken (500) or simply
+    // representing a release nobody uploaded a front for — either way the art
+    // often still exists on a specific release in the group, so ask there
+    // before concluding anything. MBID-only throughout (§3): the group's own
+    // release list, never a title match.
+    const viaRelease = await coverArtFromReleases(releaseGroupMbid, tier);
+    if (viaRelease.urls) return viaRelease.urls;
+
+    // Nothing found. WHY decides whether this is cacheable: a definitive
+    // "no art anywhere" is worth remembering for a week; an outage is not.
+    if (group.unavailable || viaRelease.unavailable) {
       throw new UpstreamUnavailableError(
         "coverartarchive",
-        `Cover Art Archive unreachable for ${releaseGroupMbid}: ${(err as Error).message}`
+        `Cover Art Archive unreachable for ${releaseGroupMbid}: ${
+          group.problem ?? viaRelease.problem ?? "unknown"
+        }`
       );
     }
-    if (!payload) return null; // 404 = no art on file
-    const front = payload.images?.find((i) => i.front) ?? payload.images?.[0];
-    if (!front) return null;
-    const large = front.image ?? front.thumbnails?.["1200"] ?? front.thumbnails?.["500"];
-    const thumb = front.thumbnails?.["500"] ?? large;
-    return thumb && large ? { thumb, large } : null;
+    return null; // genuinely no art on file
   }, cacheOpts);
+}
+
+/**
+ * Walk the releases inside a group, earliest first, for an approved front.
+ *
+ * Earliest-first matches §4's discipline about dates: the original pressing's
+ * sleeve is the one people recognise as the album, and a reissue's alternate
+ * artwork is the fallback rather than the answer. Undated pressings sort last.
+ */
+async function coverArtFromReleases(
+  releaseGroupMbid: string,
+  tier: UpstreamTier
+): Promise<{ urls: CoverArtUrls | null; unavailable: boolean; problem?: string }> {
+  let releases: Array<{ id: string; date?: string }>;
+  try {
+    const data = await mbFetch<{ releases?: Array<{ id: string; date?: string }> }>(
+      `/release?release-group=${releaseGroupMbid}&fmt=json&limit=25`,
+      { tier }
+    );
+    releases = data?.releases ?? [];
+  } catch (err) {
+    // MusicBrainz itself is unreachable — we still cannot tell.
+    return { urls: null, unavailable: true, problem: (err as Error).message };
+  }
+
+  // `|| "9999"`, not `?? "9999"`: MusicBrainz returns `date: ""` for an undated
+  // pressing, and an empty string sorts BEFORE "1978" — which put a dateless
+  // reissue ahead of the original sleeve on the first live run of this.
+  const ordered = [...releases].sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+  let unavailable = false;
+  let problem: string | undefined;
+
+  for (const release of ordered.slice(0, CAA_RELEASE_PROBE_LIMIT)) {
+    const outcome = await fetchCoverArtJson(
+      `/release/${release.id}`,
+      tier,
+      CAA_RELEASE_TIMEOUT_MS
+    );
+    if (outcome.unavailable) {
+      unavailable = true;
+      problem ??= outcome.problem;
+      continue;
+    }
+    const urls = toCoverArtUrls(selectApprovedFront(outcome.payload));
+    if (urls) return { urls, unavailable: false };
+  }
+  return { urls: null, unavailable, problem };
 }
 
 // ---- Labels ----

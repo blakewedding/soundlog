@@ -3769,6 +3769,109 @@ application-code change.
   next export would re-add anyone who opted out. If we send campaign mail again,
   a stored preference column comes first.
 
+## Phase 6.3 — wrong and missing cover art (code DONE 2026-08-15)
+
+Reported as two symptoms on Tom Waits' pages, confirmed on release detail pages
+as well as the discography grid — so a shared, PERSISTED resolution path, not a
+grid-rendering bug. It turned out to be **three defects**, and the leading
+hypothesis going in was wrong in an instructive way.
+
+**The hypothesis that was wrong.** The obvious read — "we pick release-level art
+from an arbitrary release instead of using the release-group endpoint" — was
+refuted in the first twenty minutes. `Release.musicbrainzId` holds a
+release-GROUP MBID (`musicbrainzSource.lookupRelease` → `rg.id`), and
+`getCoverArtUrls` already called `/release-group/{mbid}`. For *Small Change* the
+archive's group JSON returns an approved `types:["Front"]` as `images[0]`, and
+`/front-500` answers 200. The archive was healthy and the endpoint was right.
+
+**A — the Discogs fallback served vinyl LABEL scans.** `pickSquarestImage`
+ranked purely on aspect ratio and never read Discogs's `type` field, where
+`primary` IS the declared front. A record label is a circle cropped to a perfect
+square, so it scores 0.0000 and beats a real sleeve every time. Proven end to
+end: *Small Change*'s stored `coverUrl` decoded to
+`s3://discogs-database-images/R-725926-1415564276-3493.jpeg` at 600×600 — the
+Asylum Records "SIDE ONE" label — against a `primary` front of 550×545 (0.0091).
+
+The fix could not simply invert to "always trust primary": `discogsSource.ts`
+avoided `primary` on purpose, because it is sometimes a full gatefold spread
+that crops to a smear. `pickCoverImage` trusts the declaration **unless it is
+measurably a spread**, which satisfies both shapes, and unmeasurable dimensions
+keep the declaration rather than handing the tile to the one image we CAN
+measure — the label.
+
+**B — a Cover Art Archive 500 was cached as "no art" for a week.** One line:
+
+    if (!res.ok) return null; // 404 = no art on file
+
+The comment describes a 404; the branch caught every 5xx, and `cached()` wrote
+that `null` under a 7-day TTL. **This is §1's own bug, one layer below the
+MusicBrainz call §1 was written for.** The archive's release-group endpoint
+answers a *persistent* 500 for real groups — *Blue Valentine*,
+*Swordfishtrombones*, *Downtown Train*, verified 5/5 attempts — while the
+releases INSIDE those groups serve approved fronts perfectly well. Every one of
+those albums was blank across the whole app because a server error had been
+written down as "this record has no artwork".
+
+Now split properly: 404 → `null` (cacheable), 5xx/429/timeout →
+`UpstreamUnavailableError` (never cached), and a **release-level walk inside the
+group** — earliest pressing first, MBID-only — before concluding anything.
+Selection also now requires an **approved front**; the old `?? images[0]`
+fallback handed the cover slot to whatever was uploaded first, commonly a
+`Medium` label or disc scan. A deliberate placeholder beats a wrong cover: wrong
+art reads as our data being wrong, absent art reads as absent.
+
+**C — nothing ever revisited a cover, which made A and B permanent.** The heal
+in `catalogService` is guarded `if (!existing.coverUrl)`, so a WRONG cover was
+never re-examined, and a MISSING one only re-ran during a seed (a GET by
+internal id is a `findUnique` and nothing more — this file has said so since
+6.1.1). The warm fleet did not rescue it either: it resolved art into Redis and
+rendered the tiles, then **threw the answer away**. *One From the Heart* was the
+proof — `caa:rg:urls:69393ad0…` held a valid archive URL while its `coverUrl`
+column was NULL and the page was blank. The cache had the answer and no way to
+hand it over.
+
+`persistResolvedCover` closes it: the sweep now writes resolved art onto the
+release row when the stored cover is missing or Discogs-sourced. It upholds the
+"creates NOTHING" contract — an UPDATE to a row that already exists, matched by
+MBID, a no-op for a release we do not hold. A Cover Art Archive cover we already
+hold is canonical (§3) and is left alone, so the sweep converges instead of
+flip-flopping between sources nightly.
+
+**Blast radius (production, 2026-08-15):** 39,185 releases — **7,848 NULL
+covers (20.0%)** and **9,695 Discogs-sourced (24.7%)**, the latter being the
+pool at risk of defect A. 21,560 are archive-sourced.
+
+**What the live demo cost, and what it taught.** Two bugs in the new code were
+found by running it against the real archive rather than by the suite:
+
+- **`?? "9999"` does not catch `""`.** MusicBrainz returns `date: ""` for an
+  undated pressing, which sorts *before* `"1978"`, so the earliest-first walk
+  put a dateless reissue ahead of the original sleeve. `|| "9999"` — and the
+  test now pins the empty-string shape specifically.
+- **2,500ms was the wrong timeout for the release probe.** Measured live, the
+  per-release lookups took 1.64–1.98s, close enough to trip the abort under
+  load. The walk skipped the 1978 *Blue Valentine* (art intact) and landed on a
+  2018 reissue **whose image bytes 500**. That timeout is right for the GROUP
+  lookup, where the archive is one source in a chain and moving on is cheap; it
+  is wrong for a probe that only runs BECAUSE the chain came up empty. 6,000ms.
+
+Both were invisible to a green suite and obvious the moment real MBIDs went
+through the resolver. Live-demo-before-done earned its place in §9 again.
+
+**Verified live, through the fixed resolver, bytes rendered and eyeballed:**
+*Small Change* → its true front; *Blue Valentine*, *Swordfishtrombones*,
+*Heartattack and Vine*, *One From the Heart* → resolved via the release-level
+walk. *Downtown Train* correctly raises retry-able rather than caching a false
+"no art" — the archive is genuinely unreachable for that group right now, and
+saying so is the point.
+
+Backend 483 tests / web 264 tests / both typechecks green. Three new suites:
+`coverImageSelection` (pins the label-scan bug by asserting the OLD function
+still picks the label), `coverFrontSelection`, `warmCoverRepair`.
+
+**Not yet done:** deploy, and the scoped Tom Waits repair run that follows it.
+Widening to the full 17.5k affected rows is a separate go.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,

@@ -87,7 +87,9 @@ import { prisma } from "../config/database.js";
 import { redis } from "../config/redis.js";
 import { ttlOf } from "./cache.js";
 import { runAtTier } from "./upstreamPriority.js";
-import { COVER_THUMB_WIDTH } from "./coverProxy.js";
+import { COVER_THUMB_WIDTH, toProxiedCovers, decodeProxiedCoverPath } from "./coverProxy.js";
+import { toSecureCovers } from "./coverUrl.js";
+import { indexRelease } from "./searchService.js";
 import { ensureVariant } from "./coverCache.js";
 import { coverPrefetchSet } from "./discographyService.js";
 import {
@@ -175,6 +177,8 @@ export interface WarmLayerResult {
   releaseGroups: number | null;
   /** Cover renditions confirmed on disk afterwards. */
   covers: number;
+  /** Release rows whose stored cover this sweep repaired (see `persistResolvedCover`). */
+  coversPersisted: number;
 }
 
 export interface WarmTargetOutcome extends WarmLayerResult {
@@ -249,6 +253,7 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
     failed: [],
     releaseGroups: null,
     covers: 0,
+    coversPersisted: 0,
   };
 
   const layer = async (label: string, fn: () => Promise<void>) => {
@@ -314,6 +319,10 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
           const variant = await ensureVariant(urls.thumb, COVER_THUMB_WIDTH, {
             speculative: true,
           });
+          // Hand the resolved art to the release row, if we hold one. See
+          // `persistResolvedCover` for why this does not contradict the
+          // "creates NOTHING" contract at the top of this file.
+          if (await persistResolvedCover(e.mbid, urls)) result.coversPersisted++;
           return variant !== null;
         })
       );
@@ -322,6 +331,75 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
   }
 
   return result;
+}
+
+/**
+ * Write resolved artwork onto the Release row for this release-group, when the
+ * row's own cover is missing or came from the Discogs fallback.
+ *
+ * ## Why this is allowed here
+ *
+ * The contract at the top of this file is that warming creates NOTHING — no
+ * Release row, no Artist row, no bulk seeding. This upholds it: it is an UPDATE
+ * to a row that already exists, matched by MBID, and it is a no-op when we hold
+ * no such row. Nothing is created; a column is filled.
+ *
+ * ## Why it has to exist
+ *
+ * Without it the fleet resolves the right artwork nightly and throws it away.
+ * *One From the Heart* was the proof: `caa:rg:urls:69393ad0…` held a valid Cover
+ * Art Archive URL while the release's `coverUrl` column was NULL and the album
+ * rendered blank on every surface. The cache had the answer and no way to hand
+ * it over, because the on-access heal only fills a cover during a SEED, and a
+ * GET by internal id is a `findUnique` and nothing more.
+ *
+ * ## Why the guard is "missing or Discogs-sourced"
+ *
+ * Those are exactly the two populations the 6.3 cover defects produced: blanks
+ * from a Cover Art Archive 5xx cached as "no art", and label scans from the
+ * Discogs fallback ranking a square vinyl label above the declared front. A
+ * Cover Art Archive cover we already hold is canonical (§3) and is left alone,
+ * so this converges rather than flip-flopping between sources.
+ */
+async function persistResolvedCover(
+  releaseGroupMbid: string,
+  urls: { thumb: string; large: string }
+): Promise<boolean> {
+  // MBID only (§3) — never a title/artist match.
+  const row = await prisma.release.findUnique({
+    where: { musicbrainzId: releaseGroupMbid },
+    select: { id: true, coverUrl: true },
+  });
+  if (!row) return false; // not a release we hold; warming creates nothing
+  if (row.coverUrl && !isDiscogsSourcedCover(row.coverUrl)) return false;
+
+  // Normalized at the same single exit every other cover takes: HTTPS, then the
+  // proxied `/covers/…` form that encodes its upstream (§7).
+  const covers = toProxiedCovers(toSecureCovers({ thumb: urls.thumb, large: urls.large }));
+  if (!covers.thumb) return false;
+  if (covers.thumb === row.coverUrl) return false; // already exactly this
+
+  const updated = await prisma.release.update({
+    where: { id: row.id },
+    data: { coverUrl: covers.thumb, coverUrlLarge: covers.large ?? undefined },
+  });
+  // Postgres is truth; the index follows and may not block this (§5).
+  await indexRelease(updated).catch(() => {});
+  return true;
+}
+
+/**
+ * Whether a stored cover came from the Discogs fallback. The proxied form
+ * encodes its upstream URL, so this is a pure string test with no network call
+ * — the same property §7 relies on for the heal and the rollback.
+ */
+export function isDiscogsSourcedCover(coverUrl: string): boolean {
+  const upstream = decodeProxiedCoverPath(coverUrl)?.upstreamUrl ?? coverUrl;
+  try {
+    return new URL(upstream).hostname.toLowerCase() === "i.discogs.com";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -413,7 +491,8 @@ export async function warmOnce({
           lastWarmedAt: new Date(),
           lastResult: outcome.failed.length
             ? `failed: ${outcome.failed.join(",")} (warmed ${outcome.warmed.join(",") || "none"})`
-            : `ok: ${outcome.releaseGroups ?? 0} release-groups, ${outcome.covers} covers`,
+            : `ok: ${outcome.releaseGroups ?? 0} release-groups, ${outcome.covers} covers` +
+              (outcome.coversPersisted ? `, ${outcome.coversPersisted} covers repaired` : ""),
         },
       });
     }
