@@ -141,6 +141,24 @@ describe("warm sweep repairs stored covers", () => {
     expect(after?.coverUrl).toBe(toProxiedUrl(CAA_FRONT_500, COVER_THUMB_WIDTH));
   }, 60_000);
 
+  it("clears the stale tint, so the new art is not painted on the old colour", async () => {
+    const artist = await warmArtist("tint");
+    const stored = toProxiedUrl(DISCOGS_LABEL_SCAN, COVER_THUMB_WIDTH)!;
+    const row = await release("tint", stored);
+    // A tint sampled from the LABEL SCAN. CoverImage prefers a server-set
+    // colour over browser extraction, so leaving this would paint the true
+    // sleeve on the label's blue for good.
+    await prisma.release.update({ where: { id: row.id }, data: { coverColor: "#1b3f8f" } });
+    stubUpstream(["tint"]);
+
+    const result = await warmOnce({ only: [artist] });
+    expect(result.attempted.map((a) => a.artistMbid)).toContain(artist);
+
+    const after = await prisma.release.findUnique({ where: { id: row.id } });
+    expect(after?.coverUrl).toBe(toProxiedUrl(CAA_FRONT_500, COVER_THUMB_WIDTH));
+    expect(after?.coverColor, "stale tint survived the repair").toBeNull();
+  }, 60_000);
+
   it("replaces a Discogs-sourced cover — the label scans (Small Change shape)", async () => {
     const artist = await warmArtist("labelscan");
     const stored = toProxiedUrl(DISCOGS_LABEL_SCAN, COVER_THUMB_WIDTH)!;

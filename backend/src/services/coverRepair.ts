@@ -100,7 +100,24 @@ export async function persistResolvedCover(
   if (!dryRun) {
     const updated = await prisma.release.update({
       where: { id: row.id },
-      data: { coverUrl: covers.thumb, coverUrlLarge: covers.large ?? undefined },
+      data: {
+        coverUrl: covers.thumb,
+        coverUrlLarge: covers.large ?? undefined,
+        // The tint MUST go with the artwork it was sampled from.
+        //
+        // `coverColor` is the server-sampled dominant colour, and CoverImage
+        // prefers it over browser extraction whenever it is set — so repairing
+        // the cover without clearing it paints the NEW artwork on a tint
+        // sampled from the OLD. Small Change would have shown its true sleeve
+        // behind the blue of the Asylum label scan, and nothing would ever have
+        // corrected it, because the client only extracts when this is null.
+        //
+        // Null rather than re-sampled: that is the documented fallback (the
+        // client extracts from the rendition it is already fetching, at no
+        // extra request), and it keeps repair a pure database operation instead
+        // of a fetch-and-encode per row.
+        coverColor: null,
+      },
     });
     // Postgres is truth; the index follows and must not block this (§5).
     await indexRelease(updated).catch(() => {});
