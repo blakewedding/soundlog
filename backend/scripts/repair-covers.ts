@@ -2,6 +2,7 @@
 //   Run from backend/:
 //     npx tsx scripts/repair-covers.ts --artist "Tom Waits" --dry-run
 //     npx tsx scripts/repair-covers.ts --artist "Tom Waits"
+//     npx tsx scripts/repair-covers.ts --artist "Boris" --blanks-only
 //     npx tsx scripts/repair-covers.ts --all --limit 500
 //
 // Why this exists rather than leaning on the nightly warm sweep, which also
@@ -37,6 +38,17 @@ function flag(name: string): string | undefined {
 }
 
 const artist = flag("--artist");
+/**
+ * Repair ONLY rows with no cover at all, leaving Discogs-sourced ones alone.
+ *
+ * The two populations have different risk. A blank tile can only improve: there
+ * is nothing to lose and the worst case is it stays blank. Replacing a
+ * Discogs-sourced cover is a judgement call about which of two real images is
+ * the front, and the `discogsId` re-pick path that the label-scan population
+ * actually needs is still unbuilt — so a Discogs pass would fix only the subset
+ * the archive can answer and silently leave the rest looking repaired.
+ */
+const BLANKS_ONLY = args.includes("--blanks-only");
 const limit = Number(flag("--limit") ?? 0) || undefined;
 
 async function main() {
@@ -59,12 +71,14 @@ async function main() {
   // Filtered in code rather than SQL because "Discogs-sourced" is a property of
   // the DECODED upstream inside the proxied path, not a LIKE pattern — and §10
   // prefers an explicit list of rows we have looked at over a pattern we believe.
-  const targets = candidates.filter((r) => isRepairableCover(r.coverUrl)).slice(0, limit);
+  const targets = candidates
+    .filter((r) => (BLANKS_ONLY ? r.coverUrl === null : isRepairableCover(r.coverUrl)))
+    .slice(0, limit);
 
   const blanks = targets.filter((r) => r.coverUrl === null).length;
   console.log(
     `\n[repair-covers] scope: ${artist ? `artist ~ "${artist}"` : "ENTIRE CATALOG"}` +
-      `${limit ? ` (limit ${limit})` : ""}\n` +
+      `${BLANKS_ONLY ? " · BLANKS ONLY" : ""}${limit ? ` (limit ${limit})` : ""}\n` +
       `  ${candidates.length} release(s) with an MBID\n` +
       `  ${targets.length} repairable — ${blanks} blank, ${targets.length - blanks} Discogs-sourced\n` +
       `  ${DRY_RUN ? "DRY RUN — no rows will be written" : "WRITING"}\n`
