@@ -242,3 +242,38 @@ describe("CoverImage — loading, absent, and failed are visually distinct", () 
     expect(el.className).toContain("cover-pending");
   });
 });
+
+// The bug the first cut of the three-state fix shipped with, found on
+// production and pinned here.
+//
+// `withheld` is true for two unrelated reasons: the tile is off screen, OR it
+// is on screen and waiting its turn in coverLoadQueue (which bounds the burst,
+// not the total). Gating the shimmer on `withheld` skipped the second group —
+// so on Bob Dylan's Albums tab, scrolling settled at 13-16 of 18 VISIBLE tiles
+// showing a bare --ink-2 box. The state meant to fix blank tiles missed exactly
+// the tiles that were blank.
+describe("CoverImage — a visible tile waiting for a queue slot", () => {
+  it("shimmers while queued, not only once the queue grants it a slot", async () => {
+    // Saturate the queue so nothing this tile asks for can be granted.
+    const { __resetCoverQueue, acquireCoverSlot } = await import("../../lib/coverLoadQueue");
+    __resetCoverQueue();
+    const held: Array<() => void> = [];
+    for (let i = 0; i < 64; i++) held.push(acquireCoverSlot(() => {}));
+
+    // `defer` puts the tile on the queue; jsdom reports no intersection, so
+    // this also covers "visible but never granted".
+    const { container } = render(
+      <CoverImage src={PROXIED} alt="Blood on the Tracks cover" defer />
+    );
+    const el = container.querySelector(".cover") as HTMLElement;
+
+    // Whatever it is, it must never be an unstyled box: a viewer cannot tell
+    // "queued behind 63 other tiles" from "this site is broken".
+    const styled =
+      el.classList.contains("cover-pending") || el.classList.contains("cover-absent");
+    expect(styled, "a visible tile rendered as a bare --ink-2 box").toBe(true);
+
+    held.forEach((release) => release());
+    __resetCoverQueue();
+  });
+});

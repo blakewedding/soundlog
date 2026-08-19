@@ -262,12 +262,25 @@ export function CoverImage({
    * `absent` wins over `loading` so a failed tile settles on the deliberate
    * mark instead of shimmering forever at something that is never coming.
    *
-   * A withheld tile — deferred and still off screen — is deliberately NEITHER.
-   * It has not been asked for yet, and animating hundreds of off-screen tiles
-   * is exactly the work `defer` exists to avoid.
+   * The gate for LOADING is `visible`, not `withheld`, and the difference is
+   * the whole bug. `withheld` is true for two unrelated reasons — the tile is
+   * off screen, OR it is on screen and waiting its turn in `coverLoadQueue`
+   * (which bounds the BURST, not the total). Keying the shimmer off `withheld`
+   * therefore withheld it from tiles a person is looking at right now.
+   *
+   * Measured on Bob Dylan's Albums tab after this shipped: scrolling settled at
+   * 13-16 of 18 VISIBLE tiles painting a bare --ink-2 box with no shimmer at
+   * all — the queue was saturated, so nothing had been granted a slot yet, and
+   * the state that was supposed to fix blank tiles skipped precisely the tiles
+   * that were blank.
+   *
+   * So: on screen and pixels not here yet ⇒ shimmer, whether it is fetching or
+   * queued, because the difference is ours and not the viewer's. Off screen and
+   * deferred ⇒ still inert, which is what keeps `defer` from animating hundreds
+   * of tiles nobody is looking at.
    */
   const absent = !src || failed;
-  const loading = !absent && !withheld && (pending || !loaded);
+  const loading = !absent && (!defer || visible) && (pending || !loaded);
   const state = `${loading ? " cover-pending" : ""}${absent ? " cover-absent" : ""}`;
 
   // A clickable cover is a control, so it is rendered as a real <button>. It
