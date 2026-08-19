@@ -173,3 +173,72 @@ describe("CoverImage — the cold path still fades in", () => {
     expect(img.className).not.toContain("img-loading");
   });
 });
+
+// 6.3c — a tile is exactly one of three things, and it must LOOK like which.
+//
+// Reported as "Bob Dylan's canonical albums render blank". They were not blank
+// and they were not poisoned: the grid was mid-load, and a loading tile, a
+// release with no artwork, and a tile whose one discovery attempt (§7) failed
+// all painted the identical flat --ink-2 box. A policy about how hard we try
+// upstream was rendering as a broken page.
+describe("CoverImage — loading, absent, and failed are visually distinct", () => {
+  function tile(el: HTMLElement) {
+    return el.querySelector(".cover") as HTMLElement;
+  }
+
+  it("shimmers while real artwork is still loading", () => {
+    const { container } = render(<CoverImage src={PROXIED} alt="Nashville Skyline cover" />);
+    const el = tile(container);
+    expect(el.className).toContain("cover-pending");
+    expect(el.className).not.toContain("cover-absent");
+    expect(el.querySelector(".cover-absent-mark")).toBeNull();
+  });
+
+  it("stops shimmering once the artwork arrives", () => {
+    const { container } = render(<CoverImage src={PROXIED} alt="Nashville Skyline cover" />);
+    const img = container.querySelector("img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 400, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 400, configurable: true });
+    fireEvent.load(img);
+    expect(tile(container).className).not.toContain("cover-pending");
+    expect(tile(container).className).not.toContain("cover-absent");
+  });
+
+  it("shows the deliberate mark for a release with no artwork at all", () => {
+    const { container } = render(<CoverImage src={null} alt="Dylan cover" />);
+    const el = tile(container);
+    expect(el.className).toContain("cover-absent");
+    expect(el.className).not.toContain("cover-pending");
+    expect(el.querySelector(".cover-absent-mark")).not.toBeNull();
+  });
+
+  it("shows the SAME mark when the one discovery attempt fails — never a bare box", () => {
+    const { container } = render(<CoverImage src={PROXIED} alt="The Basement Tapes cover" />);
+    const img = container.querySelector("img") as HTMLImageElement;
+    fireEvent.error(img);
+    const el = tile(container);
+    expect(el.className).toContain("cover-absent");
+    // and it must SETTLE: a shimmer promises something that is never coming.
+    expect(el.className).not.toContain("cover-pending");
+    expect(el.querySelector(".cover-absent-mark")).not.toBeNull();
+  });
+
+  it("does not announce the mark — the tile's alt text already names the release", () => {
+    const { container } = render(<CoverImage src={null} alt="Pat Garrett cover" />);
+    expect(container.querySelector(".cover-absent-mark")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("re-arms for the next release when a grid tile is recycled", () => {
+    const { container, rerender } = render(
+      <CoverImage src={PROXIED} alt="first cover" />
+    );
+    fireEvent.error(container.querySelector("img") as HTMLImageElement);
+    expect(tile(container).className).toContain("cover-absent");
+
+    // Same mounted tile, different artwork: the previous failure must not stick.
+    rerender(<CoverImage src={`${PROXIED}?v=2`} alt="second cover" />);
+    const el = tile(container);
+    expect(el.className).not.toContain("cover-absent");
+    expect(el.className).toContain("cover-pending");
+  });
+});

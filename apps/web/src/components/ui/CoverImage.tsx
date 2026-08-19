@@ -67,6 +67,27 @@ interface Props {
  * inside the tile instead of being center-cropped into an unrecognizable
  * smear by object-fit: cover.
  */
+/**
+ * The "no artwork" mark.
+ *
+ * Deliberately NOT the Soundlog mark: the brand guardrail in Wordmark.tsx is
+ * that the mark is never recoloured and never redrawn, and a muted placeholder
+ * would be both. This is a generic record — a disc and a spindle hole — drawn
+ * in `currentColor` so the tile controls it, and marked aria-hidden because the
+ * tile's alt text already says which release has no cover.
+ *
+ * Its job is to look INTENDED. A viewer cannot tell a missing image from a
+ * broken site, so the absence has to be stated rather than left as a gap.
+ */
+function AbsentMark() {
+  return (
+    <svg className="cover-absent-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+      <circle cx="24" cy="24" r="15" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="24" cy="24" r="3.25" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function CoverImage({
   src,
   alt,
@@ -79,9 +100,33 @@ export function CoverImage({
 }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [letterbox, setLetterbox] = useState(false);
+  /**
+   * The image errored. Tracked as STATE, not swallowed, because a failed load
+   * is one of the three things a tile can be and it has to be able to say so.
+   *
+   * It matters most for the discography grid's un-seeded entries: those are
+   * DISCOVERY requests, so they get exactly one attempt (§7) and a failure is
+   * final for this page view. Before 6.3c that tile stayed a bare --ink-2 box,
+   * pixel-identical to a release with no artwork and to one still loading —
+   * so a §7 policy about how hard we try upstream rendered as a broken page.
+   */
+  const [failed, setFailed] = useState(false);
   // Seeded synchronously so a known colour is present on the very first paint
   // rather than flashing --ink-2 for a frame.
   const [tint, setTint] = useState(() => mutedTint(color) ?? cachedCoverColor(src));
+  // Reset per-image state when the tile is pointed at different artwork.
+  // During render rather than in an effect, deliberately: the layout effect
+  // below re-settles an already-decoded image before paint, and a reset that
+  // ran AFTER it would clear `loaded` back to false and hide a cover that was
+  // already on screen. Grid tiles are recycled, so this is the common path.
+  const [renderedSrc, setRenderedSrc] = useState(src);
+  if (src !== renderedSrc) {
+    setRenderedSrc(src);
+    setLoaded(false);
+    setFailed(false);
+    setLetterbox(false);
+  }
+
   const imgRef = useRef<HTMLImageElement>(null);
   const { ref: viewportRef, visible } = useInViewport<HTMLDivElement>();
 
@@ -193,13 +238,37 @@ export function CoverImage({
       className={loaded ? undefined : "img-loading"}
       style={letterbox ? { objectFit: "contain" } : undefined}
       onLoad={handleLoad}
-      onError={releaseSlot}
+      onError={() => {
+        setFailed(true);
+        releaseSlot();
+      }}
       loading="lazy"
     />
   );
 
   const background = tint ? { background: tint } : undefined;
-  const state = pending ? " cover-pending" : "";
+
+  /**
+   * A tile is exactly one of three things, and before 6.3c all three painted
+   * the same flat --ink-2 box:
+   *
+   *   ABSENT   no artwork to show — no src, or the one attempt we get failed.
+   *   LOADING  artwork is on its way. Measured cold on Bob Dylan's grid, one
+   *            un-seeded tile takes 2.2-5.8s to fetch, resize and encode, and
+   *            there are 138 of them on the Albums tab alone. A flat box for
+   *            six seconds is indistinguishable from a broken page.
+   *   LOADED   the artwork.
+   *
+   * `absent` wins over `loading` so a failed tile settles on the deliberate
+   * mark instead of shimmering forever at something that is never coming.
+   *
+   * A withheld tile — deferred and still off screen — is deliberately NEITHER.
+   * It has not been asked for yet, and animating hundreds of off-screen tiles
+   * is exactly the work `defer` exists to avoid.
+   */
+  const absent = !src || failed;
+  const loading = !absent && !withheld && (pending || !loaded);
+  const state = `${loading ? " cover-pending" : ""}${absent ? " cover-absent" : ""}`;
 
   // A clickable cover is a control, so it is rendered as a real <button>. It
   // used to be a <div onClick>, which meant the release page's zoom-to-full-size
@@ -217,6 +286,7 @@ export function CoverImage({
         aria-label={`${alt} — view full size`}
       >
         {image}
+        {absent && <AbsentMark />}
       </button>
     );
   }
@@ -224,6 +294,7 @@ export function CoverImage({
   return (
     <div ref={viewportRef} className={`cover${zoomable ? " cover-zoom" : ""}${state}`} style={background}>
       {image}
+      {absent && <AbsentMark />}
     </div>
   );
 }
