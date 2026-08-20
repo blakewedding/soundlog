@@ -3978,6 +3978,123 @@ sweep needs before it can claim to fix label scans; and widening itself —
 7,918 blanks and 4,468 archive-reachable Discogs rows, plus the 5,236 that only
 path 2 can reach.
 
+## Phase 6.3c/6.3d — the frontend floor, and the demo repair pass (2026-08-19)
+
+Reported as "Bob Dylan's canonical albums render blank, same class as Waits,
+blast radius fleet-wide". **The hypothesis was refuted**, and the refutation is
+the useful part.
+
+**Dylan's canonical albums were never poisoned.** Four independent checks
+disagreed with the premise: 11 of 13 named titles held Cover Art Archive covers
+in Postgres; the discography API returned every one as `seeded` WITH a
+`coverUrl`; all of those URLs served 200 through the proxy; and the live page
+rendered them. The capture had been taken mid "Re-pulling from MusicBrainz…",
+exactly as the brief itself cautioned.
+
+What the page actually showed was **load progress**. Dylan's Albums tab is 163
+entries of which **138 are un-seeded** — no Release row at all, artwork fetched
+at render time off the release-group MBID. Measured cold through our own proxy,
+one such tile took **2.2-5.8s** to fetch, resize and encode. A hundred-odd of
+those is a minute of progressive fill.
+
+**Three premise corrections worth keeping.** There is no art-state column, no
+not-found flag, and no `createdAt` on `Release`, so "rows written before the fix
+deploy" is unanswerable — there is nothing to compare. "Not-found" already has a
+TTL: it is `caa:rg:urls:*` at 7 days, jittered. And the write-once guard is not
+what freezes blanks — `if (!existing.coverUrl)` blocks REPLACING a cover, and a
+NULL passes it freely; what blocks healing is that the guard only runs on the
+seed path, and **"Refresh discography" only deletes the discography list key**
+(`bustArtistDiscography` is a one-line `invalidateCached`), so it never touches
+artwork at all.
+
+### 6.3c — a tile must look like which of the three things it is
+
+The one genuine defect. `DiscographyGroups` never passed `pending`, so three
+states painted an identical flat `--ink-2` box: loading, genuinely absent, and
+**failed** — and un-seeded tiles are discovery, so they get one attempt (§7) and
+a failure is final for that page view. A policy about how hard we try upstream
+was rendering as a broken page.
+
+Now: shimmer while loading, a deliberate record-disc mark when absent, and the
+**same mark** for a spent attempt (`.cover-absent::after { content: none }` —
+a sweep promises something that is never coming). Not the Soundlog mark, per
+Wordmark.tsx's guardrail that it is never recoloured or redrawn.
+
+Two things this cost, both worth recording:
+
+- **I nearly shipped an invisible mark.** `--line` is the decorative-hairline
+  token and measures **1.19:1** against the `--ink-2` tile. A "deliberate mark"
+  nobody can see is the blank box we were fixing. `--text-muted` at 0.3 alpha =
+  2.17:1. Computing the contrast rather than eyeballing it is what caught it.
+- **The first cut gated the shimmer on `withheld`, which was wrong.** `withheld`
+  is true both for off-screen tiles AND for on-screen tiles waiting their turn
+  in `coverLoadQueue` — so the fix skipped precisely the tiles a person was
+  looking at. Now gated on `(!defer || visible)`. The regression test was
+  verified to FAIL against the old line before being kept.
+
+**A verification lesson that cost a deploy.** The production measurement that
+condemned the first cut was taken in a non-painting browser pane
+(`document.hidden`, `innerHeight: 0`), where IntersectionObserver never fires
+and lazy images never load. Pre-fix and post-fix runs produced near-identical
+numbers because the harness, not the code, dominated them. The logic bug was
+real and the unit test proves it independently — but the production evidence
+offered for it was worthless, and it was reported as fact. **Check that the
+instrument is reading before trusting what it reads.**
+
+### 6.3d — scoped repair over the 20 demo artists (blanks only)
+
+`--blanks-only` added: a blank tile can only improve, while replacing a
+Discogs-sourced cover is a judgement about which of two real images is the
+front — and the `discogsId` re-pick path is still unbuilt. Different decisions,
+different flags.
+
+**118 rows repaired · 200 genuinely artless · 1 upstream-unavailable**, across
+20 artists. Includes *Dylan* and *Pat Garrett & Billy the Kid* — the only two
+canonical Dylan titles that were genuinely blank. Biggest gains: Coil 23,
+Swans 22, Mobb Deep 12, Joni Mitchell 10.
+
+Two operational notes:
+
+- **The first runner processed 1 of 20 and reported a clean finish.**
+  `docker compose run` consumes stdin — the same descriptor the `while read`
+  loop was reading the artist list from — and swallowed the remaining 19. The
+  fix is `< /dev/null` on the docker line. A job that exits 0 having done 5% of
+  its work is the 6.2g failure mode wearing a different hat.
+- Scope is `contains`, not exact, so `Coil` matched 10 distinct artist names and
+  `Swans` 19. Left as-is deliberately: repair is MBID-keyed and blanks-only, so
+  extra rows can only improve and no wrong-artist contamination is possible.
+
+### The warm pass
+
+Deliberately NOT a Varnish warm: `cache-policy.vcl` gives `/api/(releases|search)`
+a **60s** TTL, so anything warmed there is gone before morning. What survives
+cold is the **on-disk rendition cache (no TTL)** and Cloudflare's copy, both
+populated by requesting each rendition once. **1,128 tiles requested across 20
+artists — 889 served art, 239 answered 404** (genuinely no front, now rendering
+the absent mark), **51/51 detail pages OK, zero errors, zero 5xx.**
+
+I did NOT delete the 80 metadata cache keys to force `needsWarming`. 72 of 80
+were live and healthy; dropping them would have forced a full MusicBrainz
+re-fetch of every discography hours before a demo, trading known-good state for
+risk. The metadata was already warm; artwork was the thing that was cold.
+
+**Cold spot-checks after the pass** (24 album tiles each):
+
+| artist | discography API | tile median | p90 | 5xx |
+|---|---|---|---|---|
+| Bob Dylan | 0.89s | 0.16s | 0.18s | 0 |
+| Tom Waits | 0.46s | 0.15s | 0.18s | 0 |
+| Boris | 0.65s | 0.16s | 0.18s | 0 |
+
+Against the 2.2-5.8s measured cold before the pass, that is roughly a **20x**
+improvement, and every tile is now either art (200) or the deliberate mark
+(404) — never a bare box. Dylan's first screen measured 11 art + 1 mark + **0
+raw**.
+
+**Still open:** the `discogsId` re-pick path; the hardened fleet-wide backfill
+(17,354 blanks, ~44% repairable by sample); and the scrolled-in-tile case, which
+this browser tooling cannot measure trustworthily.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,
