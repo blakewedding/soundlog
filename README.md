@@ -768,7 +768,14 @@ git pull --ff-only origin main
 dc up -d --build                     # migrations gate the API automatically
 dc ps                                # all six healthy?
 BASE=https://soundlog.app ./infrastructure/scripts/verify-prod-stack.sh
-dc exec backend npx tsx scripts/search-canary.ts    # REQUIRED — see below
+dc --profile canary run --rm canary   # REQUIRED gate — exits non-zero if broken
+```
+
+If `dc` is not aliased with `--env-file`, the full form is:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml \
+  --profile canary run --rm canary
 ```
 
 #### The search canary is a required post-deploy gate
@@ -785,6 +792,17 @@ return something returns something" — asserted against artists we know are
 indexed, plus index-vs-Postgres drift, the article fallback and alias search. It
 does **not** call MusicBrainz: a canary that fails when a third party does trains
 everyone to ignore it.
+
+**Why a one-shot service and not `exec backend`.** The runtime image is a lean
+`pnpm deploy --prod` bundle: no `tsx`, no `scripts/`, no build toolchain, by
+design. Putting them there to run a test would ship a build toolchain into
+production to solve a deploy-time problem. The `canary` service is `FROM build`
+— the same target `migrate` uses, and the same one the runbook already calls the
+stack's maintenance image — so the toolchain stays out of the API container.
+
+`profiles: ["canary"]` keeps it out of `docker compose up -d`. It must never be
+a long-running container, and a gate that starts itself alongside the API is a
+gate nobody reads.
 
 It is a manual step because this repo has no CI/CD — see the incident's
 follow-up #2. Until that exists, running it is the gate.

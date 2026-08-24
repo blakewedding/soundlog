@@ -279,7 +279,19 @@ export type DiscographyResponse =
       counts: { total: number; seeded: number };
       unavailable?: string;
     }
-  | { status: "assembling"; progress: { fetched: number; total: number | null } };
+  | {
+      status: "assembling";
+      progress: { fetched: number; total: number | null };
+      /**
+       * Milliseconds since a page last landed.
+       *
+       * A progress bar frozen at 67% looks identical whether the work is
+       * retrying or dead. Measured on Bob Dylan against a degraded
+       * MusicBrainz: the assembly finished in 49.5s but sat at 67% for 20.5s
+       * while page 9 was retried, and that gap was reported as a stall.
+       */
+      stalledForMs?: number;
+    };
 
 // A genre with how many releases carry it — the active-genres rail.
 export interface GenreCount {

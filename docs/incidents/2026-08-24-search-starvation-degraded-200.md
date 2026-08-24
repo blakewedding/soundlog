@@ -286,6 +286,155 @@ is the one where nothing failed. A candidate rule, offered rather than assumed:
 
 ---
 
+## Post-deploy findings (same night)
+
+### Onset is unknowable from surviving evidence
+
+Both sources are horizon-limited, and saying so precisely matters more than a date:
+
+- **Logs.** Rotation is on (`json-file`, `max-file 5`, `max-size 10m`). The
+  earliest surviving hit is `2026-08-22T21:10:09Z` — and it sits in `.log.4`,
+  the **oldest** rotated file. That is where log history *begins*, not where the
+  fault began: a rotation-capped floor, not an onset.
+- **Redis TTLs.** Poisonings run continuously from the 7-day TTL horizon
+  (~Aug 17) to within ~2 hours of the scan. The horizon is the limit, not the
+  start.
+
+**Honest statement: the onset predates Aug 17 and the true start is not
+recoverable.** Loud 503s run densely through the entire visible window,
+including MusicBrainz 503ing *organic* searches ("chromatics", "the blue nile",
+"bob dylan") at 19:17–19:33 UTC on the day of the fix — it was degraded toward
+us in real time.
+
+### `docker compose exec -T` swallows a host-side loop's stdin
+
+The first purge attempt used a host-side `while read` loop piping keys into
+`docker compose exec -T`. It processed **one** key and reported success. `exec -T`
+consumes the same descriptor the loop was reading from, so the remaining input
+vanished.
+
+This is the 6.3d `docker compose run` stdin bug wearing different clothes, and
+the second time it has produced *a job that exits 0 having done a fraction of
+its work*. The fix is the same shape: keep the loop inside the container, or
+redirect the docker command's stdin from `/dev/null`. Rerun as a single
+in-container loop deleted **246** empty-valued `mb:artist:search:*` keys (250
+counted pre-purge; 4 expired naturally in the interim). Post-purge verification:
+zero empty-valued keys remain. Targeted invalidation throughout.
+
+### The junk MusicBrainz traffic is ours, and the fusing is not from Discogs
+
+The poisoned query strings carry two distinct fingerprints, and they have
+different causes.
+
+**Discogs markers** — `(n)` disambiguators ("Kevin Smith (11)"), trailing ANV
+asterisks ("Leonid Bobylyov*"), role strings ("Directed For The Stage By Peter
+Konwitschny"). §3 already requires these to be stripped at ingestion, and
+`discogsSource.ts` does strip them on the paths that go through it.
+
+**Fused credit arrays** — "ZZ TopGary Moore", "Calvin HarrisEllie Goulding",
+"RossiniDonizettiI Solisti Italiani", "enomoebiusroedeliusplank". These are
+**not** Discogs. They are ours:
+
+```ts
+credits.map((c) => c.name).join("")     // creditName(), musicbrainzService.ts
+```
+
+A MusicBrainz artist-credit array is a sequence of names **plus the punctuation
+that reassembles them**, carried per element as `joinphrase` (" & ", " feat. ",
+"/"). `joinphrase` was never declared on the `ArtistCredit` interface, so
+dropping it was invisible to every reader of that line. `"ZZ Top"` + `" & "` +
+`"Gary Moore"` became `"ZZ TopGary Moore"`.
+
+**The delivery mechanism completes the loop, and it runs through a sanctioned
+affordance.** Those strings are stored as `Release.artistName`, rendered by
+`ArtistCredit`, and — because §3 explicitly permits a name as a *navigation
+affordance* — linked to `/search?q=<name>`. Anything that walks those links (a
+crawler, a link preview, a person) fires an unmatchable string at the artist
+search. At catalogue scale that is a **self-inflicted MusicBrainz load source
+and a self-poisoning cache**, and it is the same shape as the Cover Art Archive
+self-congestion of 6.1.1: we were generating the upstream pressure we then
+blamed upstream for.
+
+Worth noting what §3 got right and what it did not cover. The law permits a name
+for navigation and forbids it for identity, and that line held — nothing was
+mis-identified. What it does not say is that a name used for navigation must
+still be a name *a human would type*, and a fused credit is not.
+
+### The Dylan "stall" at 67% was slow, not stalled — and the watchdog was right
+
+Reproduced against live MusicBrainz through the real code path:
+
+```
+   0.0s  assembling 0
+   4.9s  assembling 100/1192 (8%)
+  15.7s  assembling 700/1192 (59%)
+  36.2s  …no progress for 21s
+  37.4s  assembling 800/1192 (67%)
+  49.5s  COMPLETE — 1192 entries
+```
+
+The assembly finishes in **49.5s**, with a **20.5-second gap between 59% and
+67%** while page 9 is retried against a degraded upstream. 67% is exactly where
+that gap lands. `lastProgressAt` updates on every landed page, so the 90s
+watchdog correctly did not fire — there *was* progress.
+
+Three real defects sat behind the report anyway:
+
+1. **`errorHandler` had no branch for `DiscographyStalledError`**, so the
+   watchdog's honest terminal state would have been laundered into a generic
+   500. The machinery worked and the signal would not have arrived — the same
+   failure as the tripwire firing on recovery. Now 503 + `Retry-After` +
+   the progress it reached.
+2. **The UI could not distinguish slow from stopped.** A bar frozen at 67% looks
+   identical either way, and the copy promised "a few seconds" for something
+   that takes fifty. The assembling response now carries `stalledForMs` and the
+   page says so out loud past 8s.
+3. The watchdog's 90s threshold is sound, but the **8s-to-90s** band is where
+   real assemblies live under a degraded upstream. That band needed words, not a
+   shorter timeout.
+
+### I repeated the exact mistake this document is about
+
+The production health check read:
+
+```json
+"coverArt":{"active":12,"queued":{"interactive":45,"browse":58,"background":0}},
+"starvation":{"events":0,"promotions":0,"lastEventAt":null}
+```
+
+`events: 0` beside 103 queued cover requests. The zero was **true and
+meaningless**: 6.3e added starvation reporting and ageing to `PriorityRateGate`
+(MusicBrainz) and **not** to `PriorityConcurrencyGate` (the Cover Art Archive),
+so the field described an idle gate while the saturated one had no way to speak.
+
+That is this incident's own lesson, reproduced inside its own fix, within hours.
+It is recorded here rather than quietly patched because it is the strongest
+available evidence for the proposed rule below: an observability gap is not
+fixed by *understanding* it, only by instrumenting every instance of it.
+
+Now fixed — ageing (respecting the interactive reservation), starvation
+reporting, and `oldestWaitMs` on both gates. `stats()` also samples the
+tripwire, deliberately: this gate is event-driven, so if every slot is held by a
+request that never returns, `dispatch()` never runs and a health probe is the
+only observer left.
+
+### Canary invocation
+
+The runtime image is a lean `pnpm deploy --prod` bundle with no `tsx`, no
+`scripts/`, and no toolchain — by design — so the canary could not run there.
+Adding a build toolchain to the production image to run a test would be the
+wrong trade. It now runs as a one-shot compose service off the `build` target,
+the same target `migrate` uses and which the runbook already calls the stack's
+maintenance image, gated behind `profiles: ["canary"]` so it can never become a
+long-running container:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml \
+  --profile canary run --rm canary
+```
+
+---
+
 ## Follow-ups
 
 | # | Item | Status |
@@ -297,6 +446,9 @@ is the one where nothing failed. A candidate rule, offered rather than assumed:
 | 5 | Production onset dating — needs prod logs; see the Redis-TTL method, which survives log rotation and dates poisonings precisely | Open |
 | 6 | Release-search analyzer asymmetry: `autocomplete_search` uses the letter-only `lowercase` tokenizer, so `Neu! '75` and `Neu! 75` both tokenize to `["neu"]`. The index side sets `token_chars: ["letter","digit"]`, so indexed digits can **never** be matched | Open |
 | 7 | The MB gate bounds dispatch **rate** but not **concurrency**, unlike the CAA gate. Slow upstream responses mean unbounded in-flight requests | Open — folded into #1 |
+| 8 | **Heal fused `Release.artistName` values.** `creditName` is fixed going forward, but rows already hold fused strings. They carry `musicbrainzId`, so a heal can re-derive from MusicBrainz — one call per affected row, `background` tier, resumable. Deliberately deferred while MusicBrainz is degraded | Open |
+| 9 | **An `ArtistCredit` link should not be able to emit a query no human would type.** §3 permits a name as a navigation affordance; it does not say the name must be typeable. Consider suppressing the search link for multi-credit strings, or linking each credit separately | Open |
+| 10 | Extend the degraded-state UX beyond search. The Artist and Release pages now surface MusicBrainz 503s that were previously silent, which is correct and is why "Songs: Ohia didn't load, then did on refresh" appeared the night of the deploy | Open |
 
 ### Proposal for #1 — measure before retuning
 

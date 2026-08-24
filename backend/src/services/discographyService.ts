@@ -239,7 +239,24 @@ export function assemblyStats(): {
 
 export type DiscographyState =
   | { status: "complete"; entries: MBDiscographyEntry[] }
-  | { status: "assembling"; progress: DiscographyProgress };
+  | {
+      status: "assembling";
+      progress: DiscographyProgress;
+      /**
+       * How long this assembly has gone without a page landing.
+       *
+       * Measured live against Bob Dylan (1,192 groups / 12 pages) while
+       * MusicBrainz was degraded: the assembly completed in 49.5s but sat at
+       * 67% for **20.5 seconds** with no progress while page 9 was retried.
+       * That gap is the entire reported "stall" — the job was healthy and the
+       * UI had no way to say so, because a progress bar that has not moved
+       * looks identical whether the work is retrying or dead.
+       *
+       * The watchdog is the answer to a job that has genuinely stopped; this is
+       * the answer to one that is merely slow, and the two need different words.
+       */
+      stalledForMs: number;
+    };
 
 /**
  * Cached discography, or an in-progress assembly with live progress.
@@ -273,7 +290,11 @@ export async function getDiscographyState(artistMbid: string): Promise<Discograp
       existing.promise.catch(() => {});
       throw stalled;
     }
-    return { status: "assembling", progress: existing.progress };
+    return {
+      status: "assembling",
+      progress: existing.progress,
+      stalledForMs: Date.now() - existing.lastProgressAt,
+    };
   }
 
   const state: Assembly = {
@@ -296,7 +317,7 @@ export async function getDiscographyState(artistMbid: string): Promise<Discograp
     });
   inFlight.set(artistMbid, state);
 
-  return { status: "assembling", progress: state.progress };
+  return { status: "assembling", progress: state.progress, stalledForMs: 0 };
 }
 
 // Cover art for obscure releases loads visibly late. Once a discography is

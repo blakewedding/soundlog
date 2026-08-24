@@ -105,6 +105,45 @@ services:
     restart: "no"
 
   # -------------------------------------------------------------------------
+  # Search canary — the required post-deploy gate (6.3e).
+  #
+  # A one-shot job, exactly like `migrate`, and off the same `build` target
+  # because the runtime image is deliberately lean: no tsx, no scripts/, no
+  # toolchain. Adding them there to run a test would put a build toolchain in
+  # the production image to solve a deploy-time problem.
+  #
+  # `profiles` keeps it OUT of `docker compose up -d` — it must never be a
+  # long-running container, and a gate that starts itself alongside the API is a
+  # gate nobody reads. Run it explicitly, after the stack is up:
+  #
+  #   docker compose --env-file .env.production -f docker-compose.prod.yml \
+  #     run --rm canary
+  #
+  # It exits non-zero when search is broken end to end, which is what makes it a
+  # gate rather than a report. It exists because in 6.3e three artists were
+  # unfindable site-wide and every component-level check passed throughout.
+  #
+  # depends_on elasticsearch as well as postgres: this asserts the two agree,
+  # so it must be able to reach both.
+  # -------------------------------------------------------------------------
+  canary:
+    profiles: ["canary"]
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+      target: migrate
+    entrypoint: ["npx", "tsx", "scripts/search-canary.ts"]
+    env_file: [.env.production]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-soundlog}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soundlog}
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_NODE: http://elasticsearch:9200
+    depends_on:
+      postgres: { condition: service_healthy }
+      elasticsearch: { condition: service_started }
+    restart: "no"
+
+  # -------------------------------------------------------------------------
   # The API. Elasticsearch indices are created on boot by ensureIndices()
   # (src/server.ts) — the production path, not a dev-only convenience.
   # -------------------------------------------------------------------------

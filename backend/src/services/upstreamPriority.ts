@@ -444,8 +444,16 @@ export class PriorityConcurrencyGate {
     private readonly total: number,
     private readonly reservedForInteractive: number,
     private readonly name: string,
-    private readonly interactiveWarnMs = INTERACTIVE_WAIT_WARN_MS
+    private readonly interactiveWarnMs = INTERACTIVE_WAIT_WARN_MS,
+    private readonly starvationWarnMs = 30_000,
+    private readonly agePromotionMs = AGE_PROMOTION_MS
   ) {}
+
+  private readonly lastStarvationReportAt: Record<UpstreamTier, number> = {
+    interactive: 0,
+    browse: 0,
+    background: 0,
+  };
 
   /** How many slots this tier may occupy at once. */
   private limitFor(tier: UpstreamTier): number {
@@ -473,8 +481,89 @@ export class PriorityConcurrencyGate {
     });
   }
 
+  /**
+   * The oldest waiter past `agePromotionMs` that may legally take a slot.
+   *
+   * Same anti-starvation bound as the rate gate — but it still respects
+   * `limitFor`, so ageing can never promote speculative work into the capacity
+   * reserved for interactive requests. Bounding a browse tile's wait must not
+   * be paid for by making a person queue behind a grid, which is the whole
+   * reason the reservation exists.
+   */
+  private takeAged(): Waiter | undefined {
+    const now = Date.now();
+    let chosen: UpstreamTier | undefined;
+    let longest = -1;
+    for (const tier of TIER_ORDER) {
+      if (tier === "interactive") continue;
+      if (this.active >= this.limitFor(tier)) continue;
+      const head = this.queues[tier][0];
+      if (!head) continue;
+      const waited = now - head.queuedAt;
+      if (waited >= this.agePromotionMs && waited > longest) {
+        chosen = tier;
+        longest = waited;
+      }
+    }
+    if (!chosen) return undefined;
+    const jumped = TIER_ORDER.slice(0, TIER_ORDER.indexOf(chosen)).some(
+      (t) => this.queues[t].length > 0
+    );
+    const waiter = this.queues[chosen].shift();
+    if (!waiter) return undefined;
+    if (jumped) starvationCounters.promotions++;
+    return waiter;
+  }
+
+  /**
+   * Report any tier starving right now.
+   *
+   * Called from `dispatch()` AND from `stats()`, and the second one is not
+   * redundant. This gate is event-driven — `dispatch()` only runs when a slot
+   * frees — so if every slot is held by a request that never returns, the one
+   * moment it could observe a wedge is the one moment it never reaches.
+   * `stats()` is what `/api/health/upstream` calls, which makes a probe an
+   * observer rather than only a reader.
+   *
+   * 6.3e shipped starvation reporting on the RATE gate and not this one, and a
+   * production health check then showed `starvation.events: 0` beside 103
+   * queued cover requests. Zero was true and meant nothing: it described a gate
+   * that was idle while the saturated one had no way to speak.
+   */
+  private reportStarving(): void {
+    const now = Date.now();
+    for (const tier of TIER_ORDER) {
+      if (tier === "interactive") continue;
+      const head = this.queues[tier][0];
+      if (!head) continue;
+      const waited = now - head.queuedAt;
+      if (waited < this.starvationWarnMs) continue;
+      if (now - this.lastStarvationReportAt[tier] < this.starvationWarnMs) continue;
+      this.lastStarvationReportAt[tier] = now;
+      reportStarvation({
+        gate: this.name,
+        tier,
+        waitedMs: waited,
+        depth: {
+          interactive: this.queues.interactive.length,
+          browse: this.queues.browse.length,
+          background: this.queues.background.length,
+        },
+      });
+    }
+  }
+
   /** Give the freed slot to the highest-priority waiter that may use it. */
   private dispatch(): void {
+    this.reportStarving();
+
+    const aged = this.takeAged();
+    if (aged) {
+      this.active++;
+      aged.resolve();
+      return;
+    }
+
     for (const tier of TIER_ORDER) {
       if (this.active >= this.limitFor(tier)) continue;
       const waiter = this.queues[tier].shift();
@@ -508,14 +597,37 @@ export class PriorityConcurrencyGate {
     for (const tier of TIER_ORDER) this.queues[tier].length = 0;
   }
 
-  /** In-flight count and queue depths, for tests and diagnostics. */
-  stats(): { active: number; queued: Record<UpstreamTier, number> } {
+  /**
+   * In-flight count, queue depths, and how long the oldest waiter in each tier
+   * has been waiting.
+   *
+   * `oldestWaitMs` is the field that distinguishes a busy gate from a wedged
+   * one. `active: 12, queued: 103` describes both, and only age tells them
+   * apart. Reading this also SAMPLES the starvation tripwire — see
+   * `reportStarving`.
+   */
+  stats(): {
+    active: number;
+    queued: Record<UpstreamTier, number>;
+    oldestWaitMs: Record<UpstreamTier, number>;
+  } {
+    this.reportStarving();
+    const now = Date.now();
+    const oldest = (tier: UpstreamTier) => {
+      const head = this.queues[tier][0];
+      return head ? now - head.queuedAt : 0;
+    };
     return {
       active: this.active,
       queued: {
         interactive: this.queues.interactive.length,
         browse: this.queues.browse.length,
         background: this.queues.background.length,
+      },
+      oldestWaitMs: {
+        interactive: oldest("interactive"),
+        browse: oldest("browse"),
+        background: oldest("background"),
       },
     };
   }

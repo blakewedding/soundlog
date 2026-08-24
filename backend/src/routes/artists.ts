@@ -73,7 +73,13 @@ artistsRouter.get("/:id/discography", optionalAuth, async (req: AuthedRequest, r
 
     const state = await getDiscographyState(artist.musicbrainzId);
     if (state.status === "assembling") {
-      return res.status(202).json({ status: "assembling", progress: state.progress });
+      return res.status(202).json({
+        status: "assembling",
+        progress: state.progress,
+        // How long since a page landed, so the client can distinguish "slow"
+        // from "stopped" instead of showing a frozen bar for both (6.3e).
+        stalledForMs: state.stalledForMs,
+      });
     }
 
     const groups = await mergeDiscography(state.entries, req.userId);

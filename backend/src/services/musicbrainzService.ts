@@ -131,6 +131,15 @@ async function mbFetch<T>(
 // ---- Response shapes (only the fields we use) ----
 interface ArtistCredit {
   name: string;
+  /**
+   * The literal text MusicBrainz wants placed AFTER this credit — " & ",
+   * " feat. ", ", ", "/" — empty on the last one.
+   *
+   * It is not decoration. An artist-credit array is a sequence of names plus the
+   * punctuation that reassembles them, and the punctuation lives here rather
+   * than being inferrable, precisely because it varies per release.
+   */
+  joinphrase?: string;
   artist?: { id: string; name: string };
 }
 export interface MBReleaseGroup {
@@ -177,10 +186,43 @@ export interface CoverArtUrls {
   large: string; // original upload — lightbox only
 }
 
+/**
+ * Reassemble a MusicBrainz artist credit into the string a person should read.
+ *
+ * ## The bug this fixes (6.3e)
+ *
+ * This was `credits.map((c) => c.name).join("")` — every name concatenated with
+ * NOTHING between them, because `joinphrase` was not in the type and so was
+ * invisible to anyone reading the code. It produced, verbatim from production:
+ *
+ *   "ZZ Top" + " & "  + "Gary Moore"        -> "ZZ TopGary Moore"
+ *   "Calvin Harris" + " & " + "Ellie Goulding" -> "Calvin HarrisEllie Goulding"
+ *   "Rossini" + "/" + "Donizetti" + …       -> "RossiniDonizettiI Solisti Italiani"
+ *
+ * Those strings are then STORED as `Release.artistName`, rendered by
+ * `ArtistCredit`, and — because §3 permits a name as a *navigation affordance* —
+ * linked to `/search?q=<name>`. Anything that walks those links (a crawler, a
+ * link preview, a person) fires the fused string at the artist search, which
+ * can never match, which poisoned a `mb:artist:search:*` key and spent a
+ * MusicBrainz slot. At catalogue scale that is a self-inflicted load source, and
+ * it was a meaningful share of the traffic behind the observed 503 rate.
+ *
+ * The lesson worth keeping is the type's: a field absent from an interface is a
+ * field nobody can see they are dropping.
+ */
 function creditName(rg: MBReleaseGroup): string {
   const credits = rg["artist-credit"];
-  if (credits?.length) return credits.map((c) => c.name).join("");
-  return "Unknown Artist";
+  if (!credits?.length) return "Unknown Artist";
+  return (
+    credits
+      .map((c) => `${c.name}${c.joinphrase ?? ""}`)
+      .join("")
+      // A trailing joinphrase on the last credit is malformed data upstream, not
+      // something to render.
+      .trim()
+      .replace(/[,&/]+$/, "")
+      .trim() || "Unknown Artist"
+  );
 }
 function creditArtistId(rg: MBReleaseGroup): string | undefined {
   return rg["artist-credit"]?.[0]?.artist?.id;

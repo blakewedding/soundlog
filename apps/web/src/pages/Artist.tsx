@@ -101,13 +101,23 @@ function Discography({ artistId }: { artistId: string }) {
   if (data?.status === "assembling") {
     const { fetched, total } = data.progress;
     const pct = total ? Math.min(100, Math.round((fetched / total) * 100)) : null;
+    // A bar that has not moved for a while is the thing people report as a
+    // stall, and it is usually not one: measured on Bob Dylan against a
+    // degraded MusicBrainz, the assembly finished in 49.5s but sat at 67% for
+    // 20.5s while page 9 was retried. Saying so out loud costs one sentence and
+    // is the difference between "this is broken" and "this is working slowly".
+    const silentFor = data.stalledForMs ?? 0;
+    const waiting = silentFor > 8_000;
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div className="section-label">Discography</div>
-        <p className="meta">
+        <p className="meta" role="status" aria-live="polite">
           Fetching from MusicBrainz — {fetched}
           {total ? ` of ${total}` : ""} releases so far
-          {pct !== null ? ` (${pct}%)` : ""}. Prolific artists take a few seconds.
+          {pct !== null ? ` (${pct}%)` : ""}.{" "}
+          {waiting
+            ? `MusicBrainz is slow right now — waiting ${Math.round(silentFor / 1000)}s for the next page. This keeps retrying.`
+            : "A prolific artist can take a minute."}
         </p>
         <div className="progress-track" aria-hidden>
           <div

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import {
+  PriorityConcurrencyGate,
   PriorityRateGate,
   onStarvation,
   starvationStats,
@@ -112,5 +113,71 @@ describe("priority ageing", () => {
     for (let i = 1; i < at.length; i++) {
       expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(55);
     }
+  });
+});
+
+describe("the CAA concurrency gate reports and ages too", () => {
+  /**
+   * 6.3e shipped starvation reporting on the RATE gate only. A production
+   * health check then read `starvation.events: 0` beside `coverArt` holding
+   * `active: 12, queued: {interactive: 45, browse: 58}` — zero was true and
+   * described the wrong gate entirely. Silence read as health, again.
+   */
+  it("reports a starving browse waiter, and stats() is an observer", async () => {
+    const events: StarvationEvent[] = [];
+    const previous = onStarvation((e) => events.push(e));
+    try {
+      // 1 slot, 0 reserved, 40ms starvation threshold.
+      const gate = new PriorityConcurrencyGate(1, 0, "caa-test", 2_000, 40);
+
+      // Occupy the only slot with work that does not finish while we look.
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      void gate.run("interactive", () => held);
+
+      // A browse tile queues behind it and cannot proceed.
+      let dispatched = false;
+      const queued = gate.run("browse", async () => {
+        dispatched = true;
+      });
+
+      await sleep(120);
+      expect(dispatched).toBe(false);
+
+      // dispatch() cannot have run — no slot has freed. stats() is the only
+      // observer available, and it must be one.
+      const s = gate.stats();
+      expect(s.active).toBe(1);
+      expect(s.queued.browse).toBe(1);
+      expect(s.oldestWaitMs.browse).toBeGreaterThanOrEqual(40);
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0].gate).toBe("caa-test");
+
+      release();
+      await queued;
+    } finally {
+      onStarvation(previous);
+    }
+  });
+
+  it("ageing never promotes speculative work into the interactive reservation", async () => {
+    // 2 slots, 1 reserved for interactive => browse may use at most 1.
+    const gate = new PriorityConcurrencyGate(2, 1, "caa-res", 5_000, 10);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+
+    void gate.run("browse", () => held); // browse takes its single allowed slot
+    let secondBrowseRan = false;
+    const second = gate.run("browse", async () => {
+      secondBrowseRan = true;
+    });
+
+    // Well past the 10ms ageing threshold: the reservation must still hold.
+    await sleep(80);
+    expect(secondBrowseRan).toBe(false);
+
+    release();
+    await second;
+    expect(secondBrowseRan).toBe(true);
   });
 });

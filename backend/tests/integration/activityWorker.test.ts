@@ -36,13 +36,25 @@ describe("BullMQ activity worker", () => {
 
     await queue.add("activity", { userId, type: "LOG", targetId: `rel-${RUN}` });
 
-    // Wait for the worker to drain the job (BullMQ is near-instant).
+    // Wait for the worker to drain the job.
+    //
+    // "BullMQ is near-instant" is true on an idle box and was the assumption
+    // baked into the old 5s budget (50 x 100ms). Inside the full suite — 500+
+    // tests contending for the same Redis and Postgres — it is not, and this
+    // failed once in a full run while passing in isolation every time.
+    //
+    // The budget is raised rather than the assertion relaxed: the test still
+    // demands that the row appear and match exactly. All that changes is how
+    // long it is willing to wait for a loaded machine, which is not a property
+    // of the code under test. The vitest timeout below is raised in step, or
+    // the poll can outlive the test and report as a timeout instead of a
+    // failure.
     let activity = null;
-    for (let i = 0; i < 50 && !activity; i++) {
+    for (let i = 0; i < 200 && !activity; i++) {
       activity = await prisma.activity.findFirst({ where: { userId } });
       if (!activity) await new Promise((r) => setTimeout(r, 100));
     }
     expect(activity, "worker should have recorded the activity").not.toBeNull();
     expect(activity).toMatchObject({ type: "LOG", targetId: `rel-${RUN}` });
-  }, 15_000);
+  }, 30_000);
 });
