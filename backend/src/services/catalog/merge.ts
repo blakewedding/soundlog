@@ -21,7 +21,26 @@ export function normalizeText(text: string): string {
  * untouched because those don't match a bare integer.
  */
 export function stripArtistDisambiguation(name: string): string {
-  return name.replace(/\s*\(\d+\)\s*$/, "").trim() || name.trim();
+  const cleaned = name
+    // Discogs numeric disambiguator: "Danny Brown (2)".
+    .replace(/\s*\(\d+\)\s*$/, "")
+    // Discogs ANV marker: a trailing asterisk means "this release credits the
+    // artist under a name variation". It is Discogs bookkeeping, never part of
+    // the name, and §3 requires markers stripped AT INGESTION — before they can
+    // reach an artist row, a MusicBrainz search or a dedupe key.
+    //
+    // It had been left in, and production cache keys showed the cost:
+    // "Leonid Bobylyov*", "Mozart* / Haydn*" and a long tail of Japanese names
+    // with a trailing "*", each one an unmatchable MusicBrainz artist search
+    // fired whenever anything walked the credit's search link (6.3e).
+    //
+    // Anchored to the END and requiring a preceding NON-ASTERISK character, so
+    // an artist whose name IS asterisks keeps them. `(?<=\S)` was not enough:
+    // in "***" the second and third asterisks are each preceded by a non-space,
+    // so it stripped two of the three and left "*".
+    .replace(/(?<=[^\s*])\*+\s*$/, "")
+    .trim();
+  return cleaned || name.trim();
 }
 
 /**

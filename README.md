@@ -768,15 +768,28 @@ git pull --ff-only origin main
 dc up -d --build                     # migrations gate the API automatically
 dc ps                                # all six healthy?
 BASE=https://soundlog.app ./infrastructure/scripts/verify-prod-stack.sh
-dc --profile canary run --rm canary   # REQUIRED gate — exits non-zero if broken
+dc --profile canary run --rm --build canary   # REQUIRED gate — exits non-zero
 ```
 
 If `dc` is not aliased with `--env-file`, the full form is:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml \
-  --profile canary run --rm canary
+  --profile canary run --rm --build canary
 ```
+
+**`--build` is not optional, and leaving it off has already produced a false
+pass.** `up -d --build` rebuilds the services it is *starting*, and a
+profile-gated service is not one of them — so the canary image stays at whatever
+commit last built it. On the 6.3e follow-up deploy that meant the gate ran the
+PREVIOUS deploy's canary against the new index: it reported 23 checks instead of
+24 and failed a case the new code had already fixed.
+
+A gate that tests yesterday's code is worse than no gate, because it reports.
+It is the same shape as the tripwire that could only fire on recovery: the
+machinery runs, and what it tells you is about a different world than the one
+you are in. If the check count is lower than you expect, suspect the image
+before the code.
 
 #### The search canary is a required post-deploy gate
 

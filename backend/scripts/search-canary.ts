@@ -31,6 +31,22 @@ import { esSearchArtists, esSearchReleases } from "../src/services/searchService
 
 const JSON_OUT = process.argv.includes("--json");
 
+/**
+ * Bump when checks are added or removed.
+ *
+ * Not decoration. On the 6.3e follow-up deploy this ran from a STALE image —
+ * `up -d --build` rebuilds only the services it starts, and a profile-gated one
+ * is not among them — so the gate tested the previous deploy's code against the
+ * new index and reported a failure that had already been fixed. The symptom was
+ * "23 checks instead of 24", which is only diagnosable if the expected number is
+ * stated somewhere.
+ *
+ * `--build` on the run is the actual fix; this is what makes the failure legible
+ * when someone forgets. A gate that can silently be a version behind is the
+ * tripwire-fires-on-recovery problem wearing a deployment hat.
+ */
+const CANARY_REVISION = "6.3e.2";
+
 /** A delta larger than this between Postgres and the index is a real problem. */
 const DRIFT_TOLERANCE = 0.1; // 10%
 
@@ -168,13 +184,17 @@ function withinTolerance(a: number, b: number): boolean {
 function report(): void {
   const failed = checks.filter((c) => !c.ok);
   if (JSON_OUT) {
-    console.log(JSON.stringify({ ok: failed.length === 0, checks }, null, 2));
+    console.log(JSON.stringify({ ok: failed.length === 0, revision: CANARY_REVISION, checks }, null, 2));
   } else {
-    console.log("\n[canary] search end-to-end\n");
+    console.log(`\n[canary] search end-to-end — revision ${CANARY_REVISION}\n`);
     for (const c of checks) console.log(`  ${c.ok ? "PASS" : "FAIL"}  ${c.name} — ${c.detail}`);
     console.log(
-      `\n[canary] ${checks.length - failed.length}/${checks.length} passed` +
-        (failed.length ? ` — ${failed.length} FAILING` : "")
+      `\n[canary] ${checks.length - failed.length}/${checks.length} passed ` +
+        `(revision ${CANARY_REVISION})` +
+        (failed.length
+          ? ` — ${failed.length} FAILING. If the check COUNT is lower than you ` +
+            `expected, suspect a stale image before the code: re-run with --build.`
+          : "")
     );
   }
   if (failed.length) process.exitCode = 1;

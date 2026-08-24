@@ -117,7 +117,15 @@ services:
   # gate nobody reads. Run it explicitly, after the stack is up:
   #
   #   docker compose --env-file .env.production -f docker-compose.prod.yml \
-  #     run --rm canary
+  #     --profile canary run --rm --build canary
+  #
+  # `--build` is load-bearing. `up -d --build` rebuilds only the services it
+  # STARTS, and a profile-gated service is not one of them — so without it this
+  # runs whatever commit last built the image. That produced a false pass on the
+  # 6.3e follow-up deploy: the gate ran the PREVIOUS deploy's canary against the
+  # new index, reported 23 checks instead of 24, and failed a case the deployed
+  # code had already fixed. A gate testing yesterday's code is worse than no
+  # gate, because it reports.
   #
   # It exits non-zero when search is broken end to end, which is what makes it a
   # gate rather than a report. It exists because in 6.3e three artists were

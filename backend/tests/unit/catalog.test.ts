@@ -66,6 +66,38 @@ describe("stripArtistDisambiguation (Discogs '(n)' suffix)", () => {
       candidateKey({ title: "Old", artistName: "Danny Brown" })
     );
   });
+
+  /**
+   * 6.3e — the Discogs ANV marker.
+   *
+   * A trailing asterisk means "this release credits the artist under a name
+   * variation". It is Discogs bookkeeping and never part of the name, and §3
+   * requires markers stripped at INGESTION — before they can reach an artist
+   * row, a MusicBrainz search, or a dedupe key. It had been left in, and
+   * production cache keys showed the cost: "Leonid Bobylyov*", "Mozart*", and a
+   * long tail of Japanese names with a trailing "*" — each an unmatchable
+   * MusicBrainz artist search fired whenever anything walked the credit link.
+   */
+  it("removes a trailing ANV asterisk", () => {
+    expect(stripArtistDisambiguation("Leonid Bobylyov*")).toBe("Leonid Bobylyov");
+    expect(stripArtistDisambiguation("Mozart*")).toBe("Mozart");
+    expect(stripArtistDisambiguation("細野晴臣*")).toBe("細野晴臣");
+    expect(stripArtistDisambiguation("Some Artist* ")).toBe("Some Artist");
+  });
+
+  it("leaves an artist whose name IS punctuation intact", () => {
+    // The anchor requires a preceding non-space character, so a name made of
+    // asterisks keeps them — the same reasoning that keeps "!!!" searchable.
+    expect(stripArtistDisambiguation("*")).toBe("*");
+    expect(stripArtistDisambiguation("***")).toBe("***");
+    expect(stripArtistDisambiguation("!!!")).toBe("!!!");
+  });
+
+  it("collapses an ANV-marked artist onto the bare name for dedupe", () => {
+    expect(candidateKey({ title: "X", artistName: "Leonid Bobylyov*" })).toBe(
+      candidateKey({ title: "X", artistName: "Leonid Bobylyov" })
+    );
+  });
 });
 
 describe("dedupeMerge", () => {

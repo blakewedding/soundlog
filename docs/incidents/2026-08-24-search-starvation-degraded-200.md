@@ -459,6 +459,36 @@ regress silently. **This is the follow-up loop working exactly as intended: the
 gate caught, on day one, a class of bug that the incident's own regression suite
 had missed because every case it tested had letters in it.**
 
+### A deploy gate built from a stale image
+
+The first post-reindex canary run **failed**, reporting `find release "!!!" —
+NOT FOUND` and running **23 checks instead of 24**. The code had already fixed
+that case. The image had not.
+
+`docker compose up -d --build` rebuilds the services it is **starting**, and a
+profile-gated service is not among them — so the gate ran the *previous*
+deploy's canary against the new index. An explicit
+`--profile canary build canary` then produced 24/24.
+
+This is the tripwire-fires-on-recovery pattern in miniature, and in one respect
+worse: a stale tripwire does not merely stay silent, it **reports**, and what it
+reports is about a different version of the world than the one being deployed.
+Had the staleness gone the other way — a *newer* canary image than the deployed
+code — it would have passed and certified a deploy it never tested.
+
+Two changes, and the second is the one that generalises:
+
+- `--build` is now mandatory in the documented invocation, in the compose
+  comment, and in the runbook.
+- The canary prints a `CANARY_REVISION` and its check count, so
+  "23 instead of 24" is legible as an image problem rather than a code one. The
+  invocation is the fix; the stamp is what makes forgetting it *diagnosable*.
+
+The general lesson: **a verification artefact needs its own provenance.** Every
+other guard in this incident failed by staying silent; this one would have
+failed by speaking confidently about the wrong build, which is harder to catch
+precisely because it looks like it is working.
+
 ### Canary invocation
 
 The runtime image is a lean `pnpm deploy --prod` bundle with no `tsx`, no
@@ -488,7 +518,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml \
 | 6 | Release-search analyzer asymmetry — the letter-only query tokenizer could never emit a digit token, so indexed digits were unmatchable | **Fixed** — `titleStd`/`artistNameStd` subfields using the built-in `standard` analyzer |
 | 7 | The MB gate bounds dispatch **rate** but not **concurrency**, unlike the CAA gate. Slow upstream responses mean unbounded in-flight requests | Open — folded into #1 |
 | 8 | **Heal fused `Release.artistName` values.** `creditName` is fixed going forward, but rows already hold fused strings. They carry `musicbrainzId`, so a heal can re-derive from MusicBrainz — one call per affected row, `background` tier, resumable. Deliberately deferred while MusicBrainz is degraded | Open |
-| 9 | **An `ArtistCredit` link should not be able to emit a query no human would type.** §3 permits a name as a navigation affordance; it does not say the name must be typeable. Consider suppressing the search link for multi-credit strings, or linking each credit separately | Open |
+| 9 | An `ArtistCredit` link emitting a query no human would type | **Fixed** — `splitArtistCredit` handles the real MusicBrainz joinphrases (not just `", "`), never splits a bare `/` (AC/DC), and over-long fragments render as text. The ANV asterisk is now stripped at ingestion per §3 |
 | 10 | Extend the degraded-state UX beyond search. The Artist and Release pages now surface MusicBrainz 503s that were previously silent, which is correct and is why "Songs: Ohia didn't load, then did on refresh" appeared the night of the deploy | Open |
 
 ### Proposal for #1 — measure before retuning
