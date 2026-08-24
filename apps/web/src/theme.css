@@ -1049,3 +1049,41 @@ input::placeholder { color: var(--text-faint); }
   .ks-banner { min-height: 48px; }
   .ks-banner-link { font-size: 12px; }
 }
+
+/* ---------------------------------------------------------------------------
+   Degraded notice — "we could not tell", as distinct from "there is nothing".
+
+   6.3e made the backend answer an unreachable upstream with 503 instead of an
+   empty 200, which is only worth doing if the DIFFERENCE reaches a person. An
+   empty result and a failed request rendered as the same grey line of meta text
+   would keep the bug alive at the last layer, so this is deliberately a banner:
+   its own surface, its own accent edge, and a retry affordance (§6).
+
+   Contrast computed, not eyeballed — the 6.3c near-miss shipped a mark at
+   1.19:1 because --line is a hairline token, not a content one:
+     --text       on --ink-2 = 14.12:1
+     --gold       on --ink-2 =  7.05:1   (the accent edge)
+   --------------------------------------------------------------------------- */
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+/* The accent edge carries the meaning at a glance: gold is "attention", not
+   --danger red, because a busy upstream is a wait rather than a failure and
+   colouring it as breakage would overstate what happened. */
+.notice-degraded {
+  border-left: 3px solid var(--gold);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .notice { transition: opacity var(--motion-base) var(--ease-out); }
+}

@@ -768,7 +768,32 @@ git pull --ff-only origin main
 dc up -d --build                     # migrations gate the API automatically
 dc ps                                # all six healthy?
 BASE=https://soundlog.app ./infrastructure/scripts/verify-prod-stack.sh
+dc exec backend npx tsx scripts/search-canary.ts    # REQUIRED — see below
 ```
+
+#### The search canary is a required post-deploy gate
+
+`search-canary.ts` exits non-zero when search is broken end to end, and a deploy
+is not finished until it passes. It exists because of 6.3e, where three artists
+were unfindable site-wide and **nothing we owned noticed**: Elasticsearch was
+green, Postgres was up, the API returned HTTP 200, MusicBrainz answered a manual
+`curl` with 200, and the search route logged nothing — because an empty result is
+not an error. `verify-prod-stack.sh` would have passed throughout.
+
+So the canary is deliberately the crudest possible check — "a query that should
+return something returns something" — asserted against artists we know are
+indexed, plus index-vs-Postgres drift, the article fallback and alias search. It
+does **not** call MusicBrainz: a canary that fails when a third party does trains
+everyone to ignore it.
+
+It is a manual step because this repo has no CI/CD — see the incident's
+follow-up #2. Until that exists, running it is the gate.
+
+> **Before deploying, if you are investigating a search incident:** grab the
+> forensics first. `docker compose logs` only holds the CURRENT container, so
+> `dc up -d --build` **destroys the log history** you would use to date an onset.
+> Redis TTLs survive it — a `mb:artist:search:*` key holding `[]` with TTL `T`
+> was written `604800 - T` seconds ago.
 
 The `migrate` service runs `prisma migrate deploy` and the API will not start
 until it completes successfully (`service_completed_successfully`), so a failed

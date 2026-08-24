@@ -77,6 +77,12 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
     if (url.includes("/release?release-group=")) {
       return Promise.resolve(json({ releases: [] }));
     }
+    // Any other MusicBrainz URL is a MOCK GAP, not a reason to reach the
+    // network. Before 6.3e an unmocked call fell through to live MusicBrainz and
+    // a degraded search quietly returned `[]`, so the dependency was invisible;
+    // now that an outage is honestly a 503, it would surface as an unrelated
+    // assertion failing against a third party's bad minute.
+    return Promise.reject(new Error(`[test] unmocked MusicBrainz call: ${url}`));
   }
   if (url.includes("coverartarchive.org")) {
     return Promise.resolve(new Response("", { status: 404 })); // no art on file

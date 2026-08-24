@@ -93,6 +93,22 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
         })
       );
     }
+    // The ARTIST SEARCH fan-out (`searchArtists` -> searchMusicBrainzArtists).
+    // Unmatched before 6.3e, so it fell through to `realFetch` and this file
+    // quietly depended on live MusicBrainz. That was invisible while a degraded
+    // search returned `[]`; now that an outage is honestly a 503, an unmocked
+    // call turns into `expect(200)` failing against a real upstream's bad
+    // minute — measured at a 54% HTTP 503 rate on 2026-08-24.
+    if (url.includes("/artist/?query=") || url.includes("/artist?query=")) {
+      return Promise.resolve(json({ artists: [] }));
+    }
+    // Anything else aimed at MusicBrainz is a MOCK GAP, not a reason to reach
+    // the network. Failing loudly here is the whole point: a test that silently
+    // depends on a third party passes or fails for reasons that have nothing to
+    // do with the code under test.
+    return Promise.reject(
+      new Error(`[catalog.test] unmocked MusicBrainz call: ${url}`)
+    );
   }
   if (url.includes("coverartarchive.org")) {
     return Promise.resolve(

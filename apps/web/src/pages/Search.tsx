@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { ApiError } from "../services/api";
 import { RELEASE_TYPE_LABELS, artistDisplayName } from "@soundlog/shared";
 import type {
   ArtistSearchResult,
@@ -58,16 +59,62 @@ export default function Search() {
     tabRefs.current[id]?.focus();
   }
 
-  const { data, isFetching, isError } = useQuery({
+  const { data, isFetching, isError, error, refetch, failureCount, failureReason } = useQuery({
     queryKey: ["catalog-search", tab, term],
     queryFn: () => api.search(term, tab),
     enabled: term.length > 1,
     staleTime: 60_000,
-    retry: false, // search-as-you-type: fail fast, the next keystroke re-queries
+    /**
+     * Retry ONLY an upstream-busy 503, and only twice.
+     *
+     * Before 6.3e this was `retry: false` with a one-line "search is
+     * unavailable" — which was fine when the server never sent a 503 for this,
+     * because it answered an outage with an empty 200 instead. Now that a
+     * failure is honestly a failure, the client has to be honest back: a
+     * transient upstream is worth waiting out, and everything else (a 4xx, a
+     * bug) is not, because retrying it just fails again more slowly.
+     *
+     * Still fail-fast for search-as-you-type: two attempts, and any keystroke
+     * changes the query key and abandons them.
+     */
+    retry: (count, err) => err instanceof ApiError && err.isUpstreamBusy && count < 2,
+    /**
+     * Wait as long as the SERVER asked, not as long as we guessed.
+     *
+     * `errorHandler` sends `Retry-After` on every `UpstreamUnavailableError`;
+     * ignoring it and inventing our own schedule is how a client turns one
+     * upstream's bad minute into a retry storm — the same §7 reasoning that
+     * governs how hard the backend retries, applied one layer out.
+     */
+    retryDelay: (count, err) => {
+      const asked = err instanceof ApiError ? err.retryAfterSeconds : undefined;
+      return asked !== undefined ? asked * 1000 : Math.min(1000 * 2 ** count, 8000);
+    },
     // Keep showing the previous results while the next query loads, so the grid
     // never unmounts under the cursor — clicks always land.
     placeholderData: keepPreviousData,
   });
+
+  /**
+   * The three outcomes, at the surface (§1).
+   *
+   * `degraded` and `showEmpty` must never be the same rendering. That identity
+   * is the entire 6.3e bug: an unreachable MusicBrainz and a genuinely unknown
+   * artist produced the same empty list, so "we could not tell" was displayed as
+   * "there is nothing". The law is only kept if the distinction survives all the
+   * way to what a person reads.
+   */
+  //
+  // `failureReason`, not just `error`. With retries enabled, react-query keeps
+  // `isError` false until the LAST attempt fails — so a 503 being patiently
+  // retried on the server's schedule would show "Searching…" for several
+  // seconds while we already knew perfectly well that upstream was busy. That
+  // is a smaller version of the same sin: withholding a known third outcome
+  // because it has not finished being true yet. `failureReason` carries the
+  // in-flight failure, and clears on success.
+  const failure = (error ?? failureReason) as unknown;
+  const degraded = failure instanceof ApiError && failure.isUpstreamBusy;
+  const brokenOtherwise = isError && !degraded;
 
   const results = data?.results ?? [];
   const artists = data?.artists ?? [];
@@ -75,8 +122,9 @@ export default function Search() {
   const lists = data?.lists ?? [];
   const labels = data?.labels ?? [];
   const total = results.length + artists.length + members.length + lists.length + labels.length;
-  // Only "empty" once the request actually succeeded.
-  const showEmpty = !!data && !isFetching && total === 0;
+  // Only "empty" once the request actually SUCCEEDED — never on an error, and
+  // never while a retry is still outstanding.
+  const showEmpty = !!data && !isFetching && !isError && total === 0;
 
   const showReleases = tab === "all" || tab === "releases";
   const showArtists = tab === "all" || tab === "artists";
@@ -133,16 +181,39 @@ export default function Search() {
       <p className="meta" role="status" aria-live="polite">
         {term.length <= 1
           ? "Type at least two characters to search."
-          : isError
-            ? "Search is unavailable right now."
-            : isFetching
-              ? "Searching…"
-              : showEmpty
-                ? `Nothing found for “${term}”.`
-                : total > 0
-                  ? `${total} result${total === 1 ? "" : "s"} for “${term}”.`
-                  : ""}
+          : degraded
+            ? "" /* the banner below owns this message, and owns the alert role */
+            : brokenOtherwise
+              ? "Search is unavailable right now."
+              : isFetching
+                ? "Searching…"
+                : showEmpty
+                  ? `Nothing found for “${term}”.`
+                  : total > 0
+                    ? `${total} result${total === 1 ? "" : "s"} for “${term}”.`
+                    : ""}
       </p>
+
+      {/* The degraded state.
+          Deliberately a BANNER and not a line of muted meta text: "nothing
+          matched your search" and "we could not ask" are different facts about
+          the world, and a person cannot act on the difference if both render as
+          the same grey sentence. role="alert" rather than "status" because this
+          one is interruptive — it changes what the empty grid below it means.
+          Results already on screen are kept (placeholderData), so this reads as
+          "this list may be short" rather than replacing good data with an
+          error. */}
+      {degraded && (
+        <div className="notice notice-degraded" role="alert">
+          <span>
+            The catalog upstream is busy — showing what we already have.
+            {failureCount > 0 ? " Retrying…" : ""}
+          </span>
+          <button type="button" className="btn btn-ghost" onClick={() => refetch()}>
+            Try now
+          </button>
+        </div>
+      )}
 
       {showArtists && artists.length > 0 && (
         <section>

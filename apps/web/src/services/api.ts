@@ -53,10 +53,32 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
-    public body?: Record<string, unknown>
+    public body?: Record<string, unknown>,
+    /**
+     * `Retry-After`, in seconds, when the responder sent one.
+     *
+     * §1's third outcome only reaches a person if the client can tell "we could
+     * not tell" apart from "there is nothing" — and a 503 that says WHEN to come
+     * back is a different, kinder thing than one that does not. `errorHandler`
+     * sets this on every `UpstreamUnavailableError`, so the UI can retry on the
+     * server's schedule instead of inventing its own.
+     */
+    public retryAfterSeconds?: number
   ) {
     super(message);
   }
+
+  /** A transient upstream failure — worth retrying, and never "no results". */
+  get isUpstreamBusy(): boolean {
+    return this.status === 503;
+  }
+}
+
+/** Parse a `Retry-After` header. Seconds form only; an HTTP-date returns undefined. */
+export function parseRetryAfter(raw: string | null): number | undefined {
+  if (!raw) return undefined;
+  const seconds = Number(raw.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
 /**
@@ -125,7 +147,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // Cloudflare — and those emit HTML. Whatever we show here is what the
       // user sees, so it must not be a status code.
     }
-    throw new ApiError(res.status, message, parsed);
+    throw new ApiError(
+      res.status,
+      message,
+      parsed,
+      parseRetryAfter(res.headers.get("Retry-After"))
+    );
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;

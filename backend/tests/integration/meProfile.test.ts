@@ -6,6 +6,7 @@
 // the bytes on disk stay in agreement through change and deletion.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
+import { resilient } from "../support/httpRetry.js";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -295,8 +296,15 @@ describe("GET /avatars/... — the byte route", () => {
 
   it("refuses a traversal attempt in the id segment", async () => {
     // The id is the only caller-controlled input to a filesystem read.
+    //
+    // `resilient` retries a TRANSPORT failure only — these three fire back to
+    // back, each against its own ephemeral supertest server, and a connection
+    // can land on a port the previous one is still closing. The status
+    // assertion below is unchanged and unrelaxed; see tests/support/httpRetry.
     for (const bad of ["../../etc/passwd", "..", "AAAA%2Fbb"]) {
-      const res = await request(app).get(`/avatars/w96/${bad}-0123456789abcdef.webp`);
+      const res = await resilient(() =>
+        request(app).get(`/avatars/w96/${bad}-0123456789abcdef.webp`)
+      );
       expect(res.status, bad).toBe(404);
     }
   });

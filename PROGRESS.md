@@ -4097,6 +4097,13 @@ this browser tooling cannot measure trustworthily.
 
 ## Phase 6.3e — the empty answer that meant two things (2026-08-24)
 
+> Full write-up:
+> [`docs/incidents/2026-08-24-search-starvation-degraded-200.md`](docs/incidents/2026-08-24-search-starvation-degraded-200.md)
+> — includes the tripwire autopsy, the four dead premises, the two near-misses
+> (a defanged assertion and Prisma's NULL/`[]` coercion), the "laws this
+> validated" section and the gap it names, and the 54% proposal.
+
+
 Reported as three artists returning nothing on the site — **The Chromatics**,
 **The Blue Nile**, **Xiu Xiu** — plus Bob Dylan's page stuck at "200 of 1192".
 Four hypotheses arrived with the report and **all four were wrong**; the useful
