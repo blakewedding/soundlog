@@ -24,6 +24,23 @@ function warnEs(op: string, err: unknown): void {
   console.warn(`[es] ${op} failed: ${detail || String(err)}`);
 }
 
+/**
+ * The normalised form stored in the `*Exact` keyword twins, and the form a query
+ * is compared against.
+ *
+ * Lowercased and whitespace-collapsed in application code rather than by an
+ * Elasticsearch `normalizer`, because a normalizer is an analysis setting and
+ * analysis settings cannot be added to an open index — this has to be
+ * applicable to the live one. Doing it here also means the write side and the
+ * read side share one function and cannot drift.
+ *
+ * Deliberately NOT stripping punctuation: punctuation is the entire reason this
+ * field exists.
+ */
+export function exactKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 export interface EsReleaseHit {
   id: string;
   title: string;
@@ -50,6 +67,14 @@ export async function indexRelease(release: Release): Promise<void> {
         releaseDate: release.releaseDate ?? undefined,
         coverUrl: release.coverUrl ?? undefined,
         coverColor: release.coverColor ?? undefined,
+        // Analyzer-proof twins. A title of pure punctuation ("!!!") analyses to
+        // nothing and is otherwise unmatchable — see RELEASE_EXACT_PROPERTIES.
+        titleExact: exactKey(release.title),
+        artistNameExact: exactKey(release.artistName),
+        // Standard-analysed twins: what rescues a DIGIT query, which the
+        // edge-ngram pair indexes but can never match.
+        titleStd: release.title,
+        artistNameStd: release.artistName,
       },
     });
   } catch (err) {
@@ -107,12 +132,26 @@ interface EsSource {
 /** Search already-seeded releases in Elasticsearch. Returns [] if ES is down. */
 export async function esSearchReleases(q: string, type?: string): Promise<EsReleaseHit[]> {
   try {
+    const exact = exactKey(q);
     const result = await es.search<EsSource>({
       index: RELEASE_INDEX,
       size: 25,
       query: {
         bool: {
-          must: [{ multi_match: { query: q, fields: ["title^2", "artistName"] } }],
+          // `should` + minimum_should_match, not `must`: the analysed match is
+          // the normal path, and the keyword twin is the fallback for input the
+          // analyser erases entirely. Either alone is a hit.
+          //
+          // Boosted above the text match because an exact string equality is a
+          // stronger signal than an ngram overlap — if someone typed the title
+          // exactly, that release is what they meant.
+          should: [
+            { multi_match: { query: q, fields: ["title^2", "artistName"] } },
+            { term: { titleExact: { value: exact, boost: 4 } } },
+            { term: { artistNameExact: { value: exact, boost: 3 } } },
+            { multi_match: { query: q, fields: ["titleStd^2", "artistNameStd"] } },
+          ],
+          minimum_should_match: 1,
           ...(type ? { filter: [{ term: { type } }] } : {}),
         },
       },

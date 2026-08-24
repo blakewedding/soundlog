@@ -114,6 +114,31 @@ async function main() {
     );
   }
 
+  // ---- 4b. A title the analyser erases --------------------------------------
+  // The canary's first production run failed exactly here: `find release "!!!"`
+  // — NOT FOUND, on a document that was indexed correctly, because a title made
+  // only of punctuation analyses to nothing. Sampled from the catalogue rather
+  // than hardcoded, so it exercises whatever punctuation-heavy titles are real.
+  const punctuated = releaseSample.concat(
+    await prisma.release.findMany({
+      where: { title: { not: { contains: " " } } },
+      select: { id: true, title: true },
+      take: 40,
+    })
+  );
+  const analyzerProof = punctuated.find((r) => !/[a-z0-9]/i.test(r.title));
+  if (analyzerProof) {
+    const hits = await esSearchReleases(analyzerProof.title);
+    const found = hits.some((h) => h.id === analyzerProof.id);
+    record(
+      `punctuation-only title "${analyzerProof.title}"`,
+      found,
+      found ? "found" : "*** NOT FOUND — the keyword fallback regressed ***"
+    );
+  } else {
+    record("punctuation-only title", true, "skipped — no such title in the catalogue");
+  }
+
   // ---- 5. Aliases are indexed and searchable ------------------------------
   const withAlias = await prisma.artist.findFirst({
     where: { aliases: { isEmpty: false } },

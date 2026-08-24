@@ -52,11 +52,26 @@ export default function Release() {
   const pollAttemptsRef = useRef(0);
   const [gaveUp, setGaveUp] = useState(false);
 
-  const { data, isLoading, isError, isFetching, dataUpdatedAt, refetch } = useQuery({
+  const { data, isLoading, isError, error, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ["release", id, user?.id],
     queryFn: () => api.getRelease(id),
     enabled: id.length > 0,
-    retry: 1,
+    /**
+     * Retry an upstream-busy 503 twice on the SERVER's schedule; everything
+     * else once.
+     *
+     * Seeding a release by `mb:` ref costs several MusicBrainz calls, so this
+     * page is the surface most exposed to a degraded upstream — and it used to
+     * answer every failure with the same dead end. Observed the night of the
+     * 6.3e deploy: "Xiu Xiu — Plays the Music of Twin Peaks" would not load
+     * while MusicBrainz was 503ing, and the page offered no way back in.
+     */
+    retry: (count, err) =>
+      err instanceof ApiError && err.isUpstreamBusy ? count < 2 : count < 1,
+    retryDelay: (count, err) => {
+      const asked = err instanceof ApiError ? err.retryAfterSeconds : undefined;
+      return asked !== undefined ? asked * 1000 : Math.min(1000 * 2 ** count, 8000);
+    },
     gcTime: isRef ? 0 : undefined,
     // Poll while the server says it is still enriching, so the finished record
     // appears on its own. Before this, nothing on the page refetched and the
@@ -200,9 +215,41 @@ export default function Release() {
 
   if (isLoading) return <ReleaseSkeleton />;
   if (isError || !data) {
+    // The three outcomes, again, at the surface (§1). "We could not reach
+    // MusicBrainz" and "there is no such release" were previously the same
+    // sentence and the same dead end — no retry, just a way out. A person
+    // cannot act on the difference unless the page draws it.
+    const busy = error instanceof ApiError && error.isUpstreamBusy;
+    const missing = error instanceof ApiError && error.status === 404;
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <p className="meta">We couldn't load that release.</p>
+        {busy ? (
+          <div className="notice notice-degraded" role="alert">
+            <span>
+              The catalog upstream is busy, so this release couldn't be pulled in yet.
+              It isn't missing — try again in a moment.
+            </span>
+            <button type="button" className="btn btn-ghost" onClick={() => refetch()}>
+              Try now
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="meta">
+              {missing ? "That release isn't in the catalog." : "We couldn't load that release."}
+            </p>
+            {!missing && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ alignSelf: "flex-start" }}
+                onClick={() => refetch()}
+              >
+                Try again
+              </button>
+            )}
+          </>
+        )}
         <Link to="/search">← Back to search</Link>
       </div>
     );

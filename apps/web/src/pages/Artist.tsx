@@ -57,7 +57,20 @@ function Discography({ artistId }: { artistId: string }) {
     enabled: artistId.length > 0,
     // Poll only while MusicBrainz is still being walked.
     refetchInterval: (query) => (query.state.data?.status === "assembling" ? 1200 : false),
-    retry: false,
+    /**
+     * An upstream-busy 503 is worth waiting out; anything else is not.
+     *
+     * A discography assembly is 12 MusicBrainz calls for a prolific artist, so
+     * a single 503 anywhere in that walk fails the whole page — and this used
+     * to give up on the first one. Retrying on the server's own `Retry-After`
+     * is the difference between "Bob Dylan's page is broken" and "Bob Dylan's
+     * page took a bit longer".
+     */
+    retry: (count, err) => err instanceof ApiError && err.isUpstreamBusy && count < 2,
+    retryDelay: (count, err) => {
+      const asked = err instanceof ApiError ? err.retryAfterSeconds : undefined;
+      return asked !== undefined ? asked * 1000 : Math.min(1000 * 2 ** count, 8000);
+    },
   });
 
   async function refresh() {
@@ -81,12 +94,24 @@ function Discography({ artistId }: { artistId: string }) {
   if (isError) {
     const busy = error instanceof ApiError && error.status === 503;
     return (
+      busy ? (
+        // Same banner as search and the release page: a busy upstream is a wait,
+        // not a breakage, and it must not look like one (§1 at the surface).
+        <div className="notice notice-degraded" role="alert">
+          <span>
+            MusicBrainz is busy right now, so this discography couldn't be assembled yet.
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["discography", artistId] })}
+          >
+            Try now
+          </button>
+        </div>
+      ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <p className="meta">
-          {busy
-            ? "MusicBrainz is busy right now — the discography couldn't be assembled."
-            : "We couldn't load this discography."}
-        </p>
+        <p className="meta">We couldn't load this discography.</p>
         <button
           className="btn btn-ghost"
           style={{ alignSelf: "flex-start" }}
@@ -95,6 +120,7 @@ function Discography({ artistId }: { artistId: string }) {
           Try again
         </button>
       </div>
+      )
     );
   }
 

@@ -7,6 +7,7 @@
 // host keyed by MBID with no auth and no MB rate limit.
 import { env } from "../config/env.js";
 import { cached, invalidateCached, type CacheOptions, keyPart } from "./cache.js";
+import { mbTelemetry } from "./upstreamTelemetry.js";
 import {
   ambientTier,
   coverArtGate,
@@ -99,6 +100,14 @@ async function mbFetch<T>(
     // Retries ride the same gate at the same tier, so backing off never breaks
     // the 1 req/s contract and a retried browse page cannot jump a click.
     await gate.acquire(tier);
+    // Measured at DISPATCH, not at queue time: the gap between consecutive
+    // requests actually leaving this process is the number MusicBrainz's 1 req/s
+    // policy is about, and the only one that can prove or disprove compliance.
+    // The gate's configuration states an intention; this observes the outcome.
+    const now = Date.now();
+    const gapMs = lastDispatchAt === 0 ? undefined : now - lastDispatchAt;
+    lastDispatchAt = now;
+
     let res: Response;
     try {
       res = await fetch(`${BASE}${path}`, {
@@ -106,26 +115,59 @@ async function mbFetch<T>(
       });
     } catch (err) {
       lastProblem = `network error: ${(err as Error).message}`;
+      mbTelemetry.record({ tier, outcome: "retryable", gapMs, attempt });
       if (attempt < maxAttempts) await sleep(backoffMs(attempt));
       continue;
     }
 
-    if (res.ok) return (await res.json()) as T;
+    const retryAfterSeconds = parseRetryAfter(res.headers.get("Retry-After"));
+
+    if (res.ok) {
+      mbTelemetry.record({ tier, outcome: "ok", status: res.status, gapMs, attempt });
+      return (await res.json()) as T;
+    }
 
     // A definitive "no such resource" — cacheable, not worth retrying.
-    if (!RETRYABLE_STATUS.has(res.status)) return null;
+    if (!RETRYABLE_STATUS.has(res.status)) {
+      mbTelemetry.record({ tier, outcome: "absent", status: res.status, gapMs, attempt });
+      return null;
+    }
 
+    mbTelemetry.record({
+      tier,
+      outcome: "retryable",
+      status: res.status,
+      retryAfterSeconds,
+      gapMs,
+      attempt,
+    });
     lastProblem = `HTTP ${res.status}`;
     console.warn(
-      `[mb] ${lastProblem} on ${path} (attempt ${attempt}/${maxAttempts}) — retrying`
+      `[mb] ${lastProblem} on ${path} (attempt ${attempt}/${maxAttempts})` +
+        (retryAfterSeconds !== undefined ? ` Retry-After: ${retryAfterSeconds}s` : "") +
+        " — retrying"
     );
     if (attempt < maxAttempts) await sleep(backoffMs(attempt));
   }
 
+  // Distinct from the per-attempt `retryable` rows above: this is the caller
+  // actually being told "we could not tell", which is the number that matters
+  // for user-visible impact.
+  mbTelemetry.record({ tier, outcome: "threw", attempt: maxAttempts });
   throw new UpstreamUnavailableError(
     "musicbrainz",
     `MusicBrainz unavailable after ${maxAttempts} attempts (${lastProblem}): ${path}`
   );
+}
+
+/** Wall-clock of the last request this process actually put on the wire. */
+let lastDispatchAt = 0;
+
+/** Seconds form only; an HTTP-date returns undefined. */
+function parseRetryAfter(raw: string | null): number | undefined {
+  if (!raw) return undefined;
+  const seconds = Number(raw.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
 // ---- Response shapes (only the fields we use) ----

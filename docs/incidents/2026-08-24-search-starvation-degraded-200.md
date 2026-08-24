@@ -418,6 +418,47 @@ tripwire, deliberately: this gate is event-driven, so if every slot is held by a
 request that never returns, `dispatch()` never runs and a health probe is the
 only observer left.
 
+### The canary caught a real gap on its first production run
+
+`find release "!!!" — NOT FOUND`, on a document that was indexed perfectly well.
+
+```
+"!!!"  index -> []   query -> []
+"#38"  index -> ['38']   query -> []
+```
+
+A title made only of punctuation analyses to **nothing** under an edge-ngram
+tokenizer restricted to `token_chars: ["letter", "digit"]`. The field is stored
+empty and no text query can reach it — unmatchable by construction, while the
+document sits plainly in the index. The mixed-punctuation cases fixed earlier
+(`Neu! ’75`, `AC/DC`) survived only because they have letters to fall back on;
+`!!!`, `¡Uno!`, `///` and `?` do not. All are real releases.
+
+`#38` exposed the second half, which was already filed as follow-up #6: the
+query-side `lowercase` tokenizer is LETTER-only and cannot emit a digit token,
+while the index side stores digits. Every number in the catalogue was indexed
+and none of it was reachable.
+
+**Both fixed additively, with the live index never closed.** A keyword twin
+(`titleExact`) rescues what analysis erases; a `standard`-analysed twin
+(`titleStd`) rescues what the edge-ngram pair mishandles. The obvious fix for
+the second — repointing `autocomplete_search` at the `standard` tokenizer — is
+an ANALYSIS SETTING, and Elasticsearch requires a closed index to change one.
+Closing the live search index to fix search is the wrong trade; a subfield using
+a **built-in** analyzer needs no settings change at all. (The corrected
+`autocomplete_search` definition still lands on any index built fresh.)
+
+`scripts/reindex-releases.ts` populates the new fields on existing documents:
+keyset-paginated, Redis-cursor resumable, and **in place** — the live index is
+never dropped, never closed, and stays searchable throughout. Build-new-and-swap
+is the right shape when an index-time analyzer or a field type changes, and this
+is neither; it would only add a window with two divergent copies to keep in step.
+
+The canary now carries a punctuation-only check of its own, so this cannot
+regress silently. **This is the follow-up loop working exactly as intended: the
+gate caught, on day one, a class of bug that the incident's own regression suite
+had missed because every case it tested had letters in it.**
+
 ### Canary invocation
 
 The runtime image is a lean `pnpm deploy --prod` bundle with no `tsx`, no
@@ -444,7 +485,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml \
 | 3 | Wire `search-canary.ts` in as a required post-deploy gate (exits non-zero on failure; verified by deleting an ES doc → `FAIL find artist "Autechre"`, exit 1) | **Blocked on #2**; run manually after every deploy meanwhile |
 | 4 | Per-page offset checkpointing for discography assembly — a retry still restarts at page 1 and re-spends the MB budget | Open |
 | 5 | Production onset dating — needs prod logs; see the Redis-TTL method, which survives log rotation and dates poisonings precisely | Open |
-| 6 | Release-search analyzer asymmetry: `autocomplete_search` uses the letter-only `lowercase` tokenizer, so `Neu! '75` and `Neu! 75` both tokenize to `["neu"]`. The index side sets `token_chars: ["letter","digit"]`, so indexed digits can **never** be matched | Open |
+| 6 | Release-search analyzer asymmetry — the letter-only query tokenizer could never emit a digit token, so indexed digits were unmatchable | **Fixed** — `titleStd`/`artistNameStd` subfields using the built-in `standard` analyzer |
 | 7 | The MB gate bounds dispatch **rate** but not **concurrency**, unlike the CAA gate. Slow upstream responses mean unbounded in-flight requests | Open — folded into #1 |
 | 8 | **Heal fused `Release.artistName` values.** `creditName` is fixed going forward, but rows already hold fused strings. They carry `musicbrainzId`, so a heal can re-derive from MusicBrainz — one call per affected row, `background` tier, resumable. Deliberately deferred while MusicBrainz is degraded | Open |
 | 9 | **An `ArtistCredit` link should not be able to emit a query no human would type.** §3 permits a name as a navigation affordance; it does not say the name must be typeable. Consider suppressing the search link for multi-credit strings, or linking each credit separately | Open |

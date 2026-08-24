@@ -4,6 +4,7 @@ import { redis } from "../config/redis.js";
 import { es } from "../config/elasticsearch.js";
 import { coverArtGate, starvationStats } from "../services/upstreamPriority.js";
 import { mbGateStats } from "../services/musicbrainzService.js";
+import { mbTelemetry } from "../services/upstreamTelemetry.js";
 import { assemblyStats } from "../services/discographyService.js";
 
 export const healthRouter = Router();
@@ -44,5 +45,10 @@ healthRouter.get("/upstream", (_req, res) => {
     coverArt: coverArtGate.stats(),
     discographyAssemblies: assemblies,
     starvation,
+    // What we ACTUALLY asked MusicBrainz and what it actually said (6.3e
+    // follow-up #1). `observedGap` is the compliance evidence; `retryableRate`
+    // is the number the 54% has to be re-measured against now that the fused
+    // artist credits are no longer generating queries of their own.
+    musicbrainzTelemetry: mbTelemetry.snapshot(),
   });
 });
