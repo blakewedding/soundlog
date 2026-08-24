@@ -86,6 +86,23 @@ async function main() {
       const aliases = aliasNames(mb);
 
       if (!aliases.length) {
+        // Write the EMPTY ARRAY rather than skipping.
+        //
+        // A skipped row keeps NULL, which is indistinguishable from "never
+        // processed" — so the only record that this artist was ever checked
+        // lives in the Redis cursor, and a lost cursor turns a completed sweep
+        // back into an unknown one. Writing `[]` makes the row say "asked, and
+        // the answer was none", which is the same three-outcome discipline §1
+        // applies to upstream calls: absent and unknown are different states and
+        // must not share a representation.
+        //
+        // Nothing to write. It is tempting to write `[]` here so the row records
+        // "asked, and the answer was none" — but Prisma coerces a SQL NULL
+        // scalar list to `[]` on read, so the client cannot tell that state from
+        // "never asked" no matter what is stored. The column now carries
+        // `@default([])` and the existing NULLs were normalised in migration
+        // `artist_aliases_default_empty`, so the ambiguity is gone at the
+        // schema level; progress is recorded by the Redis cursor.
         noAliases++;
         console.log(`  ${label} — no aliases upstream`);
       } else if (sameSet(aliases, artist.aliases ?? [])) {

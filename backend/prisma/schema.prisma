@@ -175,7 +175,12 @@ model Artist {
   // spellings, former names, and common alternates. Indexed alongside `name` so
   // a search matches any of them, never used for IDENTITY — §3 is MBID-only, and
   // two acts can and do share an alias.
-  aliases       String[]
+  // `@default([])` so the column can never be SQL NULL. Prisma coerces a NULL
+  // scalar list to `[]` when reading, so "never checked" and "checked, none"
+  // are indistinguishable through the client anyway — leaving NULLs in the
+  // table would preserve a difference nothing can observe, which is worse than
+  // not having it. The backfill's Redis cursor is the record of progress.
+  aliases       String[] @default([])
   sortName      String?
   type          String? // "Person" | "Group" | ...
   area          String? // country/region name from MusicBrainz
