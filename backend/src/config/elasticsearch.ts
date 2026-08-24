@@ -88,20 +88,52 @@ async function ensureReleaseIndex(): Promise<void> {
   });
 }
 
-// Artists — indexed at seed time; powers the Members/Artists search tabs (Phase 5).
+/**
+ * The artist mapping.
+ *
+ * `aliases` is multi-valued and uses the SAME analyzer as `name` (both plain
+ * `text`, i.e. the standard analyzer) so an alias matches exactly the way a
+ * canonical name does. It is search-only: §3 keeps identity on the MBID, and
+ * aliases are explicitly not unique — several unrelated acts share one.
+ */
+const ARTIST_PROPERTIES = {
+  name: { type: "text" },
+  aliases: { type: "text" },
+  sortName: { type: "keyword" },
+  type: { type: "keyword" },
+  area: { type: "keyword" },
+} as const;
+
+/**
+ * Artists — indexed at seed time; powers the Members/Artists search tabs.
+ *
+ * ## Why this does more than `create` (6.3e)
+ *
+ * `ensureArtistIndex` used to return early when the index existed, which is
+ * correct for creation and silently wrong for EVOLUTION: adding `aliases` to the
+ * literal above would have taken effect only on a machine that had never run
+ * before, so it would work in tests and on a fresh dev box and do nothing at all
+ * in production. That is the worst shape a schema change can have.
+ *
+ * Elasticsearch can add a NEW field to a live mapping in place, with no reindex
+ * and no downtime — existing documents simply have no value for it until they
+ * are next written. So an existing index gets a `putMapping` instead of a skip.
+ * (This only works for additive changes; changing an existing field's type or
+ * analyzer still needs build-new-index-then-swap-alias.)
+ */
 async function ensureArtistIndex(): Promise<void> {
   const exists = await es.indices.exists({ index: ARTIST_INDEX });
-  if (exists) return;
+  if (!exists) {
+    await es.indices.create({
+      index: ARTIST_INDEX,
+      mappings: { properties: { ...ARTIST_PROPERTIES } },
+    });
+    return;
+  }
 
-  await es.indices.create({
+  // Additive only, and idempotent: re-putting an identical field is a no-op.
+  await es.indices.putMapping({
     index: ARTIST_INDEX,
-    mappings: {
-      properties: {
-        name: { type: "text" },
-        sortName: { type: "keyword" },
-        type: { type: "keyword" },
-        area: { type: "keyword" },
-      },
-    },
+    properties: { aliases: { type: "text" } },
   });
 }

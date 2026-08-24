@@ -3,7 +3,7 @@
 // Authenticated rate limit is 60 req/min, so calls are throttled to ~1/s and
 // responses cached in Redis for 24h.
 import { env } from "../config/env.js";
-import { cached } from "./cache.js";
+import { cached, keyPart } from "./cache.js";
 
 const BASE = "https://api.discogs.com";
 const DAY = 60 * 60 * 24;
@@ -225,7 +225,7 @@ function titleMatches(candidateCombined: string, wanted: string): boolean {
 
 export async function findDiscogsCover(artist: string, title: string): Promise<string | null> {
   if (!discogsConfigured()) return null;
-  const key = `discogs:covermatch:v4:${artist}:${title}`.toLowerCase();
+  const key = `discogs:covermatch:v5:${keyPart(artist)}:${keyPart(title)}`;
   return cached(key, DAY, async () => {
     const data = await discogsFetch<DiscogsSearchResponse>(
       `/database/search?type=release&per_page=5&q=${encodeURIComponent(`${artist} ${title}`)}`

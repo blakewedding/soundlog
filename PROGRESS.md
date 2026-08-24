@@ -4095,6 +4095,180 @@ raw**.
 (17,354 blanks, ~44% repairable by sample); and the scrolled-in-tile case, which
 this browser tooling cannot measure trustworthily.
 
+## Phase 6.3e — the empty answer that meant two things (2026-08-24)
+
+Reported as three artists returning nothing on the site — **The Chromatics**,
+**The Blue Nile**, **Xiu Xiu** — plus Bob Dylan's page stuck at "200 of 1192".
+Four hypotheses arrived with the report and **all four were wrong**; the useful
+part is what replaced them.
+
+### What it actually was
+
+`searchArtists` is Elasticsearch-first with a MusicBrainz fan-out, and the artist
+index only ever contains artists we have already **seeded**. So for an un-seeded
+artist the entire result rests on one MusicBrainz call — and
+`searchMusicBrainzArtists` caught `UpstreamUnavailableError` and returned `[]`.
+An outage and an absence were **literally the same value**.
+
+Two things made it stick:
+
+- **One attempt.** §7 gives discovery a single try, correctly. But §7 also says
+  what the answer must be when that try fails — *"the answer is still 503, never
+  404"* — and the code returned an empty array instead.
+- **A week-long memory of nothing.** MusicBrainz answers `?query=` from a Solr
+  index that is a **separate service from its main database** and degrades
+  independently. A degraded Solr does not error: it returns **HTTP 200 with zero
+  results**, byte-identical to a genuine miss. That was cached for `WEEK`.
+
+Measured during the alias backfill on 2026-08-24: **MusicBrainz returned 503 on
+37 of 68 requests — 54%.** `lookupArtist` retries four times and survived every
+one (0 failed). A search gets one attempt. That is the whole asymmetry.
+
+**Why the "MusicBrainz is fine" check missed it.** A manual `curl` returning 200
+cannot distinguish a healthy Solr from a degraded one, because both return 200.
+The **result count** was the discriminator, and the status was what got checked.
+
+### Bob Dylan, 200 of 1192 — starvation, and a tripwire that lied
+
+Not truncation and not display paging: `MAX_BROWSE_PAGES` is 40 (cap 4,000), and
+there is no `200` limit anywhere in backend or web. 200 is exactly two pages of
+`BROWSE_PAGE_SIZE`. Discography assembly runs at the **`browse`** tier, and
+`upstreamPriority.ts` said in writing that strict priority can starve it and that
+measuring the wait was enough. **That bet lost.** Page 3 never won a slot,
+`onProgress` never fired again, the `Assembly` carried no error because nothing
+had *failed*, and every poll answered `assembling` — forever.
+
+The tripwire meant to catch this **could not fire**. `starvationWarnMs` computed
+`waited` inside `take()`, i.e. **at dispatch**. A waiter that is never dispatched
+is never measured, so the warning could only report starvation that had already
+**ended**. During the wedge it emitted nothing, and its silence read as health.
+A tripwire that fires on recovery rather than on the fault is worse than none,
+because it is trusted. Pinned by a test that was verified to fail first.
+
+### Four premises that did not survive
+
+- **"Hollow/dropped index."** Counts matched Postgres exactly (68/68, 168/168).
+- **"Never ingested, therefore invisible."** True that all three were absent from
+  both stores — but the fan-out exists precisely for that case, and it works.
+- **"A serialized ingest worker wedged behind Dylan."** There is no ingest queue.
+  The only BullMQ queue is `soundlog-activity`; there is no worker container in
+  either compose file. Ingest is synchronous and in-request. Nothing was queued
+  behind anything.
+- **"Job lifecycle states are missing."** `enrichmentState.ts` has had
+  `pending`/`ready`/`failed` with a sticky `failed` since 6.1.1.
+
+### The fixes
+
+- **A thin answer is cached briefly, a real one for a week.** `CacheTtl` gained
+  an object form (`{full, thin, isThin}`). Empty search results now live 10
+  minutes. `refresh: true` keeps the full TTL, because the warm sweep re-asks
+  nightly *and* because letting the two search layers expire in minutes would
+  make every target look permanently due — the 6.2g failure from the other side.
+- **Degrading is now the caller's decision.** `searchMusicBrainzArtists` and
+  `searchReleaseGroups` propagate. `searchArtists` serves seeded results when it
+  has them and surfaces the outage when it has none; `searchCatalog` throws only
+  when **every** source failed and nothing is seeded. Route answers 503 +
+  Retry-After. Still one attempt — this was never about trying harder.
+- **Priority ageing** (`AGE_PROMOTION_MS`, 15s). A waiter older than the
+  threshold is dispatched ahead of higher tiers. Priority is preserved for every
+  shorter wait; only the tail becomes finite. **The rate is untouched** — ageing
+  reorders, it never dispatches faster.
+- **A tripwire that fires during the fault**, sampled from `pump()` while the
+  waiter is still queued, routed through `onStarvation()` so it can page instead
+  of whisper (default `console.error`, `[ALERT]` prefix).
+- **Assembly watchdog.** Heartbeat on every landed page; no progress for 90s is a
+  terminal `DiscographyStalledError`, evaluated on the poll rather than a timer.
+  "In progress" is no longer a state with no exit.
+- **`/api/health/upstream`** — queue depth, **oldest-wait**, in-flight assemblies
+  and their age, starvation counters. Depth says how busy; **age** says whether
+  anything is stuck, and only age separates a fast queue of forty from one waiter
+  parked for minutes.
+
+### Bug 1, and the alias finding that changed the plan
+
+**MusicBrainz does not list "The Chromatics" as an alias for Chromatics.** Its
+only alias is `KRMTX`, and there are three unrelated bands *literally* named "The
+Chromatics", all outranking the Portland one. So alias indexing — the specified
+primary fix — **does not fix the reported bug**. The zero-result **article
+fallback** does.
+
+Both shipped. The fallback is a fallback and never an analyzer rule, because the
+analyzer cannot tell "The Chromatics" (an article a user added) from **The The**,
+**The Who**, **The Band** (artists whose names *are* the article). Index-side
+stripping makes the canonical spelling unfindable in order to help the colloquial
+one. Aliases are worth having anyway: `aliases` column + ES field (added to the
+live mapping with `putMapping`, since `ensureArtistIndex` early-returned and the
+change would otherwise have worked only on machines that had never run).
+Backfill: **45 of 68 artists, 0 failed** — `MBV`, `Floyd`, `ピンク・フロイド`,
+`ae`, `オウテカ`, and `Radio Head` → Radiohead, live through the API.
+
+### Cover art
+
+`caa:rg:urls:<mbid>` was already MBID-keyed and `cached()` provably cannot write
+on a throw, so nothing was poisoned — 118 keys scanned, 112 legitimate cached
+nulls. Neu! resolves and renders end to end (8,984 / 36,150 bytes). Two real
+defects found anyway:
+
+- **The warm sweep warmed a key nothing reads.** CAA serves `image` as cleartext
+  `http://` on older records (`Neu! ’75` is one), and `ensureVariant` keys on
+  `sha256(upstreamUrl)`. Every other consumer normalises the scheme first; the
+  sweep did not, so it wrote `w400/b2/b2ac3a1b…` while the route read
+  `w400/f0/f0ea25d6…`. Same image, two entries — full fetch-and-encode, put where
+  nothing would read it, charged twice against the LRU bound, and the visitor
+  still paid cold cost on exactly the covers we had "warmed".
+- **Colliding name-derived keys.** `discogs:covermatch:${artist}:${title}` and
+  three siblings interpolated raw values around a `:` delimiter. `Songs: Ohia` is
+  in the catalog, and that key holds an **artwork URL** — so a collision serves
+  one record's sleeve for another. Now `keyPart()`-encoded and version-bumped.
+
+### What would have caught this
+
+`scripts/search-canary.ts` — deploy-time, end to end, deliberately crude, because
+every sophisticated check passed while search was broken: ES was green, the API
+returned 200, MusicBrainz answered a manual curl, and the route logged nothing
+because an empty result is not an error. It asserts known-indexed artists are
+findable, index-vs-Postgres drift, the article fallback, and alias search.
+Verified by deleting one ES doc: **`FAIL find artist "Autechre"`**, exit 1;
+restored, exit 0. It does not call MusicBrainz — a canary that fails when a third
+party does trains everyone to ignore it.
+
+`scripts/audit-discography-completeness.ts` compares the discography view's
+**total shown** (MusicBrainz's `release-group-count`) against what is **loadable**
+(the cached assembly). It deliberately does *not* flag held-vs-upstream deltas:
+Soundlog does not mirror MusicBrainz, so holding 17 of Bowie's ~1,000 groups is
+the product working, and a report where every line is a false positive is one
+nobody reads. Verified by planting a short cached discography — flagged
+`INCOMPLETE` with a targeted `del`, never a global purge.
+
+**Test-contract changes (§9), all three deliberate.**
+
+1. `discoveryCaching.test.ts` no longer asserts a degraded ARTIST search returns
+   `[]` — that degradation *was* the bug.
+2. `findReleaseGroupMbid`'s "a weak or absent match is definitive and stays
+   cacheable" is now a short TTL: true of a healthy Solr, false of a degraded
+   one, and the response cannot tell them apart.
+3. `searchReleaseGroups` no longer swallows either. This one was found by
+   reading the diff rather than by a failing test, and it mattered:
+   `musicbrainzSource.search` is its only caller, and `searchCatalog` decides
+   "every source failed" by counting sources that THREW — so while this
+   swallowed, that count could never include MusicBrainz and the outage branch
+   was structurally unreachable for the primary source.
+
+**And one near-miss worth recording.** Changing the `mb:rg:match` key format to
+`v2` silently defanged an assertion: the test rebuilt the key by hand in the OLD
+format, so `expect(await redis.get(key)).toBeNull()` began passing because it
+was reading a key nothing ever writes. It would have kept passing if the caching
+bug came back. The key is now exported (`releaseGroupMatchCacheKey`) and the test
+asserts against the same string the implementation writes. A test that passes
+for the wrong reason is the same failure mode as a tripwire that fires on
+recovery — both report health they never actually measured.
+
+**Still open:** per-page offset checkpointing for discography assembly (a retry
+still restarts at page 1); production onset dating, which needs logs this
+environment cannot reach; and the release-search analyzer asymmetry —
+`autocomplete_search` uses the letter-only `lowercase` tokenizer, so `Neu! '75`
+and `Neu! 75` both tokenize to `["neu"]` and indexed digits can never be matched.
+
 ## Then — Phase 7
 
 Now downstream of **6.2**: the mobile app consumes the Settings & Profiles API,

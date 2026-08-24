@@ -4,7 +4,7 @@
 // (spotifyId + higher-resolution cover art). Client-credentials flow, 24h cache.
 import { redis } from "../config/redis.js";
 import { env } from "../config/env.js";
-import { cached } from "./cache.js";
+import { cached, keyPart } from "./cache.js";
 import { mapSpotifyType } from "./catalog/typeMapping.js";
 import type { SourceCandidate, ReleaseDetail } from "./sources/types.js";
 
@@ -123,7 +123,7 @@ export interface SpotifyMatch {
  */
 export async function findSpotifyMatch(artist: string, title: string): Promise<SpotifyMatch | null> {
   if (!spotifyConfigured()) return null;
-  const key = `spotify:match:${artist}:${title}`.toLowerCase();
+  const key = `spotify:match:v2:${keyPart(artist)}:${keyPart(title)}`;
   try {
     return await cached(key, DAY, async () => {
       const data = await spotifyFetch<SpotifySearchResponse>(

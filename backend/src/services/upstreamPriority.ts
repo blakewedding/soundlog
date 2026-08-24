@@ -45,15 +45,34 @@
  * artist page's "Fetching from MusicBrainz…" line, so a discography must keep
  * progressing whenever no click is outstanding.
  *
- * ## Starvation, stated rather than engineered around
+ * ## Starvation: ageing, because production voted (6.3e)
  *
- * Strict priority means sustained `interactive` load can starve `browse`. A
- * click costs 2–4 MusicBrainz calls, so starving a discography needs more than
- * one click per second, continuously — at which point the 1 req/s gate is the
- * binding constraint on the whole product and pre-warming is the answer, not a
- * fairness tweak. Rather than build ageing for a load this site does not have,
- * the wait is **measured and logged**: `starvationWarnMs` turns a hypothetical
- * into a log line the day it stops being hypothetical.
+ * This module used to say starvation was stated rather than engineered around —
+ * that starving a discography needed sustained clicks the site did not have, so
+ * measuring the wait was enough. **That bet lost.** Bob Dylan's artist page
+ * (1,192 release-groups = 12 browse pages) wedged at "200 of 1192" and stayed
+ * there: the `browse` assembly never won a third slot, `onProgress` never fired
+ * again, and every poll answered `assembling` forever.
+ *
+ * Two things were wrong, and only one of them was the policy.
+ *
+ *  - **The policy.** Strict priority with no ageing means a low tier's wait is
+ *    unbounded, and "unbounded" is not a latency figure — it is a hang. Ageing
+ *    (below) bounds it: a waiter older than `agePromotionMs` is dispatched ahead
+ *    of higher tiers. Priority is preserved for every wait shorter than that,
+ *    which is essentially all of them; what changes is only that the tail is now
+ *    finite. **The rate is untouched** — ageing reorders, it never dispatches
+ *    faster, so §7's 1 req/s contract is exactly as it was.
+ *
+ *  - **The tripwire, which was worse.** `starvationWarnMs` computed its wait
+ *    inside `take()`, i.e. at the moment a waiter was DISPATCHED. A waiter that
+ *    is never dispatched is never measured, so the warning could only ever
+ *    report starvation that had already **ended**. During the Dylan wedge it
+ *    emitted nothing at all, and its silence read as health. A tripwire that
+ *    fires on recovery rather than on the fault is worse than no tripwire,
+ *    because it is trusted. It is now sampled from `pump()` while the waiter is
+ *    still queued, and routed through {@link onStarvation} so it can page
+ *    instead of whisper.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -130,6 +149,79 @@ interface Waiter {
  * the tier was assigned wrongly at the call site, or the gate is genuinely
  * oversubscribed. Both are worth a log line; neither should be silent.
  */
+/**
+ * How long a lower-tier waiter may wait before it is dispatched ahead of higher
+ * tiers regardless of priority.
+ *
+ * This is the bound that makes starvation impossible rather than merely
+ * unlikely. 15s is chosen against what the tiers are FOR: `interactive` exists
+ * to keep a blocked person under a couple of seconds, and a promotion costs the
+ * next interactive caller exactly one slot (~1.1s on the MusicBrainz gate). So
+ * the worst case a click can suffer is one extra gap, while the best case a
+ * wedged discography gains is the difference between finishing and never
+ * finishing.
+ */
+const AGE_PROMOTION_MS = 15_000;
+
+/** A low tier has been waiting long enough that someone should know. */
+export interface StarvationEvent {
+  gate: string;
+  tier: UpstreamTier;
+  waitedMs: number;
+  depth: Record<UpstreamTier, number>;
+}
+
+/**
+ * Where starvation reports go.
+ *
+ * Deliberately a sink rather than a bare `console.warn`. The Dylan wedge was
+ * invisible for as long as it was because the only signal this system could
+ * produce was a warn line in a log nobody reads during an incident — and it
+ * could not even produce that one. An operator asked for this class to page,
+ * so it is routable: `server.ts` can point it at whatever alerting exists.
+ *
+ * The default writes to `console.error`, not `console.warn`, with a stable
+ * `[ALERT]` prefix that a log-based alert rule can match on.
+ */
+let starvationSink: (event: StarvationEvent) => void = (e) => {
+  console.error(
+    `[ALERT][${e.gate}] ${e.tier} work has been waiting ${e.waitedMs}ms for a slot — ` +
+      `starving (queued: interactive=${e.depth.interactive} browse=${e.depth.browse} ` +
+      `background=${e.depth.background})`
+  );
+};
+
+/** Route starvation reports somewhere they will be seen. Returns the previous sink. */
+export function onStarvation(
+  sink: (event: StarvationEvent) => void
+): (event: StarvationEvent) => void {
+  const previous = starvationSink;
+  starvationSink = sink;
+  return previous;
+}
+
+/**
+ * Counters for `/api/health`, so a wedge is visible to a probe and not only to
+ * whoever is tailing logs. Cumulative since boot; `promotions` climbing steadily
+ * means the gate is genuinely oversubscribed rather than momentarily unlucky.
+ */
+const starvationCounters = { events: 0, promotions: 0, lastEventAt: null as number | null };
+export function starvationStats(): Readonly<typeof starvationCounters> {
+  return { ...starvationCounters };
+}
+/** Test seam. */
+export function __resetStarvationStats(): void {
+  starvationCounters.events = 0;
+  starvationCounters.promotions = 0;
+  starvationCounters.lastEventAt = null;
+}
+
+function reportStarvation(event: StarvationEvent): void {
+  starvationCounters.events++;
+  starvationCounters.lastEventAt = Date.now();
+  starvationSink(event);
+}
+
 const INTERACTIVE_WAIT_WARN_MS = 2_000;
 
 function emptyQueues(): Record<UpstreamTier, Waiter[]> {
@@ -153,8 +245,16 @@ export class PriorityRateGate {
     private readonly minGapMs: number,
     private readonly name: string,
     private readonly starvationWarnMs = 30_000,
-    private readonly interactiveWarnMs = INTERACTIVE_WAIT_WARN_MS
+    private readonly interactiveWarnMs = INTERACTIVE_WAIT_WARN_MS,
+    private readonly agePromotionMs = AGE_PROMOTION_MS
   ) {}
+
+  /** Last time each tier was reported starving, so one wedge is not one line per gap. */
+  private readonly lastStarvationReportAt: Record<UpstreamTier, number> = {
+    interactive: 0,
+    browse: 0,
+    background: 0,
+  };
 
   /** Wait for this caller's turn. Resolves when it may issue its request. */
   acquire(tier: UpstreamTier): Promise<void> {
@@ -164,17 +264,80 @@ export class PriorityRateGate {
     });
   }
 
+  /**
+   * The oldest waiter that has aged past `agePromotionMs`, or undefined.
+   *
+   * This is what makes the low tiers' wait BOUNDED rather than merely unlikely.
+   * Interactive is skipped because strict priority already puts it first — there
+   * is nothing for ageing to promote it past.
+   */
+  private takeAged(): Waiter | undefined {
+    const now = Date.now();
+    let chosen: UpstreamTier | undefined;
+    let longest = -1;
+
+    for (const tier of TIER_ORDER) {
+      if (tier === "interactive") continue;
+      const head = this.queues[tier][0];
+      if (!head) continue;
+      const waited = now - head.queuedAt;
+      if (waited >= this.agePromotionMs && waited > longest) {
+        chosen = tier;
+        longest = waited;
+      }
+    }
+    if (!chosen) return undefined;
+
+    // Only a promotion if something higher-priority was actually ahead of it;
+    // otherwise strict priority would have picked it anyway and counting it
+    // would overstate how often the gate is oversubscribed.
+    const jumped = TIER_ORDER.slice(0, TIER_ORDER.indexOf(chosen)).some(
+      (t) => this.queues[t].length > 0
+    );
+    const waiter = this.queues[chosen].shift();
+    if (!waiter) return undefined;
+    if (jumped) starvationCounters.promotions++;
+    return waiter;
+  }
+
+  /**
+   * Report any tier that is starving RIGHT NOW.
+   *
+   * Sampled here, from the pump loop, rather than in `take()` — see the module
+   * header. `pump()` runs continuously for as long as anything is queued, so a
+   * wedged waiter is observed every `minGapMs` whether or not it is ever
+   * dispatched, which is the entire point.
+   */
+  private reportStarving(): void {
+    const now = Date.now();
+    for (const tier of TIER_ORDER) {
+      if (tier === "interactive") continue;
+      const head = this.queues[tier][0];
+      if (!head) continue;
+      const waited = now - head.queuedAt;
+      if (waited < this.starvationWarnMs) continue;
+      // Re-report no more than once per threshold, so a long wedge is a
+      // heartbeat rather than a flood.
+      if (now - this.lastStarvationReportAt[tier] < this.starvationWarnMs) continue;
+      this.lastStarvationReportAt[tier] = now;
+      reportStarvation({ gate: this.name, tier, waitedMs: waited, depth: this.depth() });
+    }
+  }
+
   /** Highest-priority waiter, or undefined when every queue is empty. */
   private take(): Waiter | undefined {
+    // Ageing outranks priority, and only ageing does.
+    const aged = this.takeAged();
+    if (aged) return aged;
+
     for (const tier of TIER_ORDER) {
       const waiter = this.queues[tier].shift();
       if (!waiter) continue;
       const waited = Date.now() - waiter.queuedAt;
-      if (tier !== "interactive" && waited >= this.starvationWarnMs) {
-        console.warn(
-          `[${this.name}] ${tier} work waited ${waited}ms for a slot — interactive load is starving it`
-        );
-      }
+      // NB: the low-tier starvation line used to be emitted HERE, at dispatch.
+      // That is precisely what made it useless — see the module header. It is
+      // now sampled in `reportStarving()` while the waiter is still queued, so
+      // emitting it again here would only double-count a wedge that has ended.
       // The other direction: a person was blocked on this. Queue depths are in
       // the line because "interactive waited 4s" and "interactive waited 4s
       // behind 300 queued browse items" are different diagnoses — the first
@@ -211,6 +374,11 @@ export class PriorityRateGate {
         const gap = Date.now() - this.lastDispatchAt;
         if (gap < this.minGapMs) await sleep(this.minGapMs - gap);
 
+        // Observe BEFORE dispatching: a waiter that is about to be starved
+        // again must still be counted, and the one being dispatched is by
+        // definition no longer starving.
+        this.reportStarving();
+
         const next = this.take();
         if (!next) break;
         this.lastDispatchAt = Date.now();
@@ -227,6 +395,33 @@ export class PriorityRateGate {
       interactive: this.queues.interactive.length,
       browse: this.queues.browse.length,
       background: this.queues.background.length,
+    };
+  }
+
+  /**
+   * Depth AND the age of the oldest waiter in each tier.
+   *
+   * Depth alone cannot distinguish a busy gate from a wedged one: a queue of 40
+   * that drains in a second is healthy, and a queue of 1 that has been waiting
+   * four minutes is an incident. Age is the number that separates them, which is
+   * why it is what `/api/health/upstream` reports.
+   */
+  waitStats(): {
+    queued: Record<UpstreamTier, number>;
+    oldestWaitMs: Record<UpstreamTier, number>;
+  } {
+    const now = Date.now();
+    const oldest = (tier: UpstreamTier) => {
+      const head = this.queues[tier][0];
+      return head ? now - head.queuedAt : 0;
+    };
+    return {
+      queued: this.depth(),
+      oldestWaitMs: {
+        interactive: oldest("interactive"),
+        browse: oldest("browse"),
+        background: oldest("background"),
+      },
     };
   }
 }

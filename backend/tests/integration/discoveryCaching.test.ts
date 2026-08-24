@@ -22,6 +22,8 @@ import {
   findReleaseGroupMbid,
   searchMusicBrainzArtists,
   searchReleaseGroups,
+  releaseGroupMatchCacheKey,
+  UpstreamUnavailableError,
 } from "../../src/services/musicbrainzService.js";
 import { runTag } from "../support/runTag.js";
 
@@ -51,11 +53,24 @@ describe("discovery search caching", () => {
       vi.fn(async () => new Response("service unavailable", { status: 503 }))
     );
 
-    const results = await searchMusicBrainzArtists(query);
-    // The CALLER still degrades to empty — that part of §7 is unchanged.
-    expect(results).toEqual([]);
+    // DELIBERATE CONTRACT CHANGE (6.3e, §9).
+    //
+    // This used to assert `results).toEqual([])` — "the CALLER still degrades to
+    // empty". That degradation was the bug. Returning `[]` made "MusicBrainz is
+    // unreachable" and "this artist does not exist" the same value, so three
+    // real artists (Xiu Xiu, The Blue Nile, The Chromatics) read as non-existent
+    // site-wide. §7 keeps this at ONE attempt — that is unchanged — but §7 also
+    // says what the answer must be when the attempt fails: "One attempt is a
+    // policy about how hard we try, never a claim the artwork is absent: the
+    // answer is still 503, never 404."
+    //
+    // Degrading is now the CALLER's decision, made where there is enough context
+    // to make it (see `searchArtists`: serve seeded results if we have any,
+    // otherwise surface the outage).
+    await expect(searchMusicBrainzArtists(query)).rejects.toThrow(UpstreamUnavailableError);
 
-    // But nothing was persisted, so the next attempt is a real one.
+    // Unchanged, and still the point of this test: nothing was persisted, so the
+    // next attempt is a real one.
     expect(await redis.get(artistKey(query))).toBeNull();
   });
 
@@ -67,7 +82,7 @@ describe("discovery search caching", () => {
       "fetch",
       vi.fn(async () => new Response("service unavailable", { status: 503 }))
     );
-    expect(await searchMusicBrainzArtists(query)).toEqual([]);
+    await expect(searchMusicBrainzArtists(query)).rejects.toThrow(UpstreamUnavailableError);
 
     // This is the assertion that would have failed before the fix: the cached
     // `[]` short-circuited the recovery for a week, so the retry never reached
@@ -100,6 +115,19 @@ describe("discovery search caching", () => {
     expect(await searchMusicBrainzArtists(query)).toEqual([]);
     expect(await redis.get(artistKey(query))).toBe("[]");
 
+    // ...but for MINUTES, not the week a real result gets (6.3e).
+    //
+    // MusicBrainz answers `?query=` from a Solr index that is a separate service
+    // from its main database and degrades independently — and a degraded Solr
+    // returns HTTP 200 with zero results, which is byte-identical to the genuine
+    // absence this test is describing. There is no way to tell them apart from
+    // the response, so the empty answer is cached as a WEAK one: still cached
+    // (re-asking forever is the failure mode this test was written to prevent),
+    // just not for long enough that one bad minute upstream costs a week.
+    const ttl = await redis.ttl(artistKey(query));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(10 * 60);
+
     // Served from Redis, not from a second upstream call.
     expect(await searchMusicBrainzArtists(query)).toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -108,14 +136,18 @@ describe("discovery search caching", () => {
   it("does not cache an unconfirmed release-group MATCH, so the heal can still run", async () => {
     const artist = `Artist ${RUN}`;
     const title = `Title ${RUN}`;
-    keys.push(`mb:rg:match:${artist}:${title}`.toLowerCase());
+    // The key comes from the implementation, never rebuilt here: a hand-built
+    // key that drifts out of date makes the `toBeNull()` below pass because it
+    // is reading a key nothing ever writes.
+    const matchKey = releaseGroupMatchCacheKey(artist, title);
+    keys.push(matchKey);
 
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("service unavailable", { status: 503 }))
     );
     expect(await findReleaseGroupMbid(artist, title)).toBeNull();
-    expect(await redis.get(`mb:rg:match:${artist}:${title}`.toLowerCase())).toBeNull();
+    expect(await redis.get(matchKey)).toBeNull();
 
     // The point of the fix: seeding without an MBID is only acceptable because a
     // later access attaches it. With the degraded null cached, that later access
@@ -145,7 +177,13 @@ describe("discovery search caching", () => {
 
     // The sibling function had the identical shape and the identical bug; fixing
     // one and not the other would leave release search poisoning itself instead.
-    expect(await searchReleaseGroups(query)).toEqual([]);
+    //
+    // DELIBERATE CONTRACT CHANGE (6.3e, §9): this used to assert `[]`. It now
+    // throws, because `searchCatalog` counts sources that THREW to decide
+    // whether every source failed — and while this swallowed, that count could
+    // never include MusicBrainz, so a total outage read as "no matching
+    // releases". Per-source degradation still happens, in `searchCatalog`.
+    await expect(searchReleaseGroups(query)).rejects.toThrow(UpstreamUnavailableError);
     expect(await redis.get(rgKey(query))).toBeNull();
   });
 });

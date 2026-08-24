@@ -39,8 +39,10 @@ import {
   lookupArtist,
   searchMusicBrainzArtists,
   pickLatinName,
+  aliasNames,
   getReleaseGroupLabel,
   lookupLabel,
+  UpstreamUnavailableError,
 } from "./musicbrainzService.js";
 import { getGenresWithFallback, getSimilarArtists } from "./lastfmService.js";
 import { findSpotifyMatch, spotifyConfigured } from "./spotifyService.js";
@@ -84,14 +86,27 @@ export async function searchCatalog(q: string, type?: string): Promise<CatalogSe
   if (seeded.length >= THIN_RESULTS) return seededResults;
 
   const sources = getConfiguredSources();
+  let sourcesFailed = 0;
   const lists = await Promise.all(
     sources.map((s) =>
       s.search(q).catch((err) => {
         console.warn(`[catalog] ${s.name} search failed:`, (err as Error).message);
+        sourcesFailed++;
         return [] as SourceCandidate[];
       })
     )
   );
+
+  // Per-source degradation is fine — that is why there is more than one source.
+  // But if we have NOTHING seeded and every source failed, an empty list is a
+  // lie: we did not learn that there are no matches, we learned nothing at all.
+  // Same §1 distinction the artist path now draws.
+  if (sourcesFailed > 0 && sourcesFailed === sources.length && seeded.length === 0) {
+    throw new UpstreamUnavailableError(
+      "catalog",
+      `every configured source failed for "${q}" (${sourcesFailed}/${sources.length})`
+    );
+  }
   const merged = dedupeMerge(lists.flat());
 
   // Drop candidates already represented by a seeded release.
@@ -204,7 +219,26 @@ export async function searchArtists(q: string, size = 5): Promise<ArtistSearchRe
 
   if (seeded.length >= THIN_RESULTS) return seeded;
 
-  const candidates = await searchMusicBrainzArtists(q);
+  // The fan-out no longer swallows an outage into `[]` (see
+  // `searchMusicBrainzArtists`), so decide here what a failure MEANS — and it
+  // depends entirely on whether we already have something true to show.
+  //
+  //  - We hold seeded artists → show them. They are real, the answer is merely
+  //    thinner than it could be, and failing the request would hide good data.
+  //  - We hold nothing → we do not know whether this artist exists. That is the
+  //    §1 "couldn't tell" outcome and it must not be rendered as "no results",
+  //    which is the whole of the 6.3e bug: three real artists read as
+  //    non-existent because an outage and an absence were the same empty array.
+  let candidates: Awaited<ReturnType<typeof searchMusicBrainzArtists>>;
+  try {
+    candidates = await searchMusicBrainzArtists(q);
+  } catch (err) {
+    if (err instanceof UpstreamUnavailableError && seeded.length > 0) {
+      console.warn(`[catalog] artist search degraded, serving ${seeded.length} seeded: ${(err as Error).message}`);
+      return seeded;
+    }
+    throw err;
+  }
   if (candidates.length === 0) return seeded;
 
   // Seeded MBIDs come from Postgres, not the index — the artist index does not
@@ -642,6 +676,9 @@ async function resolveArtistId(detail: ReleaseDetail, mbid: string | null): Prom
         name: mb?.name ?? detail.artistName,
         // Latin rendering for non-Latin names (フィッシュマンズ -> Fishmans).
         latinName: pickLatinName(mb),
+        // Already on the wire: `lookupArtist` fetches `?inc=aliases` for
+        // `pickLatinName`, so persisting them costs no extra MusicBrainz call.
+        aliases: aliasNames(mb),
         sortName: mb?.["sort-name"] ?? null,
         type: mb?.type ?? null,
         area: mb?.area?.name ?? null,
@@ -753,6 +790,7 @@ export async function materializeArtistByMbid(mbid: string): Promise<Artist | nu
         musicbrainzId: mbid,
         name: mb.name,
         latinName: pickLatinName(mb),
+        aliases: aliasNames(mb),
         sortName: mb["sort-name"] ?? null,
         type: mb.type ?? null,
         area: mb.area?.name ?? null,

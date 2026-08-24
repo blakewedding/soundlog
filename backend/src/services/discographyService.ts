@@ -173,8 +173,69 @@ interface Assembly {
   progress: DiscographyProgress;
   error?: unknown;
   promise: Promise<unknown>;
+  /** Heartbeat: when this assembly last made real progress (a page landed). */
+  lastProgressAt: number;
 }
 const inFlight = new Map<string, Assembly>();
+
+/**
+ * How long an assembly may make NO progress before it is declared stalled.
+ *
+ * ## The wedge this closes (6.3e)
+ *
+ * Bob Dylan's page (1,192 release-groups = 12 browse pages) froze at
+ * "Fetching from MusicBrainz — 200 of 1192" and stayed there. The assembly runs
+ * at the `browse` tier; under sustained interactive load, strict priority meant
+ * page 3 never won a slot. `onProgress` never fired again, the `Assembly` carried
+ * no error because nothing had failed, and so every poll answered
+ * `{ status: "assembling" }` — forever. "In progress" was a state with no exit.
+ *
+ * Priority ageing (`upstreamPriority.ts`) removes the cause. This is the
+ * backstop, and it exists because §1's three outcomes have to hold for JOBS the
+ * same way they hold for fetches: pending, complete and failed are distinct, and
+ * "pending" must be a state a job can LEAVE. Anything that stops progressing is
+ * failed, whatever the reason.
+ *
+ * 90s is far longer than any legitimate gap: one page costs ~1.1s at the
+ * MusicBrainz rate, plus at most one ageing threshold (15s) of queueing. A
+ * ninety-second silence is not slowness, it is a stall.
+ */
+const ASSEMBLY_STALL_MS = 90_000;
+
+/** Thrown at the poller when an assembly stops making progress. */
+export class DiscographyStalledError extends Error {
+  constructor(artistMbid: string, public readonly progress: DiscographyProgress) {
+    super(
+      `discography assembly for ${artistMbid} stalled at ` +
+        `${progress.fetched}/${progress.total ?? "?"} — no progress for ${ASSEMBLY_STALL_MS}ms`
+    );
+    this.name = "DiscographyStalledError";
+  }
+}
+
+/**
+ * In-flight assembly count and the age of the oldest one.
+ *
+ * "Oldest job age" is the metric that would have surfaced the Dylan wedge
+ * without anyone having to be looking at the page: an assembly whose age keeps
+ * climbing while its progress does not is the wedge, by definition. Exposed on
+ * `/api/health/upstream` so a probe can see it.
+ */
+export function assemblyStats(): {
+  inFlight: number;
+  oldestAgeMs: number;
+  stalledSinceMs: number;
+} {
+  const now = Date.now();
+  let oldestAge = 0;
+  let worstSilence = 0;
+  for (const state of inFlight.values()) {
+    const silence = now - state.lastProgressAt;
+    if (silence > worstSilence) worstSilence = silence;
+    if (silence > oldestAge) oldestAge = silence;
+  }
+  return { inFlight: inFlight.size, oldestAgeMs: oldestAge, stalledSinceMs: worstSilence };
+}
 
 export type DiscographyState =
   | { status: "complete"; entries: MBDiscographyEntry[] }
@@ -195,12 +256,34 @@ export async function getDiscographyState(artistMbid: string): Promise<Discograp
       inFlight.delete(artistMbid); // let the next attempt start fresh
       throw existing.error;
     }
+
+    // The watchdog. Evaluated on the POLL rather than on a timer deliberately:
+    // a timer per assembly is a handle to leak and a thing to cancel on every
+    // exit path, and the client is already polling — which is precisely the
+    // caller that needs the answer. An assembly nobody is watching does not
+    // need to be told it has stalled.
+    if (Date.now() - existing.lastProgressAt > ASSEMBLY_STALL_MS) {
+      inFlight.delete(artistMbid); // free the slot so a retry starts clean
+      const stalled = new DiscographyStalledError(artistMbid, existing.progress);
+      console.error(`[ALERT][discography] ${stalled.message}`);
+      // The orphaned assembly is deliberately NOT abandoned mid-flight: if it
+      // does eventually finish it still populates the 7d cache, which makes the
+      // retry instant. What it can no longer do is hold a person on a progress
+      // bar that will never move.
+      existing.promise.catch(() => {});
+      throw stalled;
+    }
     return { status: "assembling", progress: existing.progress };
   }
 
-  const state: Assembly = { progress: { fetched: 0, total: null }, promise: Promise.resolve() };
+  const state: Assembly = {
+    progress: { fetched: 0, total: null },
+    promise: Promise.resolve(),
+    lastProgressAt: Date.now(),
+  };
   state.promise = getArtistDiscography(artistMbid, (p) => {
     state.progress = p;
+    state.lastProgressAt = Date.now(); // heartbeat: a page landed
   })
     .then((entries) => {
       inFlight.delete(artistMbid); // now served from the cache

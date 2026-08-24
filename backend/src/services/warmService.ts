@@ -90,6 +90,7 @@ import { runAtTier } from "./upstreamPriority.js";
 import { COVER_THUMB_WIDTH } from "./coverProxy.js";
 import { persistResolvedCover } from "./coverRepair.js";
 import { ensureVariant } from "./coverCache.js";
+import { toSecureUrl } from "./coverUrl.js";
 import { coverPrefetchSet } from "./discographyService.js";
 import {
   getArtistDiscography,
@@ -315,7 +316,23 @@ export async function warmTarget(artistMbid: string, name: string): Promise<Warm
           // for itself — `getCoverArtUrls` returns `/release/<id>/…jpg`, which is
           // indistinguishable from a stored cover for a release we hold, so the
           // first warm run retried every failure three times.
-          const variant = await ensureVariant(urls.thumb, COVER_THUMB_WIDTH, {
+          //
+          // `toSecureUrl` is NOT optional here, and its absence was a real bug
+          // (6.3e). The Cover Art Archive serves `image` as CLEARTEXT http:// on
+          // older records — `Neu! ’75` is one — and `ensureVariant` keys the disk
+          // cache on `sha256(upstreamUrl)`. Every other consumer of
+          // `getCoverArtUrls` normalises the scheme before use, so the rendition
+          // the serving route looks up is `sha256("https://…")` while this warm
+          // pass was writing `sha256("http://…")`:
+          //
+          //   warm wrote  b2ac3a1b…  w400/b2/b2ac3a1b….webp
+          //   route reads f0ea25d6…  w400/f0/f0ea25d6….webp
+          //
+          // Same image, two entries. So for every cleartext-CAA cover the sweep
+          // did the whole fetch-and-encode, put it where nothing would ever read
+          // it, and charged it twice against the LRU bound — while the visitor
+          // still paid full cold cost on precisely the covers we had "warmed".
+          const variant = await ensureVariant(toSecureUrl(urls.thumb), COVER_THUMB_WIDTH, {
             speculative: true,
           });
           // Hand the resolved art to the release row, if we hold one. See

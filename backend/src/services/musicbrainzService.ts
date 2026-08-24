@@ -6,7 +6,7 @@
 // Cover art comes from the Cover Art Archive (coverartarchive.org), a separate
 // host keyed by MBID with no auth and no MB rate limit.
 import { env } from "../config/env.js";
-import { cached, invalidateCached, type CacheOptions } from "./cache.js";
+import { cached, invalidateCached, type CacheOptions, keyPart } from "./cache.js";
 import {
   ambientTier,
   coverArtGate,
@@ -30,6 +30,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // from 2,294ms on an idle gate to 9,034ms mid-assembly, purely from ordering.
 const MIN_REQUEST_GAP_MS = 1100;
 const gate = new PriorityRateGate(MIN_REQUEST_GAP_MS, "mb");
+
+/**
+ * Queue depth and oldest-wait for the MusicBrainz gate, for `/api/health/upstream`.
+ *
+ * The gate itself stays module-private — it is the one process-wide 1 req/s
+ * throttle (§7/§7a) and handing callers a reference to it invites a second
+ * opinion about the rate. Reporting on it is safe; reaching into it is not.
+ */
+export function mbGateStats() {
+  return gate.waitStats();
+}
 
 // Every public function here defaults its tier to `ambientTier()` — the tier of
 // the surrounding async context, or `interactive` when nothing set one. A call
@@ -180,6 +191,30 @@ function creditArtistId(rg: MBReleaseGroup): string | undefined {
 // results in six seconds. Retrying them would also burn the very throttle slots
 // whose exhaustion causes first-access failures, so they get a single attempt and
 // degrade to empty rather than propagating an upstream error.
+/**
+ * How long an EMPTY MusicBrainz search result may be trusted.
+ *
+ * ## The bug this closes (6.3e)
+ *
+ * MusicBrainz answers `?query=` from a Solr index that is a separate service
+ * from its main database and degrades independently. A degraded Solr does not
+ * return an error — it returns **HTTP 200 with zero results**, which is
+ * byte-identical to "this artist genuinely does not exist".
+ *
+ * Both were cached for a WEEK. So one bad minute upstream made "Xiu Xiu",
+ * "The Blue Nile" and "The Chromatics" all read as non-existent for seven days,
+ * on every search surface, for every visitor — while a manual `curl` returned
+ * 200 and made MusicBrainz look healthy, because the status was never the
+ * discriminator. The result COUNT was.
+ *
+ * §1 cannot help here: nothing threw, so there is no retryable outcome to
+ * surface. The honest reading is that a zero-result search is a **weak** answer,
+ * not a definitive one, and weak answers get minutes rather than days. A real
+ * result set is still cached for the full week — this costs nothing on the path
+ * that works.
+ */
+const EMPTY_SEARCH_TTL = 10 * 60;
+
 const DISCOVERY_ATTEMPTS = 1;
 
 // ---------------------------------------------------------------------------
@@ -212,7 +247,8 @@ export async function searchReleaseGroups(
   try {
     return await cached(
       key,
-      WEEK,
+      // Same degraded-Solr hole as the artist search above.
+      { full: WEEK, thin: EMPTY_SEARCH_TTL, isThin: (groups) => groups.length === 0 },
       async () => {
         const data = await mbFetch<ReleaseGroupSearchResponse>(
           `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
@@ -223,10 +259,16 @@ export async function searchReleaseGroups(
       cacheOpts
     );
   } catch (err) {
-    if (err instanceof UpstreamUnavailableError) {
-      console.warn(`[mb] search degraded (${err.message})`);
-      return [];
-    }
+    // Deliberately NOT swallowed into `[]` (6.3e), for the same §1 reason as
+    // `searchMusicBrainzArtists` — and for one more that is specific to this
+    // function: `musicbrainzSource.search` is the only thing that calls it, and
+    // `searchCatalog` decides "every source failed" by counting sources that
+    // THREW. Returning `[]` here made that count structurally unreachable for
+    // the primary source, so a total MusicBrainz outage looked like a catalog
+    // with no matching releases.
+    //
+    // `searchCatalog` still catches per source, so one source failing degrades
+    // rather than fails — it now just knows that it happened.
     throw err;
   }
 }
@@ -286,7 +328,10 @@ export async function searchMusicBrainzArtists(
     // survives rather than being replaced by an empty one.
     return await cached(
       key,
-      WEEK,
+      // A real result set is worth a week; an empty one is worth minutes. See
+      // EMPTY_SEARCH_TTL — a degraded Solr returns 200-with-nothing, and that
+      // used to be indistinguishable from "no such artist" for seven days.
+      { full: WEEK, thin: EMPTY_SEARCH_TTL, isThin: (artists) => artists.length === 0 },
       async () => {
         const data = await mbFetch<ArtistSearchResponse>(
           `/artist/?query=${encodeURIComponent(query)}&fmt=json&limit=8`,
@@ -297,10 +342,19 @@ export async function searchMusicBrainzArtists(
       cacheOpts
     );
   } catch (err) {
-    if (err instanceof UpstreamUnavailableError) {
-      console.warn(`[mb] artist search degraded (${err.message})`);
-      return [];
-    }
+    // Deliberately NO LONGER swallowed into `[]`.
+    //
+    // §7 keeps this at ONE attempt — retrying discovery burns the throttle slots
+    // whose exhaustion causes first-access failures, and that reasoning is
+    // unchanged. But §7 also says what the answer must be when that one attempt
+    // fails: "One attempt is a policy about how hard we try, never a claim the
+    // artwork is absent: the answer is still 503, never 404." The same sentence
+    // governs artists. Returning `[]` here told every caller "no such artist"
+    // and was the §1 violation at the response boundary — a failed search and an
+    // empty search were literally the same value.
+    //
+    // Callers that can degrade gracefully now do so EXPLICITLY and visibly (see
+    // `searchArtists`), rather than having the decision made for them here.
     throw err;
   }
 }
@@ -351,6 +405,35 @@ export function isNonLatin(name: string): boolean {
  *   3. any alias that is itself Latin script
  *   4. sort-name, if Latin (often the romanization)
  */
+/**
+ * The searchable alias names for an artist, de-duplicated and normalised.
+ *
+ * Search-only, and worth restating because the temptation runs the other way:
+ * an alias must never become an identity. §3 is MBID-only, and aliases are not
+ * unique — "The Chromatics" is the literal canonical name of three unrelated
+ * bands, and a fourth (Portland's `Chromatics`) is the one people usually mean.
+ * Matching on an alias is how a person FINDS a candidate; it is never how we
+ * decide which row they found.
+ *
+ * The canonical `name` is excluded because it is indexed in its own field —
+ * carrying it twice would double-count it in scoring.
+ */
+export function aliasNames(artist: MBArtist | null | undefined): string[] {
+  if (!artist) return [];
+  const canonical = artist.name?.trim().toLowerCase();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const alias of artist.aliases ?? []) {
+    const name = alias?.name?.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (key === canonical || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 export function pickLatinName(artist: MBArtist | null | undefined): string | null {
   if (!artist || !isNonLatin(artist.name)) return null;
 
@@ -394,9 +477,20 @@ export async function findReleaseGroupMbid(
   title: string,
   tier: UpstreamTier = ambientTier()
 ): Promise<string | null> {
-  const key = `mb:rg:match:${artist}:${title}`.toLowerCase();
+  const key = releaseGroupMatchCacheKey(artist, title);
   try {
-    return await cached(key, WEEK, async () => {
+    // Same Solr-degradation hole as `searchMusicBrainzArtists`, and the 6.2e fix
+    // did not reach it. Moving the `try` outside `cached()` stopped a THROWN
+    // failure being cached — but a degraded 200 does not throw: it yields no
+    // release-groups, `top` is undefined, and `null` was written for a week.
+    // Under §3 no MBID means no `caa:rg:urls:<mbid>` lookup either, so cover art
+    // fails through exactly this hole too. A confident match still gets a week.
+    //
+    // DELIBERATE TEST-CONTRACT CHANGE (§9): the old comment called a weak or
+    // absent match "a definitive answer [that] stays cacheable". That was true
+    // of a healthy Solr and false of a degraded one, and there is no way to tell
+    // them apart from the response. A miss is now cached briefly instead.
+    return await cached(key, { full: WEEK, thin: EMPTY_SEARCH_TTL, isThin: (id) => id === null }, async () => {
       const query = `artist:"${artist}" AND releasegroup:"${title}"`;
       const data = await mbFetch<ReleaseGroupSearchResponse>(
         `/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=1`,
@@ -817,6 +911,43 @@ export async function fetchGenreVocabulary(): Promise<string[]> {
   }
   return names;
 }
+
+/**
+ * MusicBrainz's own release-group count for an artist, or null if it declines to
+ * say. One request, `limit=1` — the count is in the envelope, so this never pays
+ * for the entries.
+ *
+ * This is the number the discography view SHOWS ("1192 releases"), and it comes
+ * from a different place than the list it sits above, which is what lets the two
+ * disagree in public. `audit-discography-completeness.ts` exists to compare them.
+ *
+ * Not cached: an audit that reads its own stale answer is not an audit. It
+ * throws on an unreachable upstream rather than returning null, because "we
+ * could not ask" and "MusicBrainz says zero" must not be the same value (§1).
+ */
+export async function releaseGroupCountFor(
+  artistMbid: string,
+  tier: UpstreamTier = ambientTier()
+): Promise<number | null> {
+  const data = await mbFetch<BrowseReleaseGroupsResponse>(
+    `/release-group?artist=${artistMbid}&limit=1&fmt=json`,
+    { tier }
+  );
+  const count = data?.["release-group-count"];
+  return typeof count === "number" ? count : null;
+}
+
+/**
+ * The cache key for an artist+title release-group match.
+ *
+ * Exported so tests assert against the SAME string the implementation writes.
+ * They previously rebuilt it by hand, and when the format changed to `v2` with
+ * `keyPart()` encoding, the hand-built key silently stopped matching anything —
+ * so `expect(await redis.get(key)).toBeNull()` passed for the wrong reason and
+ * would have kept passing if the caching bug came back.
+ */
+export const releaseGroupMatchCacheKey = (artist: string, title: string) =>
+  `mb:rg:match:v2:${keyPart(artist)}:${keyPart(title)}`;
 
 export const discographyCacheKey = (artistMbid: string) => `mb:artist:discography:${artistMbid}`;
 

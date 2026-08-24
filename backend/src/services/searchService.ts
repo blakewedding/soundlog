@@ -80,6 +80,10 @@ export async function indexArtist(artist: Artist): Promise<void> {
       document: {
         name: artist.name,
         latinName: artist.latinName ?? undefined,
+        // Multi-valued and search-only. Empty stays empty rather than becoming
+        // `undefined`, so re-indexing an artist whose aliases were removed
+        // upstream actually clears them.
+        aliases: artist.aliases ?? [],
         sortName: artist.sortName ?? undefined,
         type: artist.type ?? undefined,
         area: artist.area ?? undefined,
@@ -147,31 +151,90 @@ interface EsArtistSource {
   area?: string;
 }
 
-/** Search seeded artists in Elasticsearch. Returns [] if ES is down. */
+/**
+ * Strip a leading English article, or return null when there isn't one.
+ *
+ * Used ONLY as a zero-result fallback (see {@link esSearchArtists}), never as an
+ * index-side char filter and never as an unconditional rewrite. That distinction
+ * is the whole design:
+ *
+ *   The The   -> "The"    The Who  -> "Who"    The Band -> "Band"
+ *
+ * Every one of those is a real, findable artist whose name IS the article plus a
+ * word, and stripping at analysis time would make the canonical spelling
+ * unsearchable in order to help the colloquial one. As a fallback it cannot: the
+ * first query already matched, so the fallback never runs for them.
+ */
+export function stripLeadingArticle(q: string): string | null {
+  const stripped = q.replace(/^\s*(the|a|an)\s+/i, "").trim();
+  return stripped && stripped.toLowerCase() !== q.trim().toLowerCase() ? stripped : null;
+}
+
+function artistQuery(q: string) {
+  return {
+    // Match either script: "Fishmans" and "フィッシュマンズ" both find the artist —
+    // and `aliases` carries the names MusicBrainz knows an artist by but does not
+    // call canonical (6.3e).
+    multi_match: {
+      query: q,
+      fields: ["name", "latinName", "aliases"],
+      operator: "and" as const,
+    },
+  };
+}
+
+/**
+ * Search seeded artists in Elasticsearch. Returns [] if ES is down.
+ *
+ * ## The leading-article fallback (6.3e)
+ *
+ * MusicBrainz's canonical name for the Portland band is `Chromatics`, and the
+ * `operator: "and"` below requires every query term to match — so "The
+ * Chromatics" could not match it at all. Not ranked low: **zero hits**, because
+ * the document has no `the` token to satisfy.
+ *
+ * So a query that finds nothing is retried once with a leading article removed.
+ * It is deliberately a fallback rather than an analyzer rule, because the
+ * analyzer cannot tell "The Chromatics" (an article a user added) from "The The"
+ * (an artist whose name is the article). A fallback can: it only ever runs when
+ * the literal reading already came back empty.
+ *
+ * Worth being precise about what this does NOT fix. MusicBrainz does not list
+ * "The Chromatics" as an alias for Chromatics — its only alias is `KRMTX` — so
+ * alias indexing does not close this case, and there really are three unrelated
+ * bands literally named "The Chromatics". This fallback is what makes the
+ * colloquial spelling reach the canonical artist.
+ */
 export async function esSearchArtists(q: string, size = 5): Promise<EsArtistHit[]> {
   try {
-    const result = await es.search<EsArtistSource>({
-      index: ARTIST_INDEX,
-      size,
-      // Match either script: "Fishmans" and "フィッシュマンズ" both find the artist.
-      query: {
-        multi_match: { query: q, fields: ["name", "latinName"], operator: "and" },
-      },
-    });
-    return result.hits.hits.map((h) => {
-      const src = h._source as EsArtistSource;
-      return {
-        id: h._id as string,
-        name: src.name,
-        latinName: src.latinName,
-        type: src.type,
-        area: src.area,
-      };
-    });
+    const hits = await runArtistQuery(q, size);
+    if (hits.length > 0) return hits;
+
+    const withoutArticle = stripLeadingArticle(q);
+    if (!withoutArticle) return hits;
+    return await runArtistQuery(withoutArticle, size);
   } catch (err) {
     warnEs("artist search", err);
     return [];
   }
+}
+
+async function runArtistQuery(q: string, size: number): Promise<EsArtistHit[]> {
+  const result = await es.search<EsArtistSource>({
+    index: ARTIST_INDEX,
+    size,
+    query: artistQuery(q),
+  });
+  return result.hits.hits.map((h) => {
+    const src = h._source as EsArtistSource;
+    return {
+      id: h._id as string,
+      name: src.name,
+      latinName: src.latinName,
+      type: src.type,
+      area: src.area,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

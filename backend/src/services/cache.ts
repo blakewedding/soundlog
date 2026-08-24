@@ -36,13 +36,52 @@ export interface CacheOptions {
 }
 
 /**
+ * Encode one variable part of a cache key so it cannot run into the next one.
+ *
+ * ## Why this is not paranoia (6.3e)
+ *
+ * Several keys are built as `prefix:${artist}:${title}` with both values
+ * interpolated raw. Colons are the delimiter, and catalog names contain them —
+ * `Songs: Ohia` is in the catalog today. So:
+ *
+ *   artist "Songs: Ohia", title "Didn't It Rain"   -> ...:songs: ohia:didn't it rain
+ *   artist "Songs",       title "Ohia:Didn't It Rain" -> ...:songs: ohia:didn't it rain
+ *
+ * One key, two different records. For `discogs:covermatch` that key holds an
+ * ARTWORK URL, so a collision serves one album's sleeve for another — the class
+ * of wrong-cover bug §3 exists to prevent, arriving through the cache rather
+ * than through identity resolution.
+ *
+ * These keys stay name-derived on purpose: they cache the answer to "what does
+ * this SEARCH return", and the search terms are the question. What changes is
+ * only that each part is now unambiguously delimited. Where an MBID is
+ * available, the key should be MBID-keyed instead (`caa:rg:urls:<mbid>` already
+ * is) — a name belongs in a key only when the lookup itself is by name.
+ */
+export function keyPart(value: string): string {
+  return encodeURIComponent(value.trim().toLowerCase());
+}
+
+/**
  * Read-through Redis cache. `null` results are cached too (stored as the JSON
  * literal `null`) so a known "no match" doesn't trigger a repeat upstream call —
  * `redis.get` returns the string "null", distinct from a genuine cache miss.
  */
+/**
+ * How long to keep a value.
+ *
+ * A plain number is the usual case. The object form splits the TTL by how much
+ * the ANSWER is worth trusting: `full` for a real result, `thin` for one that
+ * upstream reported successfully but which carries nothing — see {@link cached}
+ * for why those must differ, and why `refresh` overrides the split.
+ */
+export type CacheTtl<T> =
+  | number
+  | { full: number; thin: number; isThin: (value: T) => boolean };
+
 export async function cached<T>(
   key: string,
-  ttlSeconds: number,
+  ttlSeconds: CacheTtl<T>,
   fn: () => Promise<T>,
   opts: CacheOptions = {}
 ): Promise<T> {
@@ -56,7 +95,42 @@ export async function cached<T>(
   // holds identically under `refresh`: a refresh that cannot reach upstream
   // leaves the existing entry alone rather than replacing it with a degraded
   // one, so §1/§2 are unchanged by this option.
-  await redis.set(key, JSON.stringify(value), "EX", jitteredTtl(ttlSeconds, opts.jitterSeconds));
+  // The TTL may depend on what came back, and on who is asking.
+  //
+  // ## Why this exists (6.3e)
+  //
+  // A fixed TTL forces one policy onto two very different answers. MusicBrainz
+  // serves search from a Solr index that is SEPARATE from its main database and
+  // fails independently — and when it is degraded it does not error, it returns
+  // **HTTP 200 with zero results**. `searchMusicBrainzArtists` cached that under
+  // a seven-day TTL, so one bad minute at MusicBrainz made an artist read as
+  // "does not exist" for a week, on every surface, for everyone.
+  //
+  // Throwing is still what keeps a KNOWN failure out of the cache (§1/§2, note
+  // above). This covers the case that cannot throw, because upstream reported
+  // success: a thin answer is cacheable, but not for as long as a real one.
+  //
+  // ## Why `refresh` keeps the full TTL even for a thin answer
+  //
+  // `refresh` marks a caller that RE-ASKS on a schedule and therefore owns the
+  // freshness contract itself — in practice the nightly warm sweep. Two reasons
+  // it must not take the short TTL:
+  //
+  //  - A degraded answer it writes is replaced on the next sweep, so the
+  //    exposure is one night rather than the full week. The short TTL is not
+  //    buying anything a sweep is not already buying.
+  //  - `needsWarming` decides a target is due from its layers' TTLs. Letting
+  //    the two search layers expire in minutes would make EVERY target look
+  //    permanently due, turning a selective sweep into a nightly full re-fetch
+  //    of the whole fleet — the 6.2g failure mode arrived at from the other
+  //    direction.
+  const ttl =
+    typeof ttlSeconds === "number"
+      ? ttlSeconds
+      : opts.refresh || !ttlSeconds.isThin(value)
+        ? ttlSeconds.full
+        : ttlSeconds.thin;
+  await redis.set(key, JSON.stringify(value), "EX", jitteredTtl(ttl, opts.jitterSeconds));
   return value;
 }
 

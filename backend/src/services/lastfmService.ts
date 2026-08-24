@@ -1,7 +1,7 @@
 // Last.fm — enrichment layer: genre/tag data and similar artists, attached to a
 // release after it is seeded. Cached in Redis for 7 days.
 import { env } from "../config/env.js";
-import { cached } from "./cache.js";
+import { cached, keyPart } from "./cache.js";
 import { canonicalGenres, genreCanonicalMap } from "./genreVocabulary.js";
 
 const BASE = "https://ws.audioscrobbler.com/2.0/";
@@ -62,7 +62,7 @@ function asArray<T>(v: T[] | T | undefined): T[] {
 export async function getAlbumTags(artist: string, album: string) {
   const a = normalizeForLastfm(artist);
   const b = normalizeForLastfm(album);
-  const key = `lastfm:tags:${a}:${b}`.toLowerCase();
+  const key = `lastfm:tags:v2:${keyPart(a)}:${keyPart(b)}`;
   return cached(key, WEEK, () => lastfmFetch<TopTagsResponse>("album.gettoptags", { artist: a, album: b }));
 }
 
