@@ -13,7 +13,7 @@
 # ---------------------------------------------------------------------------
 # Build: install the workspace, generate the Prisma client, compile TypeScript.
 # ---------------------------------------------------------------------------
-FROM node:24-alpine AS build
+FROM node:24.22.1-alpine AS build
 # Prisma's engines are dynamically linked against OpenSSL on musl.
 RUN apk add --no-cache openssl && corepack enable
 WORKDIR /repo
@@ -68,7 +68,7 @@ CMD ["node_modules/.bin/prisma", "migrate", "deploy", "--schema=/repo/backend/pr
 # ---------------------------------------------------------------------------
 # Runtime: lean image, non-root, no build toolchain.
 # ---------------------------------------------------------------------------
-FROM node:24-alpine AS runtime
+FROM node:24.22.1-alpine AS runtime
 RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 WORKDIR /app
