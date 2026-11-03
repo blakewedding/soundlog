@@ -106,3 +106,8 @@ Reasoning for each is in `README.md` → *Backlog — v1.1*.
   but nothing is scheduled.
 - Spotify integration is dormant behind a config guard (2026 Developer Mode
   restrictions) and stays that way until the platform terms change.
+
+## Further Out
+
+- Concert logging and rating, as a second logged-media type beside releases.
+- Physical-media locator: where to find a given release on vinyl, CD or cassette near you, built on the collection-tracking data above.
