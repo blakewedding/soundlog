@@ -496,8 +496,8 @@ Helsinki, **Ubuntu 24.04 LTS**, $9.59/mo.
 
 | | |
 |---|---|
-| IPv4 | `95.216.158.204` |
-| IPv6 | `2a01:4f9:c015:2f9f::1` (host address; Hetzner assigns the `/64` `2a01:4f9:c015:2f9f::/64`) |
+| IPv4 | *(origin address kept out of the repo; see the Hetzner dashboard)* |
+| IPv6 | *(same; Hetzner assigns a `/64`, the host uses `::1` in it)* |
 | SSH alias | `soundlog-prod` (`~/.ssh/config`, `600`) |
 
 - **Firewall applied BEFORE first boot**, not after: Hetzner Cloud Firewall,
@@ -883,7 +883,7 @@ reading.*
 
 ### TLS, and the policy that activated itself
 
-`CLIENT_URL` flipping from `http://95.216.158.204` to `https://soundlog.app` was
+`CLIENT_URL` flipping from `http://<origin-ip>` to `https://soundlog.app` was
 the entire change. Before, the boot log carried
 `[boot] CLIENT_URL is … production over plain http`; after, that line is gone and
 a real registration returns `HttpOnly; Secure; SameSite=Lax`. **No code

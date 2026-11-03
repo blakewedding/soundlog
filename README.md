@@ -6,6 +6,37 @@ A Letterboxd-style social platform for music. Log every listen, rate on a half-s
 
 **Design system:** "Gold on Vinyl" — layered warm blacks with a single restrained gold reserved for ratings, actions, and the wordmark. Archivo for display, Inter for body, JetBrains Mono for ratings and data. Tokens live in `apps/web/src/theme.css`.
 
+
+**Live at [soundlog.app](https://soundlog.app).** Built and run by one person as a
+real product, not a demo: production is a six-container Docker stack (nginx,
+Varnish, the API, Postgres, Redis, Elasticsearch) on a single VPS behind
+Cloudflare, with real members logging music since July 2026.
+
+**Who it's for.** Listeners who want a diary of what they actually hear, across
+every release type, with the same social loop Letterboxd gives film: a ranked
+list you can share, a review someone can comment on, a profile that reads as
+taste rather than a streaming history. The catalog is built on open music data
+(MusicBrainz as canonical identity, Discogs and Last.fm for enrichment, the
+Cover Art Archive for sleeves), so nothing you log depends on any one streaming
+service carrying it.
+
+**Where it's going.** [`ROADMAP.md`](ROADMAP.md) is the short list of planned
+work (the mobile app's remaining screens, production reliability items filed
+from incidents, and the v1.1 collection-tracking features). [`PROGRESS.md`](PROGRESS.md)
+is the full execution log, phase by phase, including what each bug taught.
+[`CLAUDE.md`](CLAUDE.md) holds the engineering rules every change is held to.
+
+**Quality gates.** `pnpm test` runs the three Vitest suites (backend
+integration tests against a real Postgres/Redis/Elasticsearch, plus web and
+mobile unit tests); `pnpm lint` and per-package `typecheck` must be green
+before a phase closes. Each phase ends with a live demo on production and a
+commit.
+
+**License.** Source code is released under the [LICENSE](LICENSE) in this
+repository. The Soundlog name, wordmark, and the eighth-note/L mark in
+`brand/` are not covered by that license; see *License* at the end of this
+file.
+
 ---
 
 ## Getting started (Phase 0)
@@ -1137,3 +1168,17 @@ packages/shared Types, API routes, rating utils shared by both clients
 backend         Express + TS API, Prisma schema, ES/Redis config, services
 infrastructure  Dockerfiles, Varnish VCL, K8s manifests
 ```
+
+## License
+
+The source code in this repository is licensed under the terms in
+[LICENSE](LICENSE). Copyright (c) 2026 Blake Wedding.
+
+The Soundlog name, the wordmark, and the eighth-note/L mark (the files under
+`brand/` and their renderings in `apps/web/public/`) identify this specific
+service and are not licensed for reuse. If you run your own instance from
+this code, give it its own name and mark.
+
+Soundlog is not affiliated with MusicBrainz, Discogs, Last.fm, or the Cover
+Art Archive. Catalog data is fetched from those services under their own
+terms; this repository ships no copy of their data.
